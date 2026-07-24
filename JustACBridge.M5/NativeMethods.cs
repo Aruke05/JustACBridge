@@ -4,12 +4,19 @@ namespace JustACBridgeM5;
 
 internal static class NativeMethods
 {
+    internal const int WH_KEYBOARD_LL = 13;
     internal const int WH_MOUSE_LL = 14;
+    internal const int WM_KEYDOWN = 0x0100;
+    internal const int WM_KEYUP = 0x0101;
+    internal const int WM_SYSKEYDOWN = 0x0104;
+    internal const int WM_SYSKEYUP = 0x0105;
     internal const int WM_XBUTTONDOWN = 0x020B;
     internal const int WM_XBUTTONUP = 0x020C;
     internal const int WM_QUIT = 0x0012;
+    internal const uint XBUTTON1 = 0x0001;
     internal const uint XBUTTON2 = 0x0002;
     internal const uint LLMHF_INJECTED = 0x00000001;
+    internal const uint LLKHF_INJECTED = 0x00000010;
     internal const uint SRCCOPY = 0x00CC0020;
     internal const uint CAPTUREBLT = 0x40000000;
     internal const uint BI_RGB = 0;
@@ -32,7 +39,7 @@ internal static class NativeMethods
     internal const uint MOUSEEVENTF_HWHEEL = 0x01000;
 
     internal delegate bool EnumWindowsProc(nint hwnd, nint lParam);
-    internal delegate nint LowLevelMouseProc(int nCode, nint wParam, nint lParam);
+    internal delegate nint LowLevelHookProc(int nCode, nint wParam, nint lParam);
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct POINT { internal int X, Y; }
@@ -67,6 +74,16 @@ internal static class NativeMethods
     {
         internal POINT pt;
         internal uint mouseData;
+        internal uint flags;
+        internal uint time;
+        internal nuint dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct KBDLLHOOKSTRUCT
+    {
+        internal uint vkCode;
+        internal uint scanCode;
         internal uint flags;
         internal uint time;
         internal nuint dwExtraInfo;
@@ -126,7 +143,7 @@ internal static class NativeMethods
     [DllImport("user32.dll")] internal static extern nint GetDC(nint hwnd);
     [DllImport("user32.dll")] internal static extern int ReleaseDC(nint hwnd, nint dc);
     [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
-    [DllImport("user32.dll", SetLastError = true)] internal static extern nint SetWindowsHookEx(int id, LowLevelMouseProc callback, nint module, uint threadId);
+    [DllImport("user32.dll", SetLastError = true)] internal static extern nint SetWindowsHookEx(int id, LowLevelHookProc callback, nint module, uint threadId);
     [DllImport("user32.dll")] internal static extern nint CallNextHookEx(nint hook, int code, nint wParam, nint lParam);
     [DllImport("user32.dll")] internal static extern bool UnhookWindowsHookEx(nint hook);
     [DllImport("user32.dll")] internal static extern int GetMessage(out MSG msg, nint hwnd, uint min, uint max);

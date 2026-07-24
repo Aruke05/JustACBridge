@@ -9,6 +9,8 @@ local ADDON_NAME = ...
 -- own 30/50 ms safety throttle internally, so most calls return its cached table.
 local UPDATE_INTERVAL = 0
 local ROW_COUNT = 2
+local QUEUE_SCAN_COUNT = 8
+local PIXEL_PROTOCOL_VERSION = 2
 local PIXEL_BYTE_COUNT = 72
 local PIXEL_BIT_COUNT = PIXEL_BYTE_COUNT * 8
 local PIXEL_COLUMNS = 48
@@ -21,6 +23,9 @@ JustACBridgeExport = JustACBridgeExport or {}
 
 local SpellQueue
 local ActionBarScanner
+local BlizzardAPI
+local BurstInjectionEngine
+local JustACAddon
 local bridgeFrame
 local rows = {}
 local exportBox
@@ -33,6 +38,22 @@ local lastSignature
 local currentRows = {}
 local playerIsChanneling = false
 local playerIsCasting = false
+local reservedSpellIDs = {}
+local currentSpecKey
+
+-- Only major burst activators/sequencing skills are reserved by default.
+-- Short rotational cooldowns intentionally stay available in reserve mode:
+-- Frozen Orb is used on cooldown in TWW S3 Frost, and Meteor is not forced
+-- into Combustion in TWW S3 Fire.
+local DEFAULT_RESERVED_SPELLS = {
+    MAGE_1 = { 365350, 12051, 321507 },                  -- Arcane Surge, Evocation, Touch of the Magi
+    MAGE_2 = { 190319 },                                -- Combustion
+    MAGE_3 = { 12472 },                                 -- Icy Veins
+    DEATHKNIGHT_1 = { 49028 },                          -- Dancing Rune Weapon
+    DEATHKNIGHT_2 = { 51271, 152279, 47568, 279302, 439843 }, -- Pillar, Breath, ERW, Frostwyrm, Reaper's Mark
+    DEATHKNIGHT_3 = { 63560, 42650, 275699, 207289, 49206, 390279 }, -- DT, Army, Apocalypse, UA, Gargoyle, Vile Contagion
+}
+local getSpellData
 
 local PAD_ATLAS_TO_KEY = {
     Gamepad_Gen_1_64 = "PAD1",
@@ -65,6 +86,139 @@ local function copyTable(source)
     return result
 end
 
+local function getSpecKey()
+    local _, classFile = UnitClass("player")
+    local spec = GetSpecialization and GetSpecialization()
+    if not classFile or not spec then
+        return nil
+    end
+    return classFile .. "_" .. tostring(spec)
+end
+
+local function addReservedSpell(spellID)
+    spellID = tonumber(spellID)
+    if not spellID or spellID <= 0 then
+        return
+    end
+
+    reservedSpellIDs[spellID] = true
+    if BlizzardAPI and BlizzardAPI.GetDisplaySpellID then
+        local ok, displayID = pcall(BlizzardAPI.GetDisplaySpellID, spellID)
+        if ok and type(displayID) == "number" and displayID > 0 then
+            reservedSpellIDs[displayID] = true
+        end
+    end
+end
+
+local function removeReservedSpell(spellID)
+    spellID = tonumber(spellID)
+    if not spellID or spellID <= 0 then
+        return
+    end
+    reservedSpellIDs[spellID] = nil
+    if BlizzardAPI and BlizzardAPI.GetDisplaySpellID then
+        local ok, displayID = pcall(BlizzardAPI.GetDisplaySpellID, spellID)
+        if ok and type(displayID) == "number" and displayID > 0 then
+            reservedSpellIDs[displayID] = nil
+        end
+    end
+end
+
+local function refreshReservedSpells()
+    reservedSpellIDs = {}
+    currentSpecKey = getSpecKey()
+    if not currentSpecKey then
+        return
+    end
+
+    for _, spellID in ipairs(DEFAULT_RESERVED_SPELLS[currentSpecKey] or {}) do
+        addReservedSpell(spellID)
+    end
+
+    -- Follow JustAC's current per-spec trigger configuration. This keeps the
+    -- bridge aligned with future JustAC DK/Mage defaults without rebuilding an
+    -- APL in this low-latency transport addon.
+    if BurstInjectionEngine and BurstInjectionEngine.GetDetectedTriggers and JustACAddon then
+        local ok, triggers = pcall(BurstInjectionEngine.GetDetectedTriggers, JustACAddon)
+        if ok and type(triggers) == "table" then
+            for _, trigger in ipairs(triggers) do
+                addReservedSpell(type(trigger) == "table" and trigger.spellID or trigger)
+            end
+        end
+    end
+
+    JustACBridgeDB.reserveOverrides = JustACBridgeDB.reserveOverrides or {}
+    local overrides = JustACBridgeDB.reserveOverrides[currentSpecKey]
+    if overrides then
+        for spellID, enabled in pairs(overrides.include or {}) do
+            if enabled then
+                addReservedSpell(spellID)
+            end
+        end
+        for spellID, excluded in pairs(overrides.exclude or {}) do
+            if excluded then
+                removeReservedSpell(spellID)
+            end
+        end
+    end
+end
+
+local function isReservedQueueValue(queueValue)
+    if type(queueValue) ~= "number" or queueValue == 0 then
+        return false
+    end
+    -- Items in an offensive queue are normally potions/on-use trinkets. Keep
+    -- all of them for the player's chosen burst window in reserve mode.
+    return queueValue < 0 or reservedSpellIDs[queueValue] == true
+end
+
+local function isUsableNow(spellID)
+    if not BlizzardAPI or not BlizzardAPI.IsSpellUsable then
+        return true
+    end
+
+    -- JustAC positions 2+ may include ready-but-resource-starved or cooldown
+    -- entries for display purposes. Never replace a reserved cooldown with an
+    -- action JustAC already knows cannot be cast right now.
+    local ok, isUsable = pcall(BlizzardAPI.IsSpellUsable, spellID)
+    return not ok or isUsable ~= false
+end
+
+local function findReserveRecommendation(queue, startIndex)
+    local count = math.min(#queue, QUEUE_SCAN_COUNT)
+    for index = startIndex or 1, count do
+        local queueValue = queue[index]
+        if type(queueValue) == "number" and queueValue > 0
+            and not isReservedQueueValue(queueValue) and isUsableNow(queueValue) then
+            local data = getSpellData(queueValue, 2)
+            if data and data.plainHotkey ~= "" then
+                return data
+            end
+        end
+    end
+
+    if type(queue[1]) ~= "number" or queue[1] == 0 then
+        return nil
+    end
+
+    -- Highlight mode can expose the next valid Blizzard recommendation when
+    -- the primary button is hidden/blacklisted. Use it only as a bounded
+    -- fallback; the normal hot path above remains a table scan.
+    if BlizzardAPI and BlizzardAPI.GetHighlightCastSpell then
+        local ok, spellID = pcall(BlizzardAPI.GetHighlightCastSpell)
+        if ok and type(spellID) == "number" and spellID > 0
+            and spellID ~= queue[1] and not isReservedQueueValue(spellID)
+            and isUsableNow(spellID) then
+            local data = getSpellData(spellID, 2)
+            if data and data.plainHotkey ~= "" then
+                return data
+            end
+        end
+    end
+
+    return nil
+end
+
 local function toPlainHotkey(hotkey)
     if not hotkey or hotkey == "" then
         return ""
@@ -75,7 +229,7 @@ local function toPlainHotkey(hotkey)
     end))
 end
 
-local function getSpellData(queueValue, position)
+getSpellData = function(queueValue, position)
     if type(queueValue) ~= "number" or queueValue == 0 then
         return nil
     end
@@ -206,7 +360,7 @@ local function updatePixelProtocol(dataRows)
 
     -- Header: ASCII "JAC", protocol version, 16-bit change sequence, flags.
     bytes[1], bytes[2], bytes[3] = 74, 65, 67
-    bytes[4] = 1
+    bytes[4] = PIXEL_PROTOCOL_VERSION
     bytes[5] = sequence % 256
     bytes[6] = math.floor(sequence / 256) % 256
 
@@ -288,7 +442,7 @@ local function updateSavedExport(dataRows)
     sequence = sequence + 1
 
     JustACBridgeExport = JustACBridgeExport or {}
-    JustACBridgeExport.schemaVersion = 1
+    JustACBridgeExport.schemaVersion = PIXEL_PROTOCOL_VERSION
     JustACBridgeExport.sequence = sequence
     JustACBridgeExport.updatedAt = time()
     JustACBridgeExport.updatedAtGame = GetTime()
@@ -298,6 +452,8 @@ local function updateSavedExport(dataRows)
     JustACBridgeExport.playerState = playerIsChanneling and "channeling"
         or (playerIsCasting and "casting" or "idle")
     JustACBridgeExport.first = copyTable(dataRows[1])
+    JustACBridgeExport.lossless = copyTable(dataRows[1])
+    JustACBridgeExport.reserveBurst = copyTable(dataRows[2])
     JustACBridgeExport.rows = {}
 
     for index = 1, ROW_COUNT do
@@ -365,10 +521,15 @@ local function refresh()
         return false, ok and "Invalid JustAC queue" or tostring(queue)
     end
 
-    local nextRows = {}
-    for index = 1, ROW_COUNT do
-        nextRows[index] = getSpellData(queue[index], index)
+    local lossless = getSpellData(queue[1], 1)
+    local preserve
+    if lossless and lossless.plainHotkey ~= "" and not isReservedQueueValue(lossless.queueValue) then
+        preserve = copyTable(lossless)
+        preserve.position = 2
+    else
+        preserve = findReserveRecommendation(queue, lossless and 2 or 1)
     end
+    local nextRows = { lossless, preserve }
 
     local signature = makeSignature(nextRows)
     if signature == lastSignature then
@@ -477,6 +638,8 @@ local function createUI()
 
     rows[1] = createRow(bridgeFrame, 1, -30)
     rows[2] = createRow(bridgeFrame, 2, -73)
+    rows[1].rank:SetText("全")
+    rows[2].rank:SetText("留")
 
     exportBox = CreateFrame("EditBox", nil, bridgeFrame, "InputBoxTemplate")
     exportBox:SetAutoFocus(false)
@@ -552,6 +715,14 @@ function API.GetCurrentRecommendation()
     return copyTable(currentRows[1])
 end
 
+function API.GetLosslessRecommendation()
+    return copyTable(currentRows[1])
+end
+
+function API.GetPreserveBurstRecommendation()
+    return copyTable(currentRows[2])
+end
+
 function API.GetRecommendations()
     local result = {}
     for index = 1, ROW_COUNT do
@@ -604,6 +775,9 @@ eventFrame:RegisterEvent("PLAYER_LOGOUT")
 eventFrame:RegisterEvent("UI_SCALE_CHANGED")
 eventFrame:RegisterEvent("DISPLAY_SIZE_CHANGED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+eventFrame:RegisterEvent("PLAYER_TALENT_UPDATE")
+eventFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
@@ -628,6 +802,10 @@ eventFrame:SetScript("OnEvent", function(_, event)
 
         SpellQueue = LibStub("JustAC-SpellQueue", true)
         ActionBarScanner = LibStub("JustAC-ActionBarScanner", true)
+        BlizzardAPI = LibStub("JustAC-BlizzardAPI", true)
+        BurstInjectionEngine = LibStub("JustAC-BurstInjectionEngine", true)
+        JustACAddon = LibStub("AceAddon-3.0"):GetAddon("JustAssistedCombat", true)
+        refreshReservedSpells()
         createUI()
 
         if not SpellQueue then
@@ -646,6 +824,12 @@ eventFrame:SetScript("OnEvent", function(_, event)
         playerIsChanneling = false
         playerIsCasting = false
         lastSignature = nil
+        refreshReservedSpells()
+    elseif event == "PLAYER_SPECIALIZATION_CHANGED"
+        or event == "PLAYER_TALENT_UPDATE"
+        or event == "TRAIT_CONFIG_UPDATED" then
+        refreshReservedSpells()
+        lastSignature = nil
     elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
         playerIsChanneling = true
         playerIsCasting = false
@@ -663,7 +847,6 @@ eventFrame:SetScript("OnEvent", function(_, event)
         or event == "UNIT_SPELLCAST_FAILED_QUIET"
         or event == "UNIT_SPELLCAST_INTERRUPTED" then
         playerIsCasting = false
-        playerIsChanneling = false
         lastSignature = nil
     end
 end)
@@ -681,8 +864,51 @@ SLASH_JUSTACBRIDGE1 = "/jacb"
 SLASH_JUSTACBRIDGE2 = "/justacbridge"
 SlashCmdList.JUSTACBRIDGE = function(message)
     local command = (message or ""):lower():match("^%s*(.-)%s*$")
+    local reserveAction, reserveID = command:match("^reserve%s+(%a+)%s+(%d+)$")
+    if reserveAction ~= "add" and reserveAction ~= "remove" then
+        reserveAction, reserveID = nil, nil
+    end
 
-    if command == "show" then
+    if reserveAction and reserveID then
+        currentSpecKey = getSpecKey()
+        local spellID = tonumber(reserveID)
+        if not currentSpecKey or not spellID then
+            print("|cffff4040JustACBridge:|r 当前专精或法术 ID 无效。")
+            return
+        end
+        JustACBridgeDB.reserveOverrides = JustACBridgeDB.reserveOverrides or {}
+        local overrides = JustACBridgeDB.reserveOverrides[currentSpecKey] or { include = {}, exclude = {} }
+        overrides.include = overrides.include or {}
+        overrides.exclude = overrides.exclude or {}
+        JustACBridgeDB.reserveOverrides[currentSpecKey] = overrides
+        if reserveAction == "add" then
+            overrides.include[spellID] = true
+            overrides.exclude[spellID] = nil
+        else
+            overrides.include[spellID] = nil
+            overrides.exclude[spellID] = true
+        end
+        refreshReservedSpells()
+        lastSignature = nil
+        print(("|cff40a9ffJustACBridge:|r %s保留法术 %d（%s）。")
+            :format(reserveAction == "add" and "已添加" or "已移除", spellID, currentSpecKey))
+    elseif command == "reserve reset" then
+        currentSpecKey = getSpecKey()
+        if currentSpecKey and JustACBridgeDB.reserveOverrides then
+            JustACBridgeDB.reserveOverrides[currentSpecKey] = nil
+        end
+        refreshReservedSpells()
+        lastSignature = nil
+        print("|cff40a9ffJustACBridge:|r 当前专精保留法术已恢复默认。")
+    elseif command == "reserve list" then
+        local ids = {}
+        for spellID in pairs(reservedSpellIDs) do
+            ids[#ids + 1] = spellID
+        end
+        table.sort(ids)
+        print(("|cff40a9ffJustACBridge:|r 保留法术（%s）：%s")
+            :format(currentSpecKey or "unknown", #ids > 0 and table.concat(ids, ", ") or "无"))
+    elseif command == "show" then
         API.Show()
     elseif command == "hide" then
         API.Hide()
@@ -693,6 +919,7 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         JustACBridgeDB.locked = false
         print("|cff40a9ffJustACBridge:|r 面板已解锁，可用鼠标左键拖动。")
     elseif command == "refresh" then
+        refreshReservedSpells()
         lastSignature = nil
         local ok, err = refresh()
         print(ok and "|cff40a9ffJustACBridge:|r 已刷新。" or ("|cffff4040JustACBridge:|r " .. tostring(err)))
@@ -725,6 +952,8 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         print("/jacb lock | unlock - 锁定/解锁面板")
         print("/jacb refresh - 立即刷新")
         print("/jacb pixels [on|off] - 控制实时像素接口")
+        print("/jacb reserve list - 查看当前专精保留法术")
+        print("/jacb reserve add <法术ID> | remove <法术ID> | reset")
         print("/jacb flush - 重载 UI 并将导出数据写入磁盘")
     end
 end
