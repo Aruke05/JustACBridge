@@ -7,6 +7,16 @@
   非保留、当前可用且已绑定动作；没有安全替代项时保持为空，不猜测技能。
 - 不改变 `SpellQueue.GetCurrentSpellQueue()` 的调用频率，不增加定时等待。
 
+## 维护边界
+
+- 公共选择、版本匹配和玩家覆盖逻辑：`Policies/Registry.lua`
+- 法师法术表：`Policies/Mage.lua`
+- DK 法术表：`Policies/DeathKnight.lua`
+- `JustACBridge.lua` 只消费已解析策略，不包含职业法术 ID。
+
+新增职业或为新 Interface 版本增加差异时，仅增加/修改对应策略文件及 TOC
+加载项；现有 SavedVariables 仍按 `CLASSFILE_<专精序号>` 保存，不需要迁移。
+
 ## 法师（TWW S3 规则依据）
 
 参考：

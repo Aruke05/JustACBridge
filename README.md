@@ -24,6 +24,10 @@ WoW 插件读取 JustAC 队列并生成“无损版”和“保留爆发版”�
 JustACBridge.core/       WoW 插件与像素协议文档
   JustACBridge.lua
   JustACBridge.toc
+  Policies/
+    Registry.lua
+    Mage.lua
+    DeathKnight.lua
   PIXEL_PROTOCOL.md
 
 JustACBridge.M5/         Windows WinForms 客户端（.NET 10）
@@ -38,9 +42,10 @@ JustACBridge.M5/         Windows WinForms 客户端（.NET 10）
 
 1. 确保已经安装并启用 **JustAC**。
 2. 在 WoW 的 `Interface\AddOns` 目录中新建 `JustACBridge` 文件夹。
-3. 将 `JustACBridge.core` 中的以下文件复制进去：
+3. 将 `JustACBridge.core` 中的以下内容复制进去：
    - `JustACBridge.lua`
    - `JustACBridge.toc`
+   - `Policies` 文件夹
 4. 启动游戏，并在插件列表中启用 JustACBridge。
 
 最终目录应类似：
@@ -49,6 +54,10 @@ JustACBridge.M5/         Windows WinForms 客户端（.NET 10）
 World of Warcraft\_retail_\Interface\AddOns\JustACBridge\
   JustACBridge.lua
   JustACBridge.toc
+  Policies\
+    Registry.lua
+    Mage.lua
+    DeathKnight.lua
 ```
 
 ### 2. 启用像素输出
@@ -133,6 +142,11 @@ flowchart LR
 ```
 
 协议格式、校验算法和读取流程详见 [`JustACBridge.core/PIXEL_PROTOCOL.md`](JustACBridge.core/PIXEL_PROTOCOL.md)；DK/法师保留规则及攻略依据见 [`JustACBridge.core/BURST_POLICY.md`](JustACBridge.core/BURST_POLICY.md)。
+
+职业规则采用独立注册文件：法师与 DK 分别维护于 `Policies/Mage.lua` 和
+`Policies/DeathKnight.lua`。新增职业或游戏版本补丁的格式见
+[`JustACBridge.core/Policies/README.md`](JustACBridge.core/Policies/README.md)，
+无需修改主循环。
 
 ## 注意事项
 

@@ -26,6 +26,7 @@ local ActionBarScanner
 local BlizzardAPI
 local BurstInjectionEngine
 local JustACAddon
+local PolicyRegistry = _G.JustACBridgePolicyRegistry
 local bridgeFrame
 local rows = {}
 local exportBox
@@ -40,19 +41,7 @@ local playerIsChanneling = false
 local playerIsCasting = false
 local reservedSpellIDs = {}
 local currentSpecKey
-
--- Only major burst activators/sequencing skills are reserved by default.
--- Short rotational cooldowns intentionally stay available in reserve mode:
--- Frozen Orb is used on cooldown in TWW S3 Frost, and Meteor is not forced
--- into Combustion in TWW S3 Fire.
-local DEFAULT_RESERVED_SPELLS = {
-    MAGE_1 = { 365350, 12051, 321507 },                  -- Arcane Surge, Evocation, Touch of the Magi
-    MAGE_2 = { 190319 },                                -- Combustion
-    MAGE_3 = { 12472 },                                 -- Icy Veins
-    DEATHKNIGHT_1 = { 49028 },                          -- Dancing Rune Weapon
-    DEATHKNIGHT_2 = { 51271, 152279, 47568, 279302, 439843 }, -- Pillar, Breath, ERW, Frostwyrm, Reaper's Mark
-    DEATHKNIGHT_3 = { 63560, 42650, 275699, 207289, 49206, 390279 }, -- DT, Army, Apocalypse, UA, Gargoyle, Vile Contagion
-}
+local currentPolicy
 local getSpellData
 
 local PAD_ATLAS_TO_KEY = {
@@ -86,13 +75,22 @@ local function copyTable(source)
     return result
 end
 
-local function getSpecKey()
+local function getSpecContext()
     local _, classFile = UnitClass("player")
     local spec = GetSpecialization and GetSpecialization()
     if not classFile or not spec then
         return nil
     end
-    return classFile .. "_" .. tostring(spec)
+
+    local storageKey = classFile .. "_" .. tostring(spec)
+    local policy = PolicyRegistry and PolicyRegistry.Resolve
+        and PolicyRegistry.Resolve(classFile, spec) or nil
+    return storageKey, classFile, spec, policy
+end
+
+local function getSpecKey()
+    local storageKey = getSpecContext()
+    return storageKey
 end
 
 local function addReservedSpell(spellID)
@@ -126,18 +124,20 @@ end
 
 local function refreshReservedSpells()
     reservedSpellIDs = {}
-    currentSpecKey = getSpecKey()
+    local storageKey, _, _, policy = getSpecContext()
+    currentSpecKey = storageKey
+    currentPolicy = policy
     if not currentSpecKey then
         return
     end
 
-    for _, spellID in ipairs(DEFAULT_RESERVED_SPELLS[currentSpecKey] or {}) do
+    for _, spellID in ipairs(currentPolicy and currentPolicy.reserve or {}) do
         addReservedSpell(spellID)
     end
 
-    -- Follow JustAC's current per-spec trigger configuration. This keeps the
-    -- bridge aligned with future JustAC DK/Mage defaults without rebuilding an
-    -- APL in this low-latency transport addon.
+    -- Follow JustAC's current per-spec trigger configuration for every class.
+    -- Registered policies add compatibility defaults; unregistered/new classes
+    -- still work in JustAC-only mode without changing this bridge core.
     if BurstInjectionEngine and BurstInjectionEngine.GetDetectedTriggers and JustACAddon then
         local ok, triggers = pcall(BurstInjectionEngine.GetDetectedTriggers, JustACAddon)
         if ok and type(triggers) == "table" then
@@ -451,6 +451,20 @@ local function updateSavedExport(dataRows)
     JustACBridgeExport.isCasting = playerIsCasting
     JustACBridgeExport.playerState = playerIsChanneling and "channeling"
         or (playerIsCasting and "casting" or "idle")
+    JustACBridgeExport.policy = currentPolicy and {
+        storageKey = currentPolicy.storageKey,
+        id = currentPolicy.id,
+        ruleset = currentPolicy.ruleset,
+        revision = currentPolicy.revision,
+        interfaceVersion = currentPolicy.interfaceVersion,
+    } or {
+        storageKey = currentSpecKey,
+        id = "justac-only",
+        ruleset = "dynamic",
+        revision = 0,
+        interfaceVersion = PolicyRegistry and PolicyRegistry.GetInterfaceVersion
+            and PolicyRegistry.GetInterfaceVersion() or 0,
+    }
     JustACBridgeExport.first = copyTable(dataRows[1])
     JustACBridgeExport.lossless = copyTable(dataRows[1])
     JustACBridgeExport.reserveBurst = copyTable(dataRows[2])
@@ -906,8 +920,12 @@ SlashCmdList.JUSTACBRIDGE = function(message)
             ids[#ids + 1] = spellID
         end
         table.sort(ids)
-        print(("|cff40a9ffJustACBridge:|r 保留法术（%s）：%s")
-            :format(currentSpecKey or "unknown", #ids > 0 and table.concat(ids, ", ") or "无"))
+        local policyLabel = currentPolicy
+            and (currentPolicy.id .. "/" .. currentPolicy.ruleset .. " r" .. tostring(currentPolicy.revision))
+            or "JustAC dynamic"
+        print(("|cff40a9ffJustACBridge:|r 保留法术（%s，策略 %s）：%s")
+            :format(currentSpecKey or "unknown", policyLabel,
+                #ids > 0 and table.concat(ids, ", ") or "无"))
     elseif command == "show" then
         API.Show()
     elseif command == "hide" then

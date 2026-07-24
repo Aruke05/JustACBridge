@@ -3,8 +3,11 @@
 ## Notes: Exposes lossless and burst-preserving JustAC actions and their hotkeys.
 ## Notes-zhCN: 导出 JustAC 无损版与保留爆发版动作及其快捷键。
 ## Author: JustACBridge
-## Version: 2.1.1
+## Version: 2.2.0
 ## Dependencies: JustAC
 ## SavedVariables: JustACBridgeDB, JustACBridgeExport
 
+Policies\Registry.lua
+Policies\Mage.lua
+Policies\DeathKnight.lua
 JustACBridge.lua
