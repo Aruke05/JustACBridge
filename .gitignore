@@ -1,0 +1,19 @@
+# .NET build output
+**/bin/
+**/obj/
+**/dist/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+
+# Local packages and logs
+packages/
+*.log
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+

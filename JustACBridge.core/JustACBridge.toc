@@ -1,0 +1,10 @@
+## Interface: 120007
+## Title: JustACBridge
+## Notes: Exposes the first two JustAC recommendations and their hotkeys.
+## Notes-zhCN: 导出 JustAC 前两个推荐技能及其快捷键。
+## Author: JustACBridge
+## Version: 1.0.0
+## Dependencies: JustAC
+## SavedVariables: JustACBridgeDB, JustACBridgeExport
+
+JustACBridge.lua
