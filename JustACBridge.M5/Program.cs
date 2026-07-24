@@ -10,6 +10,8 @@ internal static class Program
     {
         if (args.Contains("--self-test", StringComparer.OrdinalIgnoreCase))
             return SelfTest.Run();
+        if (args.Contains("--hook-test", StringComparer.OrdinalIgnoreCase))
+            return SelfTest.HookSmoke();
         if (args.Contains("--probe", StringComparer.OrdinalIgnoreCase))
         {
             NativeMethods.SetProcessDpiAwarenessContext(new nint(-4));

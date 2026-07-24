@@ -1,11 +1,10 @@
-# JustACBridge 实时像素协议 v1（规范）
+# JustACBridge 实时像素协议 v2（规范）
 
-> **给 Codex/实现者的结论：** 这是一个把 JustAC 前两个推荐技能及快捷键从
+> **给实现者的结论：** 这是一个把“无损版”和“保留爆发版”两个动作及快捷键从
 > WoW 插件传给 Windows 外部程序的只读、低延迟屏幕协议。不要用
 > SavedVariables 做实时读取。外部程序应捕获 WoW **客户区左上角附近**的
 > 黑白位矩阵，自动拟合像素单元间距，恢复 72 字节，最后验证协议头、尾部和
-> 三项校验。仓库中的规范实现是
-> `reader_test/justacbridge_reader.py`。
+> 三项校验。仓库中的规范实现是 `JustACBridge.M5/Protocol.cs`。
 
 本文是自包含规范；只阅读本文即可重新实现兼容读取器。
 
@@ -14,7 +13,7 @@
 ```text
 JustAC-SpellQueue.GetCurrentSpellQueue()
         ↓
-JustACBridge 取队列前两项
+JustACBridge 生成无损/保留爆发两个动作
         ↓
 JustAC-ActionBarScanner.GetSpellHotkey()
         ↓
@@ -27,8 +26,7 @@ JustAC-ActionBarScanner.GetSpellHotkey()
 
 - 插件每个渲染帧检查一次队列。
 - JustAC 自身对队列计算有约 30/50 ms 的内部节流。
-- 外部参考读取器默认每 5 ms 捕获一次。
-- 当前机器实测持续解码平均约 4.15 ms，P95 约 5.55 ms。
+- Windows 读取器可连续捕获，或选择每 5 ms 捕获一次。
 - `SavedVariables` 仅在退出或 `/reload` 时落盘，只是持久化备份，不是实时链路。
 
 ## 2. 屏幕传输层
@@ -104,15 +102,15 @@ y = originY + floor((row    + 0.5) * pitch)
 | 偏移 | 大小 | 字段 | 说明 |
 |---:|---:|---|---|
 | 0 | 3 | `magic` | ASCII `JAC`，十六进制 `4A 41 43` |
-| 3 | 1 | `version` | 当前固定为 `1` |
+| 3 | 1 | `version` | 当前为 `2`；Windows 读取器能诊断旧版 `1`，但不会把旧版第二项映射为保爆动作 |
 | 4 | 2 | `sequence` | 变化序号，uint16 little-endian，会回绕 |
 | 6 | 1 | `flags` | 推荐存在、类型、按键状态，见下一节 |
-| 7 | 3 | `firstID` | 第一推荐的法术或物品 ID，uint24 little-endian |
-| 10 | 1 | `firstKeyLength` | 第一快捷键字节数，范围 `0..24` |
-| 11 | 24 | `firstKey` | 第一快捷键 UTF-8/ASCII，尾部补零 |
-| 35 | 3 | `secondID` | 第二推荐的法术或物品 ID，uint24 little-endian |
-| 38 | 1 | `secondKeyLength` | 第二快捷键字节数，范围 `0..24` |
-| 39 | 24 | `secondKey` | 第二快捷键 UTF-8/ASCII，尾部补零 |
+| 7 | 3 | `losslessID` | 无损版动作的法术或物品 ID，uint24 little-endian |
+| 10 | 1 | `losslessKeyLength` | 无损版快捷键字节数，范围 `0..24` |
+| 11 | 24 | `losslessKey` | 无损版快捷键 UTF-8/ASCII，尾部补零 |
+| 35 | 3 | `preserveID` | 保留爆发版动作的法术或物品 ID，uint24 little-endian |
+| 38 | 1 | `preserveKeyLength` | 保留爆发版快捷键字节数，范围 `0..24` |
+| 39 | 24 | `preserveKey` | 保留爆发版快捷键 UTF-8/ASCII，尾部补零 |
 | 63 | 3 | `gameTickMs` | `floor(GetTime()*1000) mod 2^24`，uint24 LE |
 | 66 | 1 | `sum1` | 对字节 `0..65` 的 Fletcher sum1 |
 | 67 | 1 | `sum2` | 对字节 `0..65` 的 Fletcher sum2 |
@@ -123,12 +121,12 @@ y = originY + floor((row    + 0.5) * pitch)
 
 | 位掩码 | 含义 |
 |---:|---|
-| `0x01` | 第一推荐存在 |
-| `0x02` | 第一推荐是物品；未设置时是法术 |
-| `0x04` | 第一推荐已找到快捷键 |
-| `0x08` | 第二推荐存在 |
-| `0x10` | 第二推荐是物品；未设置时是法术 |
-| `0x20` | 第二推荐已找到快捷键 |
+| `0x01` | 无损版动作存在 |
+| `0x02` | 无损版动作是物品；未设置时是法术 |
+| `0x04` | 无损版动作已找到快捷键 |
+| `0x08` | 保留爆发版动作存在 |
+| `0x10` | 保留爆发版动作是物品；未设置时是法术 |
+| `0x20` | 保留爆发版动作已找到快捷键 |
 | `0x40` | 玩家正在持续引导（channeling） |
 | `0x80` | 玩家正在普通读条或蓄力施法（casting/empowering） |
 
@@ -148,7 +146,19 @@ JustAC 用负数表示队列中的物品，例如 `-5512`。协议中发送正 I
 推荐不存在时，相应 exists flag 清零，ID 和长度为零。读取器应以 exists flag
 为准，而不是只判断 ID。
 
-### 3.2 快捷键
+### 3.2 双动作语义
+
+- **无损版**：严格使用 JustAC 当前第一推荐，不改写 JustAC/暴雪优先级。
+- **保留爆发版**：若第一推荐不是保留项，则与无损版相同；若是保留项，则在
+  JustAC 队列中选第一个非保留、当前可用且已绑定快捷键的动作；仅用于展示的
+  缺资源或冷却中条目不会被选中。
+- 保留项包括当前专精的大爆发触发技能，以及队列中的药水/主动饰品。
+- 法师按 S3 循环做了例外：寒冰宝珠和流星仍可按循环使用，不因“保爆发”
+  被长期扣住。
+- 保留列表来自内置 DK/法师规则和 JustAC 当前专精的 Burst Trigger 配置，
+  可用 `/jacb reserve ...` 按法术 ID 覆盖。
+
+### 3.3 快捷键
 
 - 传输的是 JustACBridge 的 `plainHotkey`，不是 WoW 的纹理转义字符串。
 - 键盘示例：`1`、`SHIFT-1`、`CTRL-F`。
@@ -157,7 +167,7 @@ JustAC 用负数表示队列中的物品，例如 `-5512`。协议中发送正 I
 - 名称不在像素协议中。外部程序得到的是 ID、类型和快捷键；需要名称时自行按
   ID 查询，或在非实时场景读取 SavedVariables。
 
-### 3.3 sequence 与 gameTickMs
+### 3.4 sequence 与 gameTickMs
 
 - `sequence` 只占 16 位，比较时必须允许 `65535 → 0` 回绕。
 - 读取器通常只在 sequence 变化时向上游输出新结果。
@@ -183,7 +193,7 @@ for value in payload[0:66]:
 
 ```text
 payload[0:3]   == b"JAC"
-payload[3]     == 1
+payload[3]     == 2       # 当前发送版本
 payload[66]    == sum1
 payload[67]    == sum2
 payload[68]    == rolling
@@ -201,7 +211,7 @@ payload[69:72] == b"END"
   → 若无缓存几何参数：用 JAC + 校验拟合 pitch/origin
   → 恢复 576 bit / 72 byte
   → 校验 JAC、version、三项 checksum、END
-  → 解析 flags、两个 ID、两个 hotkey
+  → 解析 flags、无损/保爆两个 ID 与 hotkey
   → sequence 未变化：不重复输出
   → sequence 变化：输出新推荐
   → 校验失败：丢帧并重新拟合几何参数
@@ -215,7 +225,7 @@ GDI `BitBlt` 读取桌面表面时，WoW 窗口需要可见且不被其他窗口
 Windows Graphics Capture 或 Desktop Duplication API 的实现可以避免部分遮挡问题，
 但解码协议完全相同。
 
-## 6. 实际有效包示例
+## 6. v1 兼容包示例
 
 本机从正在运行的 WoW 实际读取到：
 
@@ -233,14 +243,14 @@ raw_hex =
   "game_tick_ms": 13117632,
   "is_channeling": false,
   "is_casting": false,
-  "first": {
+  "first_legacy": {
     "exists": true,
     "kind": "spell",
     "id": 84714,
     "hotkey": "4",
     "bound": true
   },
-  "second": {
+  "second_legacy": {
     "exists": true,
     "kind": "spell",
     "id": 30455,
@@ -250,31 +260,21 @@ raw_hex =
 }
 ```
 
+v1 的第二槽只是“队列第二项”，不具备保留爆发语义。v2 客户端读取到 v1 时只
+启用无损槽，并提示升级 WoW 插件。
+
 ## 7. 仓库内参考实现与测试
 
-规范读取器：
-
-```text
-reader_test/justacbridge_reader.py
-```
-
-离线测试：
+离线协议、几何和按键测试：
 
 ```powershell
-cd reader_test
-python -m unittest -v
+dotnet run --project ..\JustACBridge.M5 -- --self-test
 ```
 
 实时读取一次：
 
 ```powershell
-python justacbridge_reader.py --once --timeout-seconds 10 --debug-errors
-```
-
-持续 JSON Lines：
-
-```powershell
-python justacbridge_reader.py --json
+dotnet run --project ..\JustACBridge.M5 -- --probe
 ```
 
 游戏内控制：
@@ -282,13 +282,17 @@ python justacbridge_reader.py --json
 ```text
 /jacb pixels on
 /jacb pixels off
+/jacb reserve list
+/jacb reserve add <法术ID>
+/jacb reserve remove <法术ID>
+/jacb reserve reset
 ```
 
 矩阵默认开启，并且独立于普通两行 UI；隐藏普通面板不会关闭像素接口。
 
 ## 8. 兼容性要求摘要
 
-兼容 v1 的读取器必须：
+兼容 v2 的读取器必须：
 
 1. 按 48×12、row-major、MSB-first 恢复 72 字节。
 2. 自动适配实际物理 pitch，不硬编码 3 像素。
