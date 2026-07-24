@@ -7,10 +7,12 @@ internal sealed class HotkeyBinding
     private readonly NativeMethods.INPUT[] _pressInputs;
     private readonly NativeMethods.INPUT[] _releaseInputs;
     internal string Display { get; }
+    internal string Canonical { get; }
 
-    private HotkeyBinding(string display, List<Stroke> modifiers, Stroke key)
+    private HotkeyBinding(string display, string canonical, List<Stroke> modifiers, Stroke key)
     {
         Display = display;
+        Canonical = canonical;
         _modifiers = modifiers;
         _key = key;
         _pressInputs = [.. modifiers.Select(x => x.Input(false)), key.Input(false)];
@@ -22,7 +24,8 @@ internal sealed class HotkeyBinding
         binding = null;
         error = "";
         if (string.IsNullOrWhiteSpace(text)) { error = "快捷键为空"; return false; }
-        string remaining = text.Trim().ToUpperInvariant();
+        string canonical = ExpandJustAcAbbreviation(text.Trim().ToUpperInvariant());
+        string remaining = canonical;
         var modifiers = new List<Stroke>();
         while (true)
         {
@@ -42,8 +45,90 @@ internal sealed class HotkeyBinding
             error = keyName.StartsWith("PAD", StringComparison.Ordinal) ? "手柄键暂不支持 SendInput" : $"不支持的键名：{keyName}";
             return false;
         }
-        binding = new HotkeyBinding(text, modifiers, key);
+        binding = new HotkeyBinding(text, canonical, modifiers, key);
         return true;
+    }
+
+    private static string ExpandJustAcAbbreviation(string value)
+    {
+        if (value.StartsWith("SHIFT-", StringComparison.Ordinal) ||
+            value.StartsWith("CTRL-", StringComparison.Ordinal) ||
+            value.StartsWith("CONTROL-", StringComparison.Ordinal) ||
+            value.StartsWith("ALT-", StringComparison.Ordinal))
+            return value;
+
+        // JustAC abbreviates keyboard modifiers without separators: SHIFT-5
+        // becomes S5, SHIFT-V becomes SV, and SHIFT-CTRL-5 becomes SC5.
+        // Prefer that interpretation for S/C/A + a valid key; standalone
+        // special-key aliases are handled below when no modifier split works.
+        int maxModifiers = Math.Min(3, value.Length - 1);
+        for (int count = maxModifiers; count >= 1; count--)
+        {
+            string prefix = value[..count];
+            if (prefix.Any(character => character is not ('S' or 'C' or 'A')))
+                continue;
+            if (!TryExpandJustAcKey(value[count..], out string key))
+                continue;
+
+            var expanded = new System.Text.StringBuilder();
+            foreach (char modifier in prefix)
+            {
+                expanded.Append(modifier switch
+                {
+                    'S' => "SHIFT-",
+                    'C' => "CTRL-",
+                    'A' => "ALT-",
+                    _ => ""
+                });
+            }
+            expanded.Append(key);
+            return expanded.ToString();
+        }
+
+        return TryExpandJustAcKey(value, out string expandedKey) ? expandedKey : value;
+    }
+
+    private static bool TryExpandJustAcKey(string value, out string expanded)
+    {
+        expanded = value switch
+        {
+            "M1" => "BUTTON1",
+            "M2" => "BUTTON2",
+            "M3" => "BUTTON3",
+            "M4" => "BUTTON4",
+            "M5" => "BUTTON5",
+            "MWU" => "MOUSEWHEELUP",
+            "MWD" => "MOUSEWHEELDOWN",
+            "N/" => "NUMPADDIVIDE",
+            "N*" => "NUMPADMULTIPLY",
+            "N-" => "NUMPADMINUS",
+            "N+" => "NUMPADPLUS",
+            "N." => "NUMPADDECIMAL",
+            "NE" => "NUMPADENTER",
+            "NLK" => "NUMLOCK",
+            "PU" => "PAGEUP",
+            "PD" => "PAGEDOWN",
+            "INS" => "INSERT",
+            "DEL" => "DELETE",
+            "HM" => "HOME",
+            "DN" => "DOWN",
+            "LT" => "LEFT",
+            "RT" => "RIGHT",
+            "BS" => "BACKSPACE",
+            "CL" => "CAPSLOCK",
+            "ESC" => "ESCAPE",
+            "PS" => "PRINTSCREEN",
+            "SL" => "SCROLLLOCK",
+            "PA" => "PAUSE",
+            "SPC" => "SPACE",
+            "TAB" => "TAB",
+            "ENT" => "ENTER",
+            _ when value.Length == 2 && value[0] == 'N' && value[1] is >= '0' and <= '9' =>
+                "NUMPAD" + value[1],
+            _ => value
+        };
+
+        return Stroke.CanCreate(expanded);
     }
 
     internal void Press()
@@ -76,6 +161,13 @@ internal sealed class HotkeyBinding
             if (vk == 0) return false;
             stroke = Keyboard(vk);
             return stroke.Scan != 0;
+        }
+
+        internal static bool CanCreate(string name)
+        {
+            if (TryMouse(name, out _)) return true;
+            ushort vk = KeyToVirtualKey(name);
+            return vk != 0 && Keyboard(vk).Scan != 0;
         }
 
         private static bool TryMouse(string name, out Stroke stroke)
@@ -121,6 +213,8 @@ internal sealed class HotkeyBinding
                 "CAPSLOCK" => 0x14,
                 "NUMLOCK" => 0x90,
                 "SCROLLLOCK" => 0x91,
+                "PRINTSCREEN" => 0x2C,
+                "PAUSE" => 0x13,
                 "INSERT" => 0x2D,
                 "DELETE" => 0x2E,
                 "HOME" => 0x24,

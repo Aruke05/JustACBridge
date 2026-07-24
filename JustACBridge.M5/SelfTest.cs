@@ -61,13 +61,37 @@ internal static unsafe class SelfTest
             }
         }
 
-        string[] supported = ["1", "SHIFT-1", "CTRL-F", "ALT-NUMPAD1", "BUTTON4", "MOUSEWHEELUP", "-"];
+        string[] supported =
+        [
+            "1", "SHIFT-1", "CTRL-F", "ALT-NUMPAD1", "BUTTON4", "MOUSEWHEELUP", "-",
+            "S5", "SV", "C1", "AV", "SC5", "M4", "MwU", "N1", "SSpc"
+        ];
         foreach (string key in supported)
         {
             if (!HotkeyBinding.TryParse(key, out _, out string error))
             {
                 Console.Error.WriteLine($"hotkey self-test failed: {key}: {error}");
                 return 4;
+            }
+        }
+        Dictionary<string, string> abbreviatedBindings = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["S5"] = "SHIFT-5",
+            ["SV"] = "SHIFT-V",
+            ["C1"] = "CTRL-1",
+            ["AV"] = "ALT-V",
+            ["SC5"] = "SHIFT-CTRL-5",
+            ["M4"] = "BUTTON4",
+            ["MwU"] = "MOUSEWHEELUP",
+            ["N1"] = "NUMPAD1",
+            ["SSpc"] = "SHIFT-SPACE"
+        };
+        foreach ((string abbreviated, string canonical) in abbreviatedBindings)
+        {
+            if (!HotkeyBinding.TryParse(abbreviated, out var parsed, out _) || parsed?.Canonical != canonical)
+            {
+                Console.Error.WriteLine($"abbreviated hotkey self-test failed: {abbreviated} -> {parsed?.Canonical}");
+                return 12;
             }
         }
         int inputSize = System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.INPUT>();
