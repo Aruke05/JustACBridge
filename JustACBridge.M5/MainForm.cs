@@ -44,7 +44,7 @@ internal sealed class MainForm : Form
         };
         panel.Controls.Add(_state);
         panel.Controls.Add(_window);
-        panel.Controls.Add(new Label { AutoSize = true, Text = "无损版（完整 JustAC 第一推荐）：", Margin = new Padding(3, 16, 3, 0) });
+        panel.Controls.Add(new Label { AutoSize = true, Text = "主推荐（第一推荐不可移动施放或超出射程时使用安全替代）：", Margin = new Padding(3, 16, 3, 0) });
         panel.Controls.Add(_lossless);
         panel.Controls.Add(_setLossless);
         panel.Controls.Add(new Label { AutoSize = true, Text = "保留爆发版（跳过大爆发、药水和主动饰品）：", Margin = new Padding(3, 12, 3, 0) });
@@ -55,7 +55,7 @@ internal sealed class MainForm : Form
         {
             AutoSize = true,
             ForeColor = Color.RoyalBlue,
-            Text = "按住功能键自动连发；读条、蓄力和引导期间暂停，施法结束后继续。"
+            Text = "按住功能键自动连发；施法期间保护，允许奥术飞弹在 GCD 末按循环截断。"
         });
         panel.Controls.Add(_enabled);
         panel.Controls.Add(_extreme);
