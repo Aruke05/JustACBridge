@@ -14,7 +14,17 @@ JustAC 队列读取。
 
 ## 游戏版本变动
 
-稳定的默认规则放在专精的 `reserve` 中。版本差异放在 `versions`，无需修改主循环：
+稳定的默认规则放在专精的 `reserve` 中。职业或专精还可以登记：
+
+- `moveCastAlways`：自身带读条，但天生允许移动施放的技能。
+- `moveCastBuffs`：激活后允许该职业移动施法的玩家 Buff。
+- `clipChannels`：循环明确要求可在 GCD 末主动截断的引导技能。引导状态仍会导出，
+  但不会一直占用动作队列。
+- `rangeSequenceRules`：只在目标被明确判定超过指定距离时调整技能先后；距离未知时
+  不改 JustAC 原顺序。
+- `groundEffects`：成功放置后按持续时间跟踪的场地技能，可在仍有效时抑制重复推荐。
+
+版本差异放在 `versions`，无需修改主循环：
 
 ```lua
 [2] = {
@@ -22,6 +32,26 @@ JustAC 队列读取。
     name = "示例",
     revision = 2,
     reserve = { 1001, 1002 },
+    moveCastAlways = { 3001 },
+    moveCastBuffs = { 4001 },
+    clipChannels = { 5001 },
+    rangeSequenceRules = {
+        {
+            requiresSpell = 6001,
+            beyond = 20,
+            defer = { 6002 },
+            prefer = { 6003 },
+        },
+    },
+    groundEffects = {
+        {
+            id = "example-ground",
+            name = "示例场地",
+            spells = { 7001, 7002 },
+            duration = 10,
+            suppressRepeat = true,
+        },
+    },
     versions = {
         {
             id = "12.1",
@@ -45,6 +75,11 @@ JustAC 队列读取。
 
 - Interface 区间匹配时，`minInterface` 最大的补丁生效。
 - `reserve` 表示完整替换；`removeReserve` 后执行 `addReserve`。
+- 移动规则对应支持 `moveCastAlways/moveCastBuffs` 完整替换，以及
+  `add/removeMoveCastAlways`、`add/removeMoveCastBuffs` 增量修改。
+- 引导规则支持 `clipChannels` 完整替换和 `add/removeClipChannels` 增量修改；
+  距离顺序规则支持 `rangeSequenceRules` 完整替换和 `addRangeSequenceRules` 追加。
+- 场地规则支持 `groundEffects` 完整替换和 `addGroundEffects` 追加。
 - 玩家 `/jacb reserve add/remove` 最后执行，始终高于内置策略。
 - SavedVariables 继续使用稳定键 `CLASSFILE_<专精序号>`，拆文件或升版本不会丢失
   现有覆盖。

@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 1
+Registry.schemaVersion = 4
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -24,6 +24,49 @@ local function replaceArray(target, source)
     end
     for index, value in ipairs(source or {}) do
         target[index] = value
+    end
+end
+
+local function copyRangeSequenceRules(source)
+    local result = {}
+    for index, rule in ipairs(source or {}) do
+        if type(rule) == "table" then
+            result[index] = {
+                requiresSpell = tonumber(rule.requiresSpell),
+                beyond = tonumber(rule.beyond),
+                defer = copyArray(rule.defer),
+                prefer = copyArray(rule.prefer),
+            }
+        end
+    end
+    return result
+end
+
+local function appendRangeSequenceRules(target, source)
+    for _, rule in ipairs(copyRangeSequenceRules(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+local function copyGroundEffects(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        if type(rule) == "table" then
+            result[#result + 1] = {
+                id = rule.id,
+                name = rule.name,
+                spells = copyArray(rule.spells),
+                duration = tonumber(rule.duration),
+                suppressRepeat = rule.suppressRepeat ~= false,
+            }
+        end
+    end
+    return result
+end
+
+local function appendGroundEffects(target, source)
+    for _, rule in ipairs(copyGroundEffects(source)) do
+        target[#target + 1] = rule
     end
 end
 
@@ -116,7 +159,17 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         interfaceVersion = interfaceVersion,
         ruleset = "base",
         reserve = copyArray(specPolicy.reserve),
+        moveCastAlways = copyArray(classPolicy.moveCastAlways),
+        moveCastBuffs = copyArray(classPolicy.moveCastBuffs),
+        clipChannels = copyArray(classPolicy.clipChannels),
+        rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
+        groundEffects = copyGroundEffects(classPolicy.groundEffects),
     }
+    addUniqueValues(result.moveCastAlways, specPolicy.moveCastAlways)
+    addUniqueValues(result.moveCastBuffs, specPolicy.moveCastBuffs)
+    addUniqueValues(result.clipChannels, specPolicy.clipChannels)
+    appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
+    appendGroundEffects(result.groundEffects, specPolicy.groundEffects)
 
     local patch = selectVersionPatch(specPolicy, interfaceVersion)
     if patch then
@@ -127,6 +180,29 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         end
         removeValues(result.reserve, patch.removeReserve)
         addUniqueValues(result.reserve, patch.addReserve)
+        if patch.moveCastAlways then
+            replaceArray(result.moveCastAlways, patch.moveCastAlways)
+        end
+        if patch.moveCastBuffs then
+            replaceArray(result.moveCastBuffs, patch.moveCastBuffs)
+        end
+        if patch.clipChannels then
+            replaceArray(result.clipChannels, patch.clipChannels)
+        end
+        if patch.rangeSequenceRules then
+            result.rangeSequenceRules = copyRangeSequenceRules(patch.rangeSequenceRules)
+        end
+        if patch.groundEffects then
+            result.groundEffects = copyGroundEffects(patch.groundEffects)
+        end
+        removeValues(result.moveCastAlways, patch.removeMoveCastAlways)
+        addUniqueValues(result.moveCastAlways, patch.addMoveCastAlways)
+        removeValues(result.moveCastBuffs, patch.removeMoveCastBuffs)
+        addUniqueValues(result.moveCastBuffs, patch.addMoveCastBuffs)
+        removeValues(result.clipChannels, patch.removeClipChannels)
+        addUniqueValues(result.clipChannels, patch.addClipChannels)
+        appendRangeSequenceRules(result.rangeSequenceRules, patch.addRangeSequenceRules)
+        appendGroundEffects(result.groundEffects, patch.addGroundEffects)
     end
 
     return result

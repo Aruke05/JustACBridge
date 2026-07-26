@@ -12,6 +12,8 @@ internal static unsafe class PixelProtocol
 {
     internal const int Width = 296;
     internal const int Height = 80;
+    internal const int CaptureOffsetX = 2;
+    internal const int CaptureOffsetY = 7;
     private const int Columns = 48;
     private const int Bytes = 72;
 

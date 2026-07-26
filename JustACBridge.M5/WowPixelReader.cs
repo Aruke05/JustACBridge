@@ -156,7 +156,8 @@ internal sealed unsafe class WowPixelReader : IDisposable
                 if (!name.StartsWith("Wow", StringComparison.OrdinalIgnoreCase)) return true;
                 if (!NativeMethods.GetClientRect(hwnd, out var rect)) return true;
                 int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
-                if (width < PixelProtocol.Width + 2 || height < PixelProtocol.Height + 2) return true;
+                if (width < PixelProtocol.Width + PixelProtocol.CaptureOffsetX ||
+                    height < PixelProtocol.Height + PixelProtocol.CaptureOffsetY) return true;
                 candidates.Add((hwnd, name + ".exe", width * height, hwnd == foreground));
             }
             catch { }
@@ -203,12 +204,17 @@ internal sealed unsafe class WowPixelReader : IDisposable
 
         internal bool Capture(nint hwnd)
         {
-            if (!NativeMethods.GetClientRect(hwnd, out var rect) || rect.Right < PixelProtocol.Width + 2 || rect.Bottom < PixelProtocol.Height + 2)
+            if (!NativeMethods.GetClientRect(hwnd, out var rect) ||
+                rect.Right < PixelProtocol.Width + PixelProtocol.CaptureOffsetX ||
+                rect.Bottom < PixelProtocol.Height + PixelProtocol.CaptureOffsetY)
                 return false;
             var point = new NativeMethods.POINT { X = 0, Y = 0 };
             if (!NativeMethods.ClientToScreen(hwnd, ref point)) return false;
             return NativeMethods.BitBlt(_memoryDc, 0, 0, PixelProtocol.Width, PixelProtocol.Height,
-                _screenDc, point.X + 2, point.Y + 2, NativeMethods.SRCCOPY | NativeMethods.CAPTUREBLT);
+                _screenDc,
+                point.X + PixelProtocol.CaptureOffsetX,
+                point.Y + PixelProtocol.CaptureOffsetY,
+                NativeMethods.SRCCOPY | NativeMethods.CAPTUREBLT);
         }
 
         public void Dispose()

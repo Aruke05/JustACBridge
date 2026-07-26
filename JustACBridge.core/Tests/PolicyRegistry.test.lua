@@ -10,18 +10,29 @@ dofile("JustACBridge.core/Policies/Mage.lua")
 dofile("JustACBridge.core/Policies/DeathKnight.lua")
 
 local registry = JustACBridgePolicyRegistry
-assert(registry.schemaVersion == 1)
+assert(registry.schemaVersion == 4)
 
 local arcane = assert(registry.Resolve("MAGE", 1, 120007))
 assert(arcane.storageKey == "MAGE_1" and arcane.id == "arcane")
 assert(#arcane.reserve == 3)
 assert(arcane.reserve[1] == 365350 and arcane.reserve[3] == 321507)
+assert(#arcane.moveCastAlways == 1 and arcane.moveCastAlways[1] == 2948)
+assert(#arcane.moveCastBuffs == 1 and arcane.moveCastBuffs[1] == 108839)
+assert(#arcane.clipChannels == 1 and arcane.clipChannels[1] == 5143)
 
 local frostMage = assert(registry.Resolve("MAGE", 3, 120007))
 assert(#frostMage.reserve == 1 and frostMage.reserve[1] == 12472)
+assert(#frostMage.rangeSequenceRules == 1)
+assert(frostMage.rangeSequenceRules[1].requiresSpell == 431044)
+assert(frostMage.rangeSequenceRules[1].defer[1] == 199786)
+assert(frostMage.rangeSequenceRules[1].prefer[1] == 44614)
 
 local unholy = assert(registry.Resolve("DEATHKNIGHT", 3, 120007))
-assert(#unholy.reserve == 6 and unholy.reserve[2] == 42650)
+assert(#unholy.reserve == 8 and unholy.reserve[3] == 42650)
+assert(#unholy.groundEffects == 1)
+assert(unholy.groundEffects[1].id == "death-and-decay")
+assert(unholy.groundEffects[1].spells[2] == 152280)
+assert(unholy.groundEffects[1].duration == 10)
 
 -- An unregistered class falls back to JustAC-only behavior in the bridge core.
 assert(registry.Resolve("WARRIOR", 1, 120007) == nil)
