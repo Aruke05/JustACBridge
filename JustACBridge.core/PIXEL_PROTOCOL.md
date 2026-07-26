@@ -1,4 +1,4 @@
-# JustACBridge 实时像素协议 v2（规范）
+# JustACBridge 实时像素协议 v3（规范）
 
 > **给实现者的结论：** 这是一个把“无损版”和“保留爆发版”两个动作及快捷键从
 > WoW 插件传给 Windows 外部程序的只读、低延迟屏幕协议。不要用
@@ -102,7 +102,7 @@ y = originY + floor((row    + 0.5) * pitch)
 | 偏移 | 大小 | 字段 | 说明 |
 |---:|---:|---|---|
 | 0 | 3 | `magic` | ASCII `JAC`，十六进制 `4A 41 43` |
-| 3 | 1 | `version` | 当前为 `2`；Windows 读取器能诊断旧版 `1`，但不会把旧版第二项映射为保爆动作 |
+| 3 | 1 | `version` | 当前为 `3`；Windows 读取器兼容旧版 `1/2` |
 | 4 | 2 | `sequence` | 变化序号，uint16 little-endian，会回绕 |
 | 6 | 1 | `flags` | 推荐存在、类型、按键状态，见下一节 |
 | 7 | 3 | `losslessID` | 无损版动作的法术或物品 ID，uint24 little-endian |
@@ -111,7 +111,8 @@ y = originY + floor((row    + 0.5) * pitch)
 | 35 | 3 | `preserveID` | 保留爆发版动作的法术或物品 ID，uint24 little-endian |
 | 38 | 1 | `preserveKeyLength` | 保留爆发版快捷键字节数，范围 `0..24` |
 | 39 | 24 | `preserveKey` | 保留爆发版快捷键 UTF-8/ASCII，尾部补零 |
-| 63 | 3 | `gameTickMs` | `floor(GetTime()*1000) mod 2^24`，uint24 LE |
+| 63 | 1 | `queueReady` | `1` 表示 GCD 空闲或已进入最后约 120 ms 的入队窗口；`0` 表示暂缓输入 |
+| 64 | 2 | `gcdRemainingMs` | 最近一次门控变化时的 GCD 剩余毫秒数，uint16 LE；仅用于状态显示 |
 | 66 | 1 | `sum1` | 对字节 `0..65` 的 Fletcher sum1 |
 | 67 | 1 | `sum2` | 对字节 `0..65` 的 Fletcher sum2 |
 | 68 | 1 | `rolling` | 对字节 `0..65` 的滚动校验 |
@@ -168,12 +169,16 @@ JustAC 用负数表示队列中的物品，例如 `-5512`。协议中发送正 I
 - 名称不在像素协议中。外部程序得到的是 ID、类型和快捷键；需要名称时自行按
   ID 查询，或在非实时场景读取 SavedVariables。
 
-### 3.4 sequence 与 gameTickMs
+### 3.4 sequence 与入队门控
 
 - `sequence` 只占 16 位，比较时必须允许 `65535 → 0` 回绕。
 - 读取器通常只在 sequence 变化时向上游输出新结果。
-- `gameTickMs` 占 24 位，约每 4 小时 39 分 37.216 秒回绕。
-- 不要把 `gameTickMs` 当 Unix 时间；它主要用于识别陈旧截图和调试。
+- 插件通过公共 GCD 法术 `61304` 计算剩余时间。GCD 剩余大于约 120 ms 时
+  `queueReady=0`，外部程序应吞掉功能键但不得发送动作；进入最后窗口或 GCD
+  空闲时变为 `1`。
+- 门控变化会递增 `sequence`，因此读取器无需逐帧处理动态倒计时。
+- v1/v2 的偏移 `63..65` 是旧 `gameTickMs`；兼容读取器应将旧包视为
+  `queueReady=1`，保持历史行为。
 
 ## 4. 校验算法
 
@@ -194,7 +199,7 @@ for value in payload[0:66]:
 
 ```text
 payload[0:3]   == b"JAC"
-payload[3]     == 2       # 当前发送版本
+payload[3]     == 3       # 当前发送版本
 payload[66]    == sum1
 payload[67]    == sum2
 payload[68]    == rolling
@@ -261,7 +266,7 @@ raw_hex =
 }
 ```
 
-v1 的第二槽只是“队列第二项”，不具备保留爆发语义。v2 客户端读取到 v1 时只
+v1 的第二槽只是“队列第二项”，不具备保留爆发语义。当前客户端读取到 v1 时只
 启用无损槽，并提示升级 WoW 插件。
 
 ## 7. 仓库内参考实现与测试
@@ -299,6 +304,6 @@ dotnet run --project ..\JustACBridge.M5 -- --probe
 2. 自动适配实际物理 pitch，不硬编码 3 像素。
 3. 验证 `JAC`、版本、三项校验和 `END`。
 4. 按 flags 区分法术、物品、未绑定与不存在。
-5. 允许 sequence 和 gameTickMs 回绕。
+5. 允许 sequence 回绕，并按 v3 的 `queueReady` 门控输入。
 6. 校验失败时丢弃整帧，不能输出部分结果。
 7. 将 SavedVariables 视为持久化备份，而非实时接口。

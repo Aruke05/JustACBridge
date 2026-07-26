@@ -10,7 +10,11 @@ local ADDON_NAME = ...
 local UPDATE_INTERVAL = 0
 local ROW_COUNT = 2
 local QUEUE_SCAN_COUNT = 8
-local PIXEL_PROTOCOL_VERSION = 2
+local PIXEL_PROTOCOL_VERSION = 3
+-- Do not fill WoW's spell queue for the whole SpellQueueWindow.  Waiting until
+-- the end of the GCD leaves late procs/target changes time to change JustAC's
+-- recommendation while retaining enough margin for the screen-capture bridge.
+local QUEUE_COMMIT_WINDOW_MS = 120
 local PIXEL_BYTE_COUNT = 72
 local PIXEL_BIT_COUNT = PIXEL_BYTE_COUNT * 8
 local PIXEL_COLUMNS = 48
@@ -39,6 +43,8 @@ local lastSignature
 local currentRows = {}
 local playerIsChanneling = false
 local playerIsCasting = false
+local queueReady = true
+local gcdRemainingMs = 0
 local reservedSpellIDs = {}
 local currentSpecKey
 local currentPolicy
@@ -284,7 +290,20 @@ getSpellData = function(queueValue, position)
     return data
 end
 
-local function makeSignature(dataRows)
+local function getGcdState()
+    local cooldown = C_Spell and C_Spell.GetSpellCooldown
+        and C_Spell.GetSpellCooldown(61304)
+    local startTime = type(cooldown) == "table" and tonumber(cooldown.startTime) or 0
+    local duration = type(cooldown) == "table" and tonumber(cooldown.duration) or 0
+    if not startTime or not duration or startTime <= 0 or duration <= 0 then
+        return true, 0
+    end
+
+    local remaining = math.max(0, math.ceil((startTime + duration - GetTime()) * 1000))
+    return remaining <= QUEUE_COMMIT_WINDOW_MS, remaining
+end
+
+local function makeSignature(dataRows, canCommitQueue)
     local parts = {}
     for index = 1, ROW_COUNT do
         local data = dataRows[index]
@@ -301,6 +320,7 @@ local function makeSignature(dataRows)
     end
     parts[ROW_COUNT + 1] = playerIsChanneling and "channeling" or "not-channeling"
     parts[ROW_COUNT + 2] = playerIsCasting and "casting" or "not-casting"
+    parts[ROW_COUNT + 3] = canCommitQueue and "queue-ready" or "queue-wait"
     return table.concat(parts, "\030")
 end
 
@@ -385,8 +405,13 @@ local function updatePixelProtocol(dataRows)
     putU24(bytes, 36, second and (second.spellID or second.itemID) or 0)
     putFixedString(bytes, 39, 40, second and second.plainHotkey or "")
 
-    -- 24-bit game tick in milliseconds helps readers reject stale captures.
-    putU24(bytes, 64, math.floor(GetTime() * 1000))
+    -- v3 queue timing: byte 64 is the commit gate; bytes 65..66 are the
+    -- remaining GCD milliseconds.  The packet only changes when the gate
+    -- crosses the final 120 ms, avoiding per-frame matrix redraws.
+    bytes[64] = queueReady and 1 or 0
+    local remaining = math.min(65535, math.max(0, math.floor(gcdRemainingMs)))
+    bytes[65] = remaining % 256
+    bytes[66] = math.floor(remaining / 256) % 256
 
     -- Fletcher-style checks plus an independent rolling byte checksum.
     local sum1, sum2, rolling = 0, 0, 0
@@ -449,6 +474,8 @@ local function updateSavedExport(dataRows)
     JustACBridgeExport.addon = ADDON_NAME
     JustACBridgeExport.isChanneling = playerIsChanneling
     JustACBridgeExport.isCasting = playerIsCasting
+    JustACBridgeExport.queueReady = queueReady
+    JustACBridgeExport.gcdRemainingMs = gcdRemainingMs
     JustACBridgeExport.playerState = playerIsChanneling and "channeling"
         or (playerIsCasting and "casting" or "idle")
     JustACBridgeExport.policy = currentPolicy and {
@@ -545,12 +572,15 @@ local function refresh()
     end
     local nextRows = { lossless, preserve }
 
-    local signature = makeSignature(nextRows)
+    local nextQueueReady, nextGcdRemainingMs = getGcdState()
+    local signature = makeSignature(nextRows, nextQueueReady)
     if signature == lastSignature then
         return true
     end
 
     lastSignature = signature
+    queueReady = nextQueueReady
+    gcdRemainingMs = nextGcdRemainingMs
     currentRows = nextRows
     updateSavedExport(currentRows)
     updateUI(currentRows)

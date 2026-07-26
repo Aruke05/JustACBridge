@@ -144,19 +144,19 @@ internal sealed class MainForm : Form
             _lastBusy = packet.IsBusy;
             if (packet.IsBusy)
             {
-                _hook.SetActions(null, null, true);
+                _hook.SetActions(null, null, true, false);
             }
             else
             {
                 HotkeyBinding? lossless = ParseBinding(packet.Lossless);
                 HotkeyBinding? preserve = packet.ProtocolVersion >= 2 ? ParseBinding(packet.PreserveBurst) : null;
-                _hook.SetActions(lossless, preserve, false);
+                _hook.SetActions(lossless, preserve, false, packet.QueueReady);
             }
         }
         else
         {
             // Busy 状态下遇到撕裂帧时保持保护，直到读到明确的空闲包。
-            _hook.SetActions(null, null, _lastBusy);
+            _hook.SetActions(null, null, _lastBusy, false);
         }
 
         try { BeginInvoke(() => ApplyUpdate(update)); }
@@ -188,13 +188,21 @@ internal sealed class MainForm : Form
             _state.Text = p.IsChanneling ? "持续引导保护：两个功能键均已屏蔽" : "施法读条保护：两个功能键均已屏蔽";
             _state.ForeColor = Color.RoyalBlue;
         }
+        else if (!p.QueueReady)
+        {
+            _state.Text = $"等待最佳入队窗口：GCD 约剩 {p.GcdRemainingMs}ms";
+            _state.ForeColor = Color.DarkOrange;
+        }
 
         _lossless.Text = $"{_losslessTrigger.Display} → {Format(p.Lossless)}";
         _preserve.Text = p.ProtocolVersion >= 2
             ? $"{_preserveTrigger.Display} → {Format(p.PreserveBurst)}"
             : $"{_preserveTrigger.Display} → — WoW 插件需升级到协议 v2 —";
         string castState = p.IsChanneling ? "channeling" : p.IsCasting ? "casting/empowering" : "idle";
-        _details.Text = $"v{p.ProtocolVersion}  seq={p.Sequence}  tick={p.GameTickMs}  状态={castState}  解码={update.CaptureMs:F2}ms  pitch={update.Geometry}";
+        string timing = p.ProtocolVersion >= 3
+            ? $"入队={(p.QueueReady ? "开放" : "等待")}  gcd≈{p.GcdRemainingMs}ms"
+            : $"tick={p.GameTickMs}  兼容连发";
+        _details.Text = $"v{p.ProtocolVersion}  seq={p.Sequence}  {timing}  状态={castState}  解码={update.CaptureMs:F2}ms  pitch={update.Geometry}";
         _lossless.ForeColor = BindingColor(p.Lossless, p.IsBusy, out string losslessError);
         string preserveError = "";
         _preserve.ForeColor = p.ProtocolVersion >= 2
