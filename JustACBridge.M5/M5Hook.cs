@@ -70,7 +70,7 @@ internal sealed class M5Hook : IDisposable
     private nint _mouseHook;
     private nint _keyboardHook;
     private uint _threadId;
-    private ActionMap _actions = new(null, null, false);
+    private ActionMap _actions = new(null, null, false, false);
     private TriggerMap _triggers = new(TriggerBinding.M5, TriggerBinding.M4);
     private TriggerMap _pendingTriggers = new(TriggerBinding.M5, TriggerBinding.M4);
     private CaptureRequest? _captureRequest;
@@ -114,9 +114,10 @@ internal sealed class M5Hook : IDisposable
 
     internal void CancelCapture() => Volatile.Write(ref _captureRequest, null);
 
-    internal void SetActions(HotkeyBinding? lossless, HotkeyBinding? preserveBurst, bool suppressWithoutBinding)
+    internal void SetActions(HotkeyBinding? lossless, HotkeyBinding? preserveBurst,
+        bool suppressWithoutBinding, bool canPulse)
     {
-        Volatile.Write(ref _actions, new ActionMap(lossless, preserveBurst, suppressWithoutBinding));
+        Volatile.Write(ref _actions, new ActionMap(lossless, preserveBurst, suppressWithoutBinding, canPulse));
         if (_threadId != 0)
             NativeMethods.PostThreadMessage(_threadId, WmActionsChanged, 0, 0);
     }
@@ -257,13 +258,13 @@ internal sealed class M5Hook : IDisposable
         {
             if (actions.Lossless is not null || actions.SuppressWithoutBinding)
                 CancelHeldAction(ref _preserveHeld, blockFollowingUp: true);
-            return PressSlot(trigger, actions.Lossless, actions.SuppressWithoutBinding, ref _losslessHeld);
+            return PressSlot(trigger, actions.Lossless, actions.SuppressWithoutBinding, actions.CanPulse, ref _losslessHeld);
         }
         if (trigger == triggers.PreserveBurst)
         {
             if (actions.PreserveBurst is not null || actions.SuppressWithoutBinding)
                 CancelHeldAction(ref _losslessHeld, blockFollowingUp: true);
-            return PressSlot(trigger, actions.PreserveBurst, actions.SuppressWithoutBinding, ref _preserveHeld);
+            return PressSlot(trigger, actions.PreserveBurst, actions.SuppressWithoutBinding, actions.CanPulse, ref _preserveHeld);
         }
         return false;
     }
@@ -276,7 +277,7 @@ internal sealed class M5Hook : IDisposable
     }
 
     private bool PressSlot(TriggerBinding trigger, HotkeyBinding? binding, bool suppressWithoutBinding,
-        ref HeldAction? held)
+        bool canPulse, ref HeldAction? held)
     {
         if (held?.Trigger == trigger || _blockedUps.Contains(trigger))
             return true; // Ignore keyboard auto-repeat and consumed downs.
@@ -284,7 +285,8 @@ internal sealed class M5Hook : IDisposable
         if (binding is not null)
         {
             held = new HeldAction(trigger);
-            Pulse(binding);
+            if (canPulse)
+                Pulse(binding);
             return true;
         }
         if (!suppressWithoutBinding)
@@ -318,7 +320,7 @@ internal sealed class M5Hook : IDisposable
     {
         if (!_enabled) return;
         ActionMap actions = Volatile.Read(ref _actions);
-        if (actions.SuppressWithoutBinding) return;
+        if (actions.SuppressWithoutBinding || !actions.CanPulse) return;
 
         if (_losslessHeld is not null && actions.Lossless is not null)
         {
@@ -350,7 +352,8 @@ internal sealed class M5Hook : IDisposable
         _ready.Dispose();
     }
 
-    private sealed record ActionMap(HotkeyBinding? Lossless, HotkeyBinding? PreserveBurst, bool SuppressWithoutBinding);
+    private sealed record ActionMap(HotkeyBinding? Lossless, HotkeyBinding? PreserveBurst,
+        bool SuppressWithoutBinding, bool CanPulse);
     private sealed record TriggerMap(TriggerBinding Lossless, TriggerBinding PreserveBurst);
     private sealed record CaptureRequest(ActionSlot Slot);
     private sealed record HeldAction(TriggerBinding Trigger);

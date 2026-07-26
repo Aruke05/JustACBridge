@@ -16,10 +16,31 @@ internal static unsafe class SelfTest
         version2[3] = 2;
         RewriteChecksums(version2);
         if (!PixelProtocol.TryDecode(version2, out var v2Packet) || v2Packet is not { ProtocolVersion: 2 } ||
-            v2Packet.Lossless.Id != 84714 || v2Packet.PreserveBurst.Id != 30455)
+            !v2Packet.QueueReady || v2Packet.Lossless.Id != 84714 || v2Packet.PreserveBurst.Id != 30455)
         {
             Console.Error.WriteLine("protocol v2 self-test failed");
             return 6;
+        }
+        byte[] version3 = (byte[])sample.Clone();
+        version3[3] = 3;
+        version3[63] = 0;
+        version3[64] = 0xDC; // 220 ms
+        version3[65] = 0;
+        RewriteChecksums(version3);
+        if (!PixelProtocol.TryDecode(version3, out var v3Waiting) ||
+            v3Waiting is not { ProtocolVersion: 3, QueueReady: false, GcdRemainingMs: 220 })
+        {
+            Console.Error.WriteLine("protocol v3 queue-wait self-test failed");
+            return 13;
+        }
+        version3[63] = 1;
+        version3[64] = 100;
+        RewriteChecksums(version3);
+        if (!PixelProtocol.TryDecode(version3, out var v3Ready) ||
+            v3Ready is not { QueueReady: true, GcdRemainingMs: 100 })
+        {
+            Console.Error.WriteLine("protocol v3 queue-ready self-test failed");
+            return 14;
         }
         byte[] busy = (byte[])sample.Clone();
         busy[6] |= 0x40;
