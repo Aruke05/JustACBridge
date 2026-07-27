@@ -1,10 +1,10 @@
 # JustACBridge
 
-JustACBridge 是一个由 **WoW 插件**和 **Windows M5 映射器**组成的低延迟桥接工具。
+JustACBridge 是一个由 **WoW 插件**和 **Windows/macOS M4/M5 映射器**组成的低延迟桥接工具。
 
 WoW 插件从可替换的推荐源读取队列并生成“无损版”和“保留爆发版”两个动作；
 默认推荐源为 JustAC，也可接入其他插件或自写循环模块。结果通过屏幕左上角的像素
-矩阵实时导出。Windows 客户端默认将 **M5** 映射为无损版、**M4** 映射为保留爆发版。
+矩阵实时导出。桌面客户端默认将 **M5** 映射为无损版、**M4** 映射为保留爆发版。
 
 ## 功能
 
@@ -26,6 +26,7 @@ WoW 插件从可替换的推荐源读取队列并生成“无损版”和“保�
   尝试使用 WoW TTS 播报“枯萎凋零结束”
 - 点击“设置功能键”后，下一次 M4/M5 或键盘按键即成为新功能键；冲突时自动交换
 - Windows 客户端为自包含单文件程序，无需单独安装 .NET Runtime
+- macOS 客户端为原生 AppKit 应用，支持系统权限检查、M4/M5 与键盘全局映射
 
 ## 项目结构
 
@@ -47,6 +48,11 @@ JustACBridge.core/       WoW 插件与像素协议文档
 JustACBridge.M5/         Windows WinForms 客户端（.NET 10）
   JustACBridge.M5.csproj
   build_m5.ps1
+  README.md
+
+JustACBridge.macOS/      macOS 原生客户端（Swift + AppKit）
+  Package.swift
+  build_macos.sh
   README.md
 ```
 
@@ -105,6 +111,20 @@ World of Warcraft\_retail_\Interface\AddOns\JustACBridge\
 构建项目后运行 `JustACBridge.M5.exe`。界面显示绿色的“实时映射已启用”后，即可使用 M5/M4。
 
 如果 WoW 以管理员身份运行，JustACBridge.M5 也需要以管理员身份运行，否则 Windows 可能阻止输入注入。
+
+### 4. 运行 macOS 客户端
+
+在 macOS 上执行：
+
+```bash
+cd JustACBridge.macOS
+./build_macos.sh
+open dist/JustACBridge.app
+```
+
+首次运行需按系统提示授予屏幕录制、辅助功能和输入监听权限。授权后如未立即生效，
+退出并重新打开应用。详细说明见
+[`JustACBridge.macOS/README.md`](JustACBridge.macOS/README.md)。
 
 ## 构建 Windows 客户端
 
@@ -191,7 +211,7 @@ flowchart LR
 
 ## 注意事项
 
-- 客户端使用 GDI 捕获，WoW 窗口必须可见且不能被遮挡。
+- Windows 客户端使用 GDI 捕获；macOS 客户端使用系统窗口捕获。WoW 窗口需要保持可见，不能完全最小化。
 - 无有效推荐、快捷键未绑定或按键不受支持时，程序不会拦截对应功能键。
 - 保留爆发版只在 JustAC 已计算出的可用队列中选替代动作，不自行重写职业 APL；这样可以保持低延迟，并避免猜测资源、Buff 和目标状态。
 - GCD 空闲时，首次按下及推荐变化立即触发；GCD 尚早时先吞掉功能键并等待最后约 120 ms，再以 20 ms 周期补发，避免旧推荐长期占用 WoW 动作队列。
