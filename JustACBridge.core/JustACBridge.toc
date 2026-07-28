@@ -3,7 +3,7 @@
 ## Notes: Exposes lossless and burst-preserving JustAC actions and their hotkeys.
 ## Notes-zhCN: 导出 JustAC 无损版与保留爆发版动作及其快捷键。
 ## Author: JustACBridge
-## Version: 2.9.0
+## Version: 2.9.1
 ## OptionalDeps: JustAC
 ## SavedVariables: JustACBridgeDB, JustACBridgeExport
 
