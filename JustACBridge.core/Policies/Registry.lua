@@ -164,7 +164,6 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         moveCastBuffs = copyArray(classPolicy.moveCastBuffs),
         moveCastNever = copyArray(classPolicy.moveCastNever),
         clipChannels = copyArray(classPolicy.clipChannels),
-        focusTargetSpells = copyArray(classPolicy.focusTargetSpells),
         rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
         groundEffects = copyGroundEffects(classPolicy.groundEffects),
     }
@@ -173,7 +172,6 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     addUniqueValues(result.moveCastBuffs, specPolicy.moveCastBuffs)
     addUniqueValues(result.moveCastNever, specPolicy.moveCastNever)
     addUniqueValues(result.clipChannels, specPolicy.clipChannels)
-    addUniqueValues(result.focusTargetSpells, specPolicy.focusTargetSpells)
     appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
     appendGroundEffects(result.groundEffects, specPolicy.groundEffects)
 
@@ -201,9 +199,6 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.clipChannels then
             replaceArray(result.clipChannels, patch.clipChannels)
         end
-        if patch.focusTargetSpells then
-            replaceArray(result.focusTargetSpells, patch.focusTargetSpells)
-        end
         if patch.rangeSequenceRules then
             result.rangeSequenceRules = copyRangeSequenceRules(patch.rangeSequenceRules)
         end
@@ -220,8 +215,6 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         addUniqueValues(result.moveCastNever, patch.addMoveCastNever)
         removeValues(result.clipChannels, patch.removeClipChannels)
         addUniqueValues(result.clipChannels, patch.addClipChannels)
-        removeValues(result.focusTargetSpells, patch.removeFocusTargetSpells)
-        addUniqueValues(result.focusTargetSpells, patch.addFocusTargetSpells)
         appendRangeSequenceRules(result.rangeSequenceRules, patch.addRangeSequenceRules)
         appendGroundEffects(result.groundEffects, patch.addGroundEffects)
     end

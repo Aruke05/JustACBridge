@@ -23,8 +23,6 @@ JustAC 队列读取。
 - `moveCastNever`：移动时始终跳过的硬读条技能，优先于移动 Buff 和 Proc 判断。
 - `clipChannels`：循环明确要求可在 GCD 末主动截断的引导技能。引导状态仍会导出，
   但不会一直占用动作队列。
-- `focusTargetSpells`：已学会时通过受保护按钮直接对 WoW `focus` 单位施放的目标型
-  技能；未学会对应变体时不覆盖原动作栏快捷键。
 - `rangeSequenceRules`：只在目标被明确判定超过指定距离时调整技能先后；距离未知时
   不改 JustAC 原顺序。
 - `groundEffects`：成功放置后按持续时间跟踪的场地技能，可在仍有效时抑制重复推荐。
@@ -42,7 +40,6 @@ JustAC 队列读取。
     moveCastBuffs = { 4001 },
     moveCastNever = { 4002 },
     clipChannels = { 5001 },
-    focusTargetSpells = { 5002 },
     rangeSequenceRules = {
         {
             requiresSpell = 6001,
@@ -89,8 +86,6 @@ JustAC 队列读取。
   `add/removeMoveCastAlways`、`add/removeMoveCastBuffs` 增量修改；
   `moveCastNever` 同样支持完整替换和 `add/removeMoveCastNever`。
 - 引导规则支持 `clipChannels` 完整替换和 `add/removeClipChannels` 增量修改；
-- 焦点施法规则支持 `focusTargetSpells` 完整替换和
-  `add/removeFocusTargetSpells` 增量修改；
   距离顺序规则支持 `rangeSequenceRules` 完整替换和 `addRangeSequenceRules` 追加。
 - 场地规则支持 `groundEffects` 完整替换和 `addGroundEffects` 追加。
 - 玩家 `/jacb reserve add/remove` 最后执行，始终高于内置策略。
