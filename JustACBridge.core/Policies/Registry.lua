@@ -159,15 +159,21 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         interfaceVersion = interfaceVersion,
         ruleset = "base",
         reserve = copyArray(specPolicy.reserve),
+        reserveExclusions = copyArray(classPolicy.reserveExclusions),
         moveCastAlways = copyArray(classPolicy.moveCastAlways),
         moveCastBuffs = copyArray(classPolicy.moveCastBuffs),
+        moveCastNever = copyArray(classPolicy.moveCastNever),
         clipChannels = copyArray(classPolicy.clipChannels),
+        focusTargetSpells = copyArray(classPolicy.focusTargetSpells),
         rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
         groundEffects = copyGroundEffects(classPolicy.groundEffects),
     }
+    addUniqueValues(result.reserveExclusions, specPolicy.reserveExclusions)
     addUniqueValues(result.moveCastAlways, specPolicy.moveCastAlways)
     addUniqueValues(result.moveCastBuffs, specPolicy.moveCastBuffs)
+    addUniqueValues(result.moveCastNever, specPolicy.moveCastNever)
     addUniqueValues(result.clipChannels, specPolicy.clipChannels)
+    addUniqueValues(result.focusTargetSpells, specPolicy.focusTargetSpells)
     appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
     appendGroundEffects(result.groundEffects, specPolicy.groundEffects)
 
@@ -180,14 +186,23 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         end
         removeValues(result.reserve, patch.removeReserve)
         addUniqueValues(result.reserve, patch.addReserve)
+        if patch.reserveExclusions then
+            replaceArray(result.reserveExclusions, patch.reserveExclusions)
+        end
         if patch.moveCastAlways then
             replaceArray(result.moveCastAlways, patch.moveCastAlways)
         end
         if patch.moveCastBuffs then
             replaceArray(result.moveCastBuffs, patch.moveCastBuffs)
         end
+        if patch.moveCastNever then
+            replaceArray(result.moveCastNever, patch.moveCastNever)
+        end
         if patch.clipChannels then
             replaceArray(result.clipChannels, patch.clipChannels)
+        end
+        if patch.focusTargetSpells then
+            replaceArray(result.focusTargetSpells, patch.focusTargetSpells)
         end
         if patch.rangeSequenceRules then
             result.rangeSequenceRules = copyRangeSequenceRules(patch.rangeSequenceRules)
@@ -195,12 +210,18 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.groundEffects then
             result.groundEffects = copyGroundEffects(patch.groundEffects)
         end
+        removeValues(result.reserveExclusions, patch.removeReserveExclusions)
+        addUniqueValues(result.reserveExclusions, patch.addReserveExclusions)
         removeValues(result.moveCastAlways, patch.removeMoveCastAlways)
         addUniqueValues(result.moveCastAlways, patch.addMoveCastAlways)
         removeValues(result.moveCastBuffs, patch.removeMoveCastBuffs)
         addUniqueValues(result.moveCastBuffs, patch.addMoveCastBuffs)
+        removeValues(result.moveCastNever, patch.removeMoveCastNever)
+        addUniqueValues(result.moveCastNever, patch.addMoveCastNever)
         removeValues(result.clipChannels, patch.removeClipChannels)
         addUniqueValues(result.clipChannels, patch.addClipChannels)
+        removeValues(result.focusTargetSpells, patch.removeFocusTargetSpells)
+        addUniqueValues(result.focusTargetSpells, patch.addFocusTargetSpells)
         appendRangeSequenceRules(result.rangeSequenceRules, patch.addRangeSequenceRules)
         appendGroundEffects(result.groundEffects, patch.addGroundEffects)
     end

@@ -16,10 +16,15 @@ JustAC 队列读取。
 
 稳定的默认规则放在专精的 `reserve` 中。职业或专精还可以登记：
 
+- `reserveExclusions`：从 JustAC 动态 Burst Trigger 中排除、仍按普通循环使用的技能；
+  玩家显式执行 `/jacb reserve add` 仍可覆盖。
 - `moveCastAlways`：自身带读条，但天生允许移动施放的技能。
 - `moveCastBuffs`：激活后允许该职业移动施法的玩家 Buff。
+- `moveCastNever`：移动时始终跳过的硬读条技能，优先于移动 Buff 和 Proc 判断。
 - `clipChannels`：循环明确要求可在 GCD 末主动截断的引导技能。引导状态仍会导出，
   但不会一直占用动作队列。
+- `focusTargetSpells`：已学会时通过受保护按钮直接对 WoW `focus` 单位施放的目标型
+  技能；未学会对应变体时不覆盖原动作栏快捷键。
 - `rangeSequenceRules`：只在目标被明确判定超过指定距离时调整技能先后；距离未知时
   不改 JustAC 原顺序。
 - `groundEffects`：成功放置后按持续时间跟踪的场地技能，可在仍有效时抑制重复推荐。
@@ -32,9 +37,12 @@ JustAC 队列读取。
     name = "示例",
     revision = 2,
     reserve = { 1001, 1002 },
+    reserveExclusions = { 1003 },
     moveCastAlways = { 3001 },
     moveCastBuffs = { 4001 },
+    moveCastNever = { 4002 },
     clipChannels = { 5001 },
+    focusTargetSpells = { 5002 },
     rangeSequenceRules = {
         {
             requiresSpell = 6001,
@@ -75,9 +83,14 @@ JustAC 队列读取。
 
 - Interface 区间匹配时，`minInterface` 最大的补丁生效。
 - `reserve` 表示完整替换；`removeReserve` 后执行 `addReserve`。
+- 动态保留排除支持 `reserveExclusions` 完整替换和
+  `add/removeReserveExclusions` 增量修改。
 - 移动规则对应支持 `moveCastAlways/moveCastBuffs` 完整替换，以及
-  `add/removeMoveCastAlways`、`add/removeMoveCastBuffs` 增量修改。
+  `add/removeMoveCastAlways`、`add/removeMoveCastBuffs` 增量修改；
+  `moveCastNever` 同样支持完整替换和 `add/removeMoveCastNever`。
 - 引导规则支持 `clipChannels` 完整替换和 `add/removeClipChannels` 增量修改；
+- 焦点施法规则支持 `focusTargetSpells` 完整替换和
+  `add/removeFocusTargetSpells` 增量修改；
   距离顺序规则支持 `rangeSequenceRules` 完整替换和 `addRangeSequenceRules` 追加。
 - 场地规则支持 `groundEffects` 完整替换和 `addGroundEffects` 追加。
 - 玩家 `/jacb reserve add/remove` 最后执行，始终高于内置策略。
