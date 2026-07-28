@@ -55,10 +55,22 @@ local reservedSpellIDs = {}
 local currentSpecKey
 local currentPolicy
 local getSpellData
+local refreshFocusTargetBindings
 local issecretvalue = issecretvalue
 local statusBaseText = ""
 local lastStatusText
 local groundStatusElapsed = 0
+local focusTargetBindingOwner
+local focusTargetButtons = {}
+local focusTargetSpellHotkeys = {}
+local focusTargetBindingsPending = false
+
+-- These keys are internal transport bindings, not user-facing action-bar
+-- bindings.  The desktop clients can inject them on both Windows and macOS,
+-- while the modifier pair keeps them out of the way of normal play.
+local FOCUS_TARGET_BINDINGS = {
+    { wow = "CTRL-SHIFT-F20", plain = "CSF20" },
+}
 
 local PAD_ATLAS_TO_KEY = {
     Gamepad_Gen_1_64 = "PAD1",
@@ -173,6 +185,28 @@ local function removeReservedSpell(spellID)
     end
 end
 
+local function applyReserveExclusions(spellIDs)
+    local excluded = {}
+    for _, spellID in ipairs(spellIDs or {}) do
+        spellID = tonumber(spellID)
+        if spellID and spellID > 0 then
+            excluded[spellID] = true
+            local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
+            if ok and type(displayID) == "number" and displayID > 0 then
+                excluded[displayID] = true
+            end
+        end
+    end
+
+    for spellID in pairs(reservedSpellIDs) do
+        local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
+        if excluded[spellID]
+            or (ok and type(displayID) == "number" and excluded[displayID]) then
+            reservedSpellIDs[spellID] = nil
+        end
+    end
+end
+
 local function refreshReservedSpells()
     reservedSpellIDs = {}
     local storageKey, _, _, policy = getSpecContext()
@@ -186,6 +220,9 @@ local function refreshReservedSpells()
                 return ok and displayID or spellID
             end
         )
+    end
+    if refreshFocusTargetBindings then
+        refreshFocusTargetBindings()
     end
     if not currentSpecKey then
         return
@@ -204,6 +241,11 @@ local function refreshReservedSpells()
             addReservedSpell(type(trigger) == "table" and trigger.spellID or trigger)
         end
     end
+
+    -- Class policy exclusions are applied after JustAC's dynamic Burst Trigger
+    -- list so rotational cooldowns such as Frozen Orb and Ray of Frost remain
+    -- available in preserve mode. Explicit user includes below still win.
+    applyReserveExclusions(currentPolicy and currentPolicy.reserveExclusions)
 
     JustACBridgeDB.reserveOverrides = JustACBridgeDB.reserveOverrides or {}
     local overrides = JustACBridgeDB.reserveOverrides[currentSpecKey]
@@ -298,6 +340,12 @@ local function hasMovementCastBuff()
 end
 
 local function isSpellMoveCastableNow(spellID)
+    -- Some replacement spells share the base button's proc/highlight state.
+    -- Stationary-only policy must win before generic movement buffs or proc
+    -- detection, otherwise a hardcast can leak through while moving.
+    if policyContains("moveCastNever", spellID) then
+        return false
+    end
     if policyContains("moveCastAlways", spellID) or hasMovementCastBuff() then
         return true
     end
@@ -385,6 +433,83 @@ local function isSpellKnown(spellID)
         return ok and known == true
     end
     return false
+end
+
+refreshFocusTargetBindings = function()
+    if InCombatLockdown and InCombatLockdown() then
+        focusTargetBindingsPending = true
+        return false
+    end
+
+    focusTargetBindingsPending = false
+    focusTargetSpellHotkeys = {}
+    if not SetOverrideBindingClick or not ClearOverrideBindings then
+        return false
+    end
+
+    if not focusTargetBindingOwner then
+        focusTargetBindingOwner = CreateFrame(
+            "Frame",
+            "JustACBridgeFocusTargetBindingOwner",
+            UIParent
+        )
+    end
+    ClearOverrideBindings(focusTargetBindingOwner)
+
+    local slot = 0
+    for _, spellID in ipairs(currentPolicy and currentPolicy.focusTargetSpells or {}) do
+        spellID = tonumber(spellID)
+        if spellID and isSpellKnown(spellID) then
+            slot = slot + 1
+            local binding = FOCUS_TARGET_BINDINGS[slot]
+            local info = C_Spell and C_Spell.GetSpellInfo
+                and C_Spell.GetSpellInfo(spellID)
+            if not binding or not info or not info.name then
+                break
+            end
+
+            local button = focusTargetButtons[slot]
+            if not button then
+                button = CreateFrame(
+                    "Button",
+                    "JustACBridgeFocusTargetSpellButton" .. tostring(slot),
+                    UIParent,
+                    "SecureActionButtonTemplate"
+                )
+                button:RegisterForClicks("AnyDown")
+                button:SetSize(1, 1)
+                button:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", -10, -10)
+                button:SetAlpha(0)
+                focusTargetButtons[slot] = button
+            end
+            button:SetAttribute("type", "spell")
+            button:SetAttribute("spell", info.name)
+            button:SetAttribute("unit", "focus")
+            button:SetAttribute("useOnKeyDown", true)
+
+            local ok = pcall(
+                SetOverrideBindingClick,
+                focusTargetBindingOwner,
+                true,
+                binding.wow,
+                button:GetName(),
+                "LeftButton"
+            )
+            if ok then
+                focusTargetSpellHotkeys[spellID] = binding.plain
+            end
+        end
+    end
+    return true
+end
+
+local function getFocusTargetHotkey(queueSpellID)
+    for spellID, hotkey in pairs(focusTargetSpellHotkeys) do
+        if spellListContains({ spellID }, queueSpellID) then
+            return spellID, hotkey
+        end
+    end
+    return nil
 end
 
 local function findRangeSequenceRecommendation(queue, count)
@@ -557,6 +682,13 @@ getSpellData = function(queueValue, position)
 
         local ok, hotkey = sourceCall("GetSpellHotkey", queueValue)
         data.hotkey = ok and hotkey or ""
+
+        local focusTargetSpellID, focusTargetHotkey = getFocusTargetHotkey(queueValue)
+        if focusTargetHotkey then
+            data.hotkey = focusTargetHotkey
+            data.focusTarget = true
+            data.focusTargetSpellID = focusTargetSpellID
+        end
     end
 
     data.plainHotkey = toPlainHotkey(data.hotkey)
@@ -851,7 +983,9 @@ local function updateUI(dataRows)
                     or (data.groundFallback and " · 场地仍存在" or ""))
             row.id:SetText((data.kind == "item"
                 and ("物品 " .. tostring(data.itemID))
-                or ("法术 " .. tostring(data.spellID))) .. fallbackLabel)
+                or ("法术 " .. tostring(data.spellID)))
+                .. (data.focusTarget and " · 焦点施法" or "")
+                .. fallbackLabel)
             row.hotkey:SetText(data.hotkey ~= "" and data.hotkey or "未绑定")
             if data.hotkey ~= "" then
                 row.hotkey:SetTextColor(1, 0.82, 0)
@@ -1241,6 +1375,7 @@ eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 eventFrame:RegisterEvent("PLAYER_TALENT_UPDATE")
 eventFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
+eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 eventFrame:RegisterEvent("PLAYER_STARTED_MOVING")
 eventFrame:RegisterEvent("PLAYER_STOPPED_MOVING")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")
@@ -1314,6 +1449,9 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshPlayerMoving()
         lastSignature = nil
         refreshReservedSpells()
+    elseif event == "PLAYER_REGEN_ENABLED" and focusTargetBindingsPending then
+        refreshFocusTargetBindings()
+        lastSignature = nil
     elseif event == "PLAYER_STARTED_MOVING" then
         playerIsMoving = true
         lastSignature = nil
