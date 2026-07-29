@@ -16,8 +16,7 @@ JustAC 队列读取。
 
 稳定的默认规则放在专精的 `reserve` 中。职业或专精还可以登记：
 
-- `reserveExclusions`：从 JustAC 动态 Burst Trigger 中排除、仍按普通循环使用的技能；
-  玩家显式执行 `/jacb reserve add` 仍可覆盖。
+- `reserveExclusions`：保留爆发版本始终跳过、仅允许无损版本释放的技能。
 - `moveCastAlways`：自身带读条，但天生允许移动施放的技能。
 - `moveCastBuffs`：激活后允许该职业移动施法的玩家 Buff。
 - `moveCastNever`：移动时始终跳过的硬读条技能，优先于移动 Buff 和 Proc 判断。
@@ -80,7 +79,7 @@ JustAC 队列读取。
 
 - Interface 区间匹配时，`minInterface` 最大的补丁生效。
 - `reserve` 表示完整替换；`removeReserve` 后执行 `addReserve`。
-- 动态保留排除支持 `reserveExclusions` 完整替换和
+- 保留版技能排除支持 `reserveExclusions` 完整替换和
   `add/removeReserveExclusions` 增量修改。
 - 移动规则对应支持 `moveCastAlways/moveCastBuffs` 完整替换，以及
   `add/removeMoveCastAlways`、`add/removeMoveCastBuffs` 增量修改；
