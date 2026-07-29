@@ -52,6 +52,7 @@ local playerIsMoving = false
 local queueReady = true
 local gcdRemainingMs = 0
 local reservedSpellIDs = {}
+local reserveExcludedSpellIDs = {}
 local currentSpecKey
 local currentPolicy
 local getSpellData
@@ -173,24 +174,16 @@ local function removeReservedSpell(spellID)
     end
 end
 
-local function applyReserveExclusions(spellIDs)
-    local excluded = {}
+local function refreshReserveExclusions(spellIDs)
+    reserveExcludedSpellIDs = {}
     for _, spellID in ipairs(spellIDs or {}) do
         spellID = tonumber(spellID)
         if spellID and spellID > 0 then
-            excluded[spellID] = true
+            reserveExcludedSpellIDs[spellID] = true
             local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
             if ok and type(displayID) == "number" and displayID > 0 then
-                excluded[displayID] = true
+                reserveExcludedSpellIDs[displayID] = true
             end
-        end
-    end
-
-    for spellID in pairs(reservedSpellIDs) do
-        local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-        if excluded[spellID]
-            or (ok and type(displayID) == "number" and excluded[displayID]) then
-            reservedSpellIDs[spellID] = nil
         end
     end
 end
@@ -200,6 +193,7 @@ local function refreshReservedSpells()
     local storageKey, _, _, policy = getSpecContext()
     currentSpecKey = storageKey
     currentPolicy = policy
+    refreshReserveExclusions(currentPolicy and currentPolicy.reserveExclusions)
     if GroundEffectTracker and GroundEffectTracker.Configure then
         GroundEffectTracker.Configure(
             currentPolicy and currentPolicy.groundEffects or {},
@@ -227,11 +221,6 @@ local function refreshReservedSpells()
         end
     end
 
-    -- Class policy exclusions are applied after JustAC's dynamic Burst Trigger
-    -- list so rotational cooldowns such as Frozen Orb and Ray of Frost remain
-    -- available in preserve mode. Explicit user includes below still win.
-    applyReserveExclusions(currentPolicy and currentPolicy.reserveExclusions)
-
     JustACBridgeDB.reserveOverrides = JustACBridgeDB.reserveOverrides or {}
     local overrides = JustACBridgeDB.reserveOverrides[currentSpecKey]
     if overrides then
@@ -255,6 +244,12 @@ local function isReservedQueueValue(queueValue)
     -- Items in an offensive queue are normally potions/on-use trinkets. Keep
     -- all of them for the player's chosen burst window in reserve mode.
     return queueValue < 0 or reservedSpellIDs[queueValue] == true
+end
+
+local function isReserveExcludedQueueValue(queueValue)
+    return type(queueValue) == "number"
+        and queueValue > 0
+        and reserveExcludedSpellIDs[queueValue] == true
 end
 
 local function isUsableNow(spellID)
@@ -504,7 +499,9 @@ local function findReserveRecommendation(queue, startIndex)
     for index = startIndex or 1, count do
         local queueValue = queue[index]
         if type(queueValue) == "number" and queueValue > 0
-            and not isReservedQueueValue(queueValue) and isUsableNow(queueValue)
+            and not isReservedQueueValue(queueValue)
+            and not isReserveExcludedQueueValue(queueValue)
+            and isUsableNow(queueValue)
             and isSafeQueueValue(queueValue) then
             local data = getSpellData(queueValue, 2)
             if data and data.plainHotkey ~= "" then
@@ -523,6 +520,7 @@ local function findReserveRecommendation(queue, startIndex)
     local ok, spellID = sourceCall("GetHighlightCastSpell")
     if ok and type(spellID) == "number" and spellID > 0
         and spellID ~= queue[1] and not isReservedQueueValue(spellID)
+        and not isReserveExcludedQueueValue(spellID)
         and isUsableNow(spellID) and isSafeQueueValue(spellID) then
         local data = getSpellData(spellID, 2)
         if data and data.plainHotkey ~= "" then
@@ -933,7 +931,9 @@ local function refresh()
 
     local lossless = findSafeRecommendation(queue)
     local preserve
-    if lossless and lossless.plainHotkey ~= "" and not isReservedQueueValue(lossless.queueValue) then
+    if lossless and lossless.plainHotkey ~= ""
+        and not isReservedQueueValue(lossless.queueValue)
+        and not isReserveExcludedQueueValue(lossless.queueValue) then
         preserve = copyTable(lossless)
         preserve.position = 2
     else

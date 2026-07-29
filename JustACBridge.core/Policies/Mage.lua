@@ -4,10 +4,10 @@ if not Registry then
 end
 
 -- Mage policy is intentionally maintained independently from other classes.
--- Frozen Orb and Meteor are not reserved: the referenced TWW S3 rotations use
--- them rotationally rather than holding them for Icy Veins/Combustion.
+-- Frozen Orb and Ray of Frost are exposed only by the lossless action; the
+-- preserve-burst action must skip them without changing JustAC's base queue.
 Registry.RegisterClass("MAGE", {
-    revision = 5,
+    revision = 6,
     -- These are class-wide movement exceptions.  Hardcasts made instant by a
     -- proc are detected live through JustAC's IsSpellProcced API.
     moveCastAlways = {
@@ -43,12 +43,12 @@ Registry.RegisterClass("MAGE", {
         [3] = {
             id = "frost",
             name = "冰霜",
-            revision = 4,
+            revision = 5,
             reserve = {
                 12472, -- Icy Veins
             },
-            -- 即使 JustAC 把它们登记为 Burst Trigger，保留版也应按正常
-            -- 循环施放；玩家仍可用 /jacb reserve add 显式覆盖。
+            -- 只允许无损版释放；保留爆发版在快速复用、队列扫描和高亮
+            -- 回退中都必须跳过这两个技能。
             reserveExclusions = {
                 84714,  -- Frozen Orb
                 205021, -- Ray of Frost
