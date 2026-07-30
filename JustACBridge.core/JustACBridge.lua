@@ -344,10 +344,18 @@ local function isSpellMoveCastableNow(spellID)
         return true
     end
 
+    -- Some hardcasts use a recommendation glow that JustAC exposes through
+    -- IsSpellProcced even though the cast time has not actually become zero.
+    -- Keep native movement buffs and an API-confirmed instant cast above, but
+    -- do not let that ambiguous glow bypass the movement filter.
+    if policyContains("moveCastProcNever", spellID) then
+        return false
+    end
+
     -- Spell metadata contains the base cast time.  JustAC's proc signal is the
-    -- live indication that a hardcast (Frostbolt-like abilities included) has
-    -- currently been converted to an instant cast.  Its implementation also
-    -- resolves override spell IDs and fails closed for secret values.
+    -- fallback live indication that a hardcast has currently been converted
+    -- to an instant cast. Its implementation also resolves override spell IDs
+    -- and fails closed for secret values.
     local procOk, procced = sourceCall("IsSpellProcced", spellID)
     if procOk and procced == true then
         return true
