@@ -70,7 +70,7 @@ internal sealed class M5Hook : IDisposable
     private nint _mouseHook;
     private nint _keyboardHook;
     private uint _threadId;
-    private ActionMap _actions = new(null, null, false, false);
+    private ActionMap _actions = new(null, null, false, false, false, false);
     private TriggerMap _triggers = new(TriggerBinding.M5, TriggerBinding.M4);
     private TriggerMap _pendingTriggers = new(TriggerBinding.M5, TriggerBinding.M4);
     private CaptureRequest? _captureRequest;
@@ -87,6 +87,7 @@ internal sealed class M5Hook : IDisposable
     }
 
     internal event Action<ActionSlot, TriggerBinding>? TriggerCaptured;
+    internal event Action<ActionSlot>? RightClickWhileHolding;
 
     internal bool Enabled
     {
@@ -115,9 +116,13 @@ internal sealed class M5Hook : IDisposable
     internal void CancelCapture() => Volatile.Write(ref _captureRequest, null);
 
     internal void SetActions(HotkeyBinding? lossless, HotkeyBinding? preserveBurst,
-        bool suppressWithoutBinding, bool canPulse)
+        bool suppressWithoutBinding, bool canPulse,
+        bool suppressLosslessWithoutBinding = false,
+        bool suppressPreserveWithoutBinding = false)
     {
-        Volatile.Write(ref _actions, new ActionMap(lossless, preserveBurst, suppressWithoutBinding, canPulse));
+        Volatile.Write(ref _actions, new ActionMap(
+            lossless, preserveBurst, suppressWithoutBinding, canPulse,
+            suppressLosslessWithoutBinding, suppressPreserveWithoutBinding));
         if (_threadId != 0)
             NativeMethods.PostThreadMessage(_threadId, WmActionsChanged, 0, 0);
     }
@@ -193,6 +198,16 @@ internal sealed class M5Hook : IDisposable
         if (code >= 0)
         {
             var data = Marshal.PtrToStructure<NativeMethods.MSLLHOOKSTRUCT>(lParam);
+            if ((data.flags & NativeMethods.LLMHF_INJECTED) == 0 &&
+                (int)wParam == NativeMethods.WM_RBUTTONDOWN)
+            {
+                ActionMap actions = Volatile.Read(ref _actions);
+                if (actions.CanPulse && actions.Lossless is not null && _losslessHeld is not null)
+                    RightClickWhileHolding?.Invoke(ActionSlot.Lossless);
+                else if (actions.CanPulse && actions.PreserveBurst is not null && _preserveHeld is not null)
+                    RightClickWhileHolding?.Invoke(ActionSlot.PreserveBurst);
+            }
+
             uint xbutton = data.mouseData >> 16;
             if ((data.flags & NativeMethods.LLMHF_INJECTED) == 0 &&
                 xbutton is NativeMethods.XBUTTON1 or NativeMethods.XBUTTON2)
@@ -256,15 +271,17 @@ internal sealed class M5Hook : IDisposable
 
         if (trigger == triggers.Lossless)
         {
-            if (actions.Lossless is not null || actions.SuppressWithoutBinding)
+            bool suppress = actions.SuppressWithoutBinding || actions.SuppressLosslessWithoutBinding;
+            if (actions.Lossless is not null || suppress)
                 CancelHeldAction(ref _preserveHeld, blockFollowingUp: true);
-            return PressSlot(trigger, actions.Lossless, actions.SuppressWithoutBinding, actions.CanPulse, ref _losslessHeld);
+            return PressSlot(trigger, actions.Lossless, suppress, actions.CanPulse, ref _losslessHeld);
         }
         if (trigger == triggers.PreserveBurst)
         {
-            if (actions.PreserveBurst is not null || actions.SuppressWithoutBinding)
+            bool suppress = actions.SuppressWithoutBinding || actions.SuppressPreserveWithoutBinding;
+            if (actions.PreserveBurst is not null || suppress)
                 CancelHeldAction(ref _losslessHeld, blockFollowingUp: true);
-            return PressSlot(trigger, actions.PreserveBurst, actions.SuppressWithoutBinding, actions.CanPulse, ref _preserveHeld);
+            return PressSlot(trigger, actions.PreserveBurst, suppress, actions.CanPulse, ref _preserveHeld);
         }
         return false;
     }
@@ -353,7 +370,8 @@ internal sealed class M5Hook : IDisposable
     }
 
     private sealed record ActionMap(HotkeyBinding? Lossless, HotkeyBinding? PreserveBurst,
-        bool SuppressWithoutBinding, bool CanPulse);
+        bool SuppressWithoutBinding, bool CanPulse,
+        bool SuppressLosslessWithoutBinding, bool SuppressPreserveWithoutBinding);
     private sealed record TriggerMap(TriggerBinding Lossless, TriggerBinding PreserveBurst);
     private sealed record CaptureRequest(ActionSlot Slot);
     private sealed record HeldAction(TriggerBinding Trigger);

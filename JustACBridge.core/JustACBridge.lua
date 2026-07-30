@@ -326,7 +326,9 @@ local function isSpellMoveCastableNow(spellID)
     if policyContains("moveCastNever", spellID) then
         return false
     end
-    if policyContains("moveCastAlways", spellID) or hasMovementCastBuff() then
+    local instantOnly = policyContains("moveCastInstantOnly", spellID)
+    if not instantOnly
+        and (policyContains("moveCastAlways", spellID) or hasMovementCastBuff()) then
         return true
     end
 
@@ -338,17 +340,18 @@ local function isSpellMoveCastableNow(spellID)
         return false
     end
 
-    local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(spellID)
+    local effectiveSpellID = getDisplaySpellID(spellID)
+    local info = C_Spell and C_Spell.GetSpellInfo
+        and C_Spell.GetSpellInfo(effectiveSpellID)
     local castTime = info and info.castTime
     if type(castTime) == "number" and not isSecret(castTime) and castTime == 0 then
         return true
     end
 
-    -- Some hardcasts use a recommendation glow that JustAC exposes through
-    -- IsSpellProcced even though the cast time has not actually become zero.
-    -- Keep native movement buffs and an API-confirmed instant cast above, but
-    -- do not let that ambiguous glow bypass the movement filter.
-    if policyContains("moveCastProcNever", spellID) then
+    -- For ambiguous recommendations, accept only the effective spell form's
+    -- live zero cast time. Recommendation glows and movement-casting buffs are
+    -- intentionally insufficient for an instant-only rule.
+    if instantOnly then
         return false
     end
 
@@ -931,6 +934,11 @@ local function refresh()
     if not activeSource or type(activeSource.GetQueue) ~= "function" then
         return false, "recommendation source unavailable"
     end
+
+    -- Movement events are normally immediate, but refresh the authoritative
+    -- speed every frame as well so a missed/delayed event can never leave a
+    -- stationary recommendation active while the player is moving.
+    refreshPlayerMoving()
 
     local ok, queue = pcall(activeSource.GetQueue)
     if not ok or type(queue) ~= "table" then

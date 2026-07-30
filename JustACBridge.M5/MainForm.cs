@@ -4,6 +4,9 @@ namespace JustACBridgeM5;
 
 internal sealed class MainForm : Form
 {
+    private const int BlizzardSpellId = 190356;
+    private const long BlizzardCancelSuppressionMs = 3000;
+
     private readonly Label _state = new() { AutoSize = true, Font = new Font("Microsoft YaHei UI", 16, FontStyle.Bold), ForeColor = Color.DarkOrange };
     private readonly Label _window = new() { AutoSize = true };
     private readonly Label _lossless = new() { AutoSize = true, Font = new Font("Consolas", 14, FontStyle.Bold) };
@@ -19,6 +22,8 @@ internal sealed class MainForm : Form
     private TriggerBinding _losslessTrigger;
     private TriggerBinding _preserveTrigger;
     private volatile bool _lastBusy;
+    private Packet? _lastPacket;
+    private long _blizzardSuppressedUntilTick;
 
     internal MainForm()
     {
@@ -69,6 +74,7 @@ internal sealed class MainForm : Form
         _extreme.CheckedChanged += (_, _) => { if (_extreme.Checked) _reader.SetPollMs(0); };
         _balanced.CheckedChanged += (_, _) => { if (_balanced.Checked) _reader.SetPollMs(5); };
         _hook.TriggerCaptured += OnTriggerCaptured;
+        _hook.RightClickWhileHolding += OnRightClickWhileHolding;
         _reader.Updated += OnReaderUpdate;
         Shown += (_, _) => StartServices();
     }
@@ -141,17 +147,9 @@ internal sealed class MainForm : Form
         if (IsDisposed) return;
         if (update.Packet is { } packet)
         {
+            Volatile.Write(ref _lastPacket, packet);
             _lastBusy = packet.IsBusy;
-            if (packet.IsBusy)
-            {
-                _hook.SetActions(null, null, true, false);
-            }
-            else
-            {
-                HotkeyBinding? lossless = ParseBinding(packet.Lossless);
-                HotkeyBinding? preserve = packet.ProtocolVersion >= 2 ? ParseBinding(packet.PreserveBurst) : null;
-                _hook.SetActions(lossless, preserve, false, packet.QueueReady);
-            }
+            ApplyHookActions(packet);
         }
         else
         {
@@ -166,6 +164,64 @@ internal sealed class MainForm : Form
     private static HotkeyBinding? ParseBinding(Recommendation recommendation) =>
         recommendation is { Exists: true, Bound: true } &&
         HotkeyBinding.TryParse(recommendation.Hotkey, out var binding, out _) ? binding : null;
+
+    private void ApplyHookActions(Packet packet)
+    {
+        if (packet.IsBusy)
+        {
+            _hook.SetActions(null, null, true, false);
+            return;
+        }
+
+        bool losslessSuppressed = IsBlizzardSuppressed(packet.Lossless);
+        bool preserveSuppressed =
+            packet.ProtocolVersion >= 2 && IsBlizzardSuppressed(packet.PreserveBurst);
+        _hook.SetActions(
+            losslessSuppressed ? null : ParseBinding(packet.Lossless),
+            packet.ProtocolVersion >= 2 && !preserveSuppressed
+                ? ParseBinding(packet.PreserveBurst) : null,
+            false,
+            packet.QueueReady,
+            losslessSuppressed,
+            preserveSuppressed);
+    }
+
+    private void OnRightClickWhileHolding(ActionSlot slot)
+    {
+        Packet? packet = Volatile.Read(ref _lastPacket);
+        if (packet is null) return;
+        Recommendation recommendation =
+            slot == ActionSlot.Lossless ? packet.Lossless : packet.PreserveBurst;
+        if (!recommendation.Exists || recommendation.IsItem || recommendation.Id != BlizzardSpellId)
+            return;
+
+        Interlocked.Exchange(
+            ref _blizzardSuppressedUntilTick,
+            Environment.TickCount64 + BlizzardCancelSuppressionMs);
+        ApplyHookActions(packet);
+        try
+        {
+            BeginInvoke(() =>
+            {
+                _state.Text = "已取消暴风雪：3.0 秒内不再释放";
+                _state.ForeColor = Color.DarkOrange;
+            });
+        }
+        catch (InvalidOperationException) { }
+    }
+
+    private bool IsBlizzardSuppressed(Recommendation recommendation) =>
+        recommendation is { Exists: true, IsItem: false, Id: BlizzardSpellId } &&
+        BlizzardSuppressionRemainingMs() > 0;
+
+    private long BlizzardSuppressionRemainingMs()
+    {
+        long until = Interlocked.Read(ref _blizzardSuppressedUntilTick);
+        long remaining = until - Environment.TickCount64;
+        if (remaining > 0) return remaining;
+        if (until != 0) Interlocked.CompareExchange(ref _blizzardSuppressedUntilTick, 0, until);
+        return 0;
+    }
 
     private void ApplyUpdate(ReaderUpdate update)
     {
@@ -192,6 +248,15 @@ internal sealed class MainForm : Form
         {
             _state.Text = $"等待最佳入队窗口：GCD 约剩 {p.GcdRemainingMs}ms";
             _state.ForeColor = Color.DarkOrange;
+        }
+        else
+        {
+            long remaining = BlizzardSuppressionRemainingMs();
+            if (remaining > 0)
+            {
+                _state.Text = $"已取消暴风雪：{remaining / 1000.0:F1} 秒内不再释放";
+                _state.ForeColor = Color.DarkOrange;
+            }
         }
 
         _lossless.Text = $"{_losslessTrigger.Display} → {Format(p.Lossless)}";
