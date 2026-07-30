@@ -163,7 +163,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         moveCastAlways = copyArray(classPolicy.moveCastAlways),
         moveCastBuffs = copyArray(classPolicy.moveCastBuffs),
         moveCastNever = copyArray(classPolicy.moveCastNever),
-        moveCastProcNever = copyArray(classPolicy.moveCastProcNever),
+        moveCastInstantOnly = copyArray(classPolicy.moveCastInstantOnly),
         clipChannels = copyArray(classPolicy.clipChannels),
         rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
         groundEffects = copyGroundEffects(classPolicy.groundEffects),
@@ -172,7 +172,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     addUniqueValues(result.moveCastAlways, specPolicy.moveCastAlways)
     addUniqueValues(result.moveCastBuffs, specPolicy.moveCastBuffs)
     addUniqueValues(result.moveCastNever, specPolicy.moveCastNever)
-    addUniqueValues(result.moveCastProcNever, specPolicy.moveCastProcNever)
+    addUniqueValues(result.moveCastInstantOnly, specPolicy.moveCastInstantOnly)
     addUniqueValues(result.clipChannels, specPolicy.clipChannels)
     appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
     appendGroundEffects(result.groundEffects, specPolicy.groundEffects)
@@ -198,8 +198,8 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.moveCastNever then
             replaceArray(result.moveCastNever, patch.moveCastNever)
         end
-        if patch.moveCastProcNever then
-            replaceArray(result.moveCastProcNever, patch.moveCastProcNever)
+        if patch.moveCastInstantOnly then
+            replaceArray(result.moveCastInstantOnly, patch.moveCastInstantOnly)
         end
         if patch.clipChannels then
             replaceArray(result.clipChannels, patch.clipChannels)
@@ -218,8 +218,8 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         addUniqueValues(result.moveCastBuffs, patch.addMoveCastBuffs)
         removeValues(result.moveCastNever, patch.removeMoveCastNever)
         addUniqueValues(result.moveCastNever, patch.addMoveCastNever)
-        removeValues(result.moveCastProcNever, patch.removeMoveCastProcNever)
-        addUniqueValues(result.moveCastProcNever, patch.addMoveCastProcNever)
+        removeValues(result.moveCastInstantOnly, patch.removeMoveCastInstantOnly)
+        addUniqueValues(result.moveCastInstantOnly, patch.addMoveCastInstantOnly)
         removeValues(result.clipChannels, patch.removeClipChannels)
         addUniqueValues(result.clipChannels, patch.addClipChannels)
         appendRangeSequenceRules(result.rangeSequenceRules, patch.addRangeSequenceRules)

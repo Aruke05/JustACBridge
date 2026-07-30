@@ -4,6 +4,7 @@ import Foundation
 
 final class InputBridge {
   var onTriggerCaptured: ((ActionSlot, TriggerBinding) -> Void)?
+  var onRightClickWhileHolding: ((ActionSlot) -> Void)?
   private(set) var eventTapInstalled = false
 
   private static let injectedMarker: Int64 = 0x4A_41_43_42_4D_41_43
@@ -11,7 +12,13 @@ final class InputBridge {
   private var runLoopSource: CFRunLoopSource?
   private var repeatTimer: DispatchSourceTimer?
   private var actions = ActionMap(
-    lossless: nil, preserveBurst: nil, suppressWithoutBinding: false, canPulse: false)
+    lossless: nil,
+    preserveBurst: nil,
+    suppressWithoutBinding: false,
+    canPulse: false,
+    suppressLosslessWithoutBinding: false,
+    suppressPreserveWithoutBinding: false
+  )
   private var triggers = TriggerMap(lossless: .m5, preserveBurst: .m4)
   private var captureRequest: ActionSlot?
   private var losslessHeld: TriggerBinding?
@@ -41,13 +48,17 @@ final class InputBridge {
     lossless: HotkeyBinding?,
     preserveBurst: HotkeyBinding?,
     suppressWithoutBinding: Bool,
-    canPulse: Bool
+    canPulse: Bool,
+    suppressLosslessWithoutBinding: Bool = false,
+    suppressPreserveWithoutBinding: Bool = false
   ) {
     actions = ActionMap(
       lossless: lossless,
       preserveBurst: preserveBurst,
       suppressWithoutBinding: suppressWithoutBinding,
-      canPulse: canPulse
+      canPulse: canPulse,
+      suppressLosslessWithoutBinding: suppressLosslessWithoutBinding,
+      suppressPreserveWithoutBinding: suppressPreserveWithoutBinding
     )
     pulseHeldAction()
   }
@@ -58,6 +69,7 @@ final class InputBridge {
     let mask =
       CGEventMask(1 << CGEventType.keyDown.rawValue)
       | CGEventMask(1 << CGEventType.keyUp.rawValue)
+      | CGEventMask(1 << CGEventType.rightMouseDown.rawValue)
       | CGEventMask(1 << CGEventType.otherMouseDown.rawValue)
       | CGEventMask(1 << CGEventType.otherMouseUp.rawValue)
     let callback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -118,6 +130,14 @@ final class InputBridge {
     if event.getIntegerValueField(.eventSourceUserData) == Self.injectedMarker {
       return Unmanaged.passUnretained(event)
     }
+    if type == .rightMouseDown {
+      if actions.canPulse, actions.lossless != nil, losslessHeld != nil {
+        onRightClickWhileHolding?(.lossless)
+      } else if actions.canPulse, actions.preserveBurst != nil, preserveHeld != nil {
+        onRightClickWhileHolding?(.preserveBurst)
+      }
+      return Unmanaged.passUnretained(event)
+    }
 
     let trigger: TriggerBinding
     let isDown: Bool
@@ -158,7 +178,8 @@ final class InputBridge {
       return pressSlot(
         trigger,
         binding: actions.lossless,
-        suppressWithoutBinding: actions.suppressWithoutBinding,
+        suppressWithoutBinding: actions.suppressWithoutBinding
+          || actions.suppressLosslessWithoutBinding,
         canPulse: actions.canPulse,
         held: &losslessHeld
       )
@@ -170,7 +191,8 @@ final class InputBridge {
       return pressSlot(
         trigger,
         binding: actions.preserveBurst,
-        suppressWithoutBinding: actions.suppressWithoutBinding,
+        suppressWithoutBinding: actions.suppressWithoutBinding
+          || actions.suppressPreserveWithoutBinding,
         canPulse: actions.canPulse,
         held: &preserveHeld
       )
@@ -236,6 +258,8 @@ private struct ActionMap {
   let preserveBurst: HotkeyBinding?
   let suppressWithoutBinding: Bool
   let canPulse: Bool
+  let suppressLosslessWithoutBinding: Bool
+  let suppressPreserveWithoutBinding: Bool
 }
 
 private struct TriggerMap {

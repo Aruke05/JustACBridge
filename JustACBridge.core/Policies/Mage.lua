@@ -7,7 +7,7 @@ end
 -- Frozen Orb and Ray of Frost are exposed only by the lossless action; the
 -- preserve-burst action must skip them without changing JustAC's base queue.
 Registry.RegisterClass("MAGE", {
-    revision = 7,
+    revision = 10,
     -- These are class-wide movement exceptions.  Hardcasts made instant by a
     -- proc are detected live through JustAC's IsSpellProcced API.
     moveCastAlways = {
@@ -43,7 +43,7 @@ Registry.RegisterClass("MAGE", {
         [3] = {
             id = "frost",
             name = "冰霜",
-            revision = 6,
+            revision = 9,
             reserve = {
                 12472, -- Icy Veins
             },
@@ -59,10 +59,12 @@ Registry.RegisterClass("MAGE", {
                 199786,  -- Glacial Spike (legacy compatibility)
                 1236209, -- Glacial Spike (Midnight)
             },
-            -- 寒冰箭和读条暴风雪会出现不代表瞬发的推荐高亮。保留浮冰
-            -- 与 API 明确报告的零读条状态，但禁止用通用 Proc 信号放行。
-            moveCastProcNever = {
+            -- 这些技能的推荐高亮和浮冰都不足以证明瞬发；只有当前有效
+            -- 法术形态被游戏 API 明确报告为零读条时才允许移动施放。
+            moveCastInstantOnly = {
                 116,    -- Frostbolt
+                431044, -- Frostfire Bolt (replaces Frostbolt)
+                468655, -- Frostfire Bolt proc/trigger form
                 190356, -- Blizzard
             },
             -- 霜火冰在 20 码外使用“冰川尖刺 -> 冰风暴”会让套装火球

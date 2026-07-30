@@ -20,8 +20,8 @@ JustAC 队列读取。
 - `moveCastAlways`：自身带读条，但天生允许移动施放的技能。
 - `moveCastBuffs`：激活后允许该职业移动施法的玩家 Buff。
 - `moveCastNever`：移动时始终跳过的硬读条技能，优先于移动 Buff 和 Proc 判断。
-- `moveCastProcNever`：忽略不可靠的 Proc 高亮；仅在基础瞬发、API 明确报告零读条或
-  移动施法 Buff 生效时允许。
+- `moveCastInstantOnly`：忽略 Proc 高亮和移动施法 Buff；仅在当前有效法术形态被
+  API 明确报告为零读条时允许。
 - `clipChannels`：循环明确要求可在 GCD 末主动截断的引导技能。引导状态仍会导出，
   但不会一直占用动作队列。
 - `rangeSequenceRules`：只在目标被明确判定超过指定距离时调整技能先后；距离未知时
@@ -40,7 +40,7 @@ JustAC 队列读取。
     moveCastAlways = { 3001 },
     moveCastBuffs = { 4001 },
     moveCastNever = { 4002 },
-    moveCastProcNever = { 4003 },
+    moveCastInstantOnly = { 4003 },
     clipChannels = { 5001 },
     rangeSequenceRules = {
         {
@@ -87,7 +87,7 @@ JustAC 队列读取。
 - 移动规则对应支持 `moveCastAlways/moveCastBuffs` 完整替换，以及
   `add/removeMoveCastAlways`、`add/removeMoveCastBuffs` 增量修改；
   `moveCastNever` 同样支持完整替换和 `add/removeMoveCastNever`；
-  `moveCastProcNever` 同样支持完整替换和 `add/removeMoveCastProcNever`。
+  `moveCastInstantOnly` 同样支持完整替换和 `add/removeMoveCastInstantOnly`。
 - 引导规则支持 `clipChannels` 完整替换和 `add/removeClipChannels` 增量修改；
   距离顺序规则支持 `rangeSequenceRules` 完整替换和 `addRangeSequenceRules` 追加。
 - 场地规则支持 `groundEffects` 完整替换和 `addGroundEffects` 追加。

@@ -3,6 +3,9 @@ import ApplicationServices
 import CoreGraphics
 
 final class MainWindowController: NSWindowController {
+  private static let blizzardSpellID = 190356
+  private static let blizzardCancelSuppressionSeconds: TimeInterval = 3
+
   private let stateLabel = label(size: 20, weight: .bold, color: .systemOrange)
   private let windowLabel = label(size: 13, color: .secondaryLabelColor)
   private let losslessLabel = label(size: 18, weight: .semibold)
@@ -20,6 +23,8 @@ final class MainWindowController: NSWindowController {
   private let input = InputBridge()
   private var settings = AppSettings.load()
   private var lastBusy = false
+  private var lastPacket: Packet?
+  private var blizzardSuppressedUntil: Date?
 
   convenience init() {
     let window = NSWindow(
@@ -122,6 +127,9 @@ final class MainWindowController: NSWindowController {
     input.onTriggerCaptured = { [weak self] slot, trigger in
       self?.applyCapturedTrigger(slot: slot, trigger: trigger)
     }
+    input.onRightClickWhileHolding = { [weak self] slot in
+      self?.suppressCancelledBlizzard(for: slot)
+    }
   }
 
   @objc private func enabledChanged() {
@@ -188,20 +196,9 @@ final class MainWindowController: NSWindowController {
 
   private func apply(_ update: ReaderUpdate) {
     if let packet = update.packet {
+      lastPacket = packet
       lastBusy = packet.isBusy
-      if packet.isBusy {
-        input.setActions(
-          lossless: nil, preserveBurst: nil, suppressWithoutBinding: true, canPulse: false)
-      } else {
-        let lossless = parse(packet.lossless)
-        let preserve = packet.protocolVersion >= 2 ? parse(packet.preserveBurst) : nil
-        input.setActions(
-          lossless: lossless,
-          preserveBurst: preserve,
-          suppressWithoutBinding: false,
-          canPulse: packet.queueReady
-        )
-      }
+      applyInputActions(packet)
     } else {
       input.setActions(
         lossless: nil, preserveBurst: nil, suppressWithoutBinding: lastBusy, canPulse: false)
@@ -229,6 +226,9 @@ final class MainWindowController: NSWindowController {
       stateLabel.textColor = .systemBlue
     } else if !packet.queueReady {
       stateLabel.stringValue = "等待最佳入队窗口：GCD 约剩 \(packet.gcdRemainingMs)ms"
+      stateLabel.textColor = .systemOrange
+    } else if let remaining = blizzardSuppressionRemaining() {
+      stateLabel.stringValue = String(format: "已取消暴风雪：%.1f 秒内不再释放", remaining)
       stateLabel.textColor = .systemOrange
     }
 
@@ -261,6 +261,57 @@ final class MainWindowController: NSWindowController {
   private func parse(_ recommendation: Recommendation) -> HotkeyBinding? {
     guard recommendation.exists, recommendation.bound else { return nil }
     return HotkeyBinding.parse(recommendation.hotkey).0
+  }
+
+  private func applyInputActions(_ packet: Packet) {
+    if packet.isBusy {
+      input.setActions(
+        lossless: nil, preserveBurst: nil, suppressWithoutBinding: true, canPulse: false)
+      return
+    }
+
+    let losslessSuppressed = isBlizzardSuppressed(packet.lossless)
+    let preserveSuppressed =
+      packet.protocolVersion >= 2 && isBlizzardSuppressed(packet.preserveBurst)
+    input.setActions(
+      lossless: losslessSuppressed ? nil : parse(packet.lossless),
+      preserveBurst: packet.protocolVersion >= 2 && !preserveSuppressed
+        ? parse(packet.preserveBurst) : nil,
+      suppressWithoutBinding: false,
+      canPulse: packet.queueReady,
+      suppressLosslessWithoutBinding: losslessSuppressed,
+      suppressPreserveWithoutBinding: preserveSuppressed
+    )
+  }
+
+  private func suppressCancelledBlizzard(for slot: ActionSlot) {
+    guard let packet = lastPacket else { return }
+    let recommendation = slot == .lossless ? packet.lossless : packet.preserveBurst
+    guard recommendation.exists, !recommendation.isItem,
+      recommendation.id == Self.blizzardSpellID
+    else {
+      return
+    }
+
+    blizzardSuppressedUntil =
+      Date().addingTimeInterval(Self.blizzardCancelSuppressionSeconds)
+    applyInputActions(packet)
+    stateLabel.stringValue = "已取消暴风雪：3.0 秒内不再释放"
+    stateLabel.textColor = .systemOrange
+  }
+
+  private func isBlizzardSuppressed(_ recommendation: Recommendation) -> Bool {
+    recommendation.exists && !recommendation.isItem
+      && recommendation.id == Self.blizzardSpellID
+      && blizzardSuppressionRemaining() != nil
+  }
+
+  private func blizzardSuppressionRemaining() -> TimeInterval? {
+    guard let until = blizzardSuppressedUntil else { return nil }
+    let remaining = until.timeIntervalSinceNow
+    if remaining > 0 { return remaining }
+    blizzardSuppressedUntil = nil
+    return nil
   }
 
   private func bindingColor(_ recommendation: Recommendation, busy: Bool) -> NSColor {

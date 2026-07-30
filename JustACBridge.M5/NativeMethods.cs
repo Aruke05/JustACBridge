@@ -10,6 +10,7 @@ internal static class NativeMethods
     internal const int WM_KEYUP = 0x0101;
     internal const int WM_SYSKEYDOWN = 0x0104;
     internal const int WM_SYSKEYUP = 0x0105;
+    internal const int WM_RBUTTONDOWN = 0x0204;
     internal const int WM_XBUTTONDOWN = 0x020B;
     internal const int WM_XBUTTONUP = 0x020C;
     internal const int WM_QUIT = 0x0012;
