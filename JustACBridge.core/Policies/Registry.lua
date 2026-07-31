@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 4
+Registry.schemaVersion = 5
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -66,6 +66,29 @@ end
 
 local function appendGroundEffects(target, source)
     for _, rule in ipairs(copyGroundEffects(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+local function copyFallbackActions(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        local spellID = type(rule) == "table" and tonumber(rule.spellID) or tonumber(rule)
+        if spellID and spellID > 0 then
+            result[#result + 1] = {
+                spellID = spellID,
+                minEnemies = type(rule) == "table" and tonumber(rule.minEnemies) or nil,
+                maxEnemies = type(rule) == "table" and tonumber(rule.maxEnemies) or nil,
+                requireProc = type(rule) == "table" and rule.requireProc == true or false,
+                label = type(rule) == "table" and rule.label or nil,
+            }
+        end
+    end
+    return result
+end
+
+local function appendFallbackActions(target, source)
+    for _, rule in ipairs(copyFallbackActions(source)) do
         target[#target + 1] = rule
     end
 end
@@ -140,6 +163,21 @@ function Registry.RegisterClass(classFile, definition)
     return true
 end
 
+-- Register one specialization in its own file.  Class files contain only
+-- genuinely class-wide rules; replacing a spec file replaces that spec as a
+-- unit without touching siblings or the shared selector.
+function Registry.RegisterSpec(classFile, specIndex, definition)
+    specIndex = tonumber(specIndex)
+    local classPolicy = Registry.classes[classFile]
+    if type(classFile) ~= "string" or classFile == "" or not specIndex
+        or type(definition) ~= "table" or not classPolicy then
+        return false
+    end
+    classPolicy.specs = classPolicy.specs or {}
+    classPolicy.specs[specIndex] = definition
+    return true
+end
+
 function Registry.Resolve(classFile, specIndex, interfaceVersion)
     local classPolicy = Registry.classes[classFile]
     local specPolicy = classPolicy and classPolicy.specs and classPolicy.specs[specIndex]
@@ -167,6 +205,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         clipChannels = copyArray(classPolicy.clipChannels),
         rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
         groundEffects = copyGroundEffects(classPolicy.groundEffects),
+        fallbackActions = copyFallbackActions(classPolicy.fallbackActions),
     }
     addUniqueValues(result.reserveExclusions, specPolicy.reserveExclusions)
     addUniqueValues(result.moveCastAlways, specPolicy.moveCastAlways)
@@ -176,6 +215,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     addUniqueValues(result.clipChannels, specPolicy.clipChannels)
     appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
     appendGroundEffects(result.groundEffects, specPolicy.groundEffects)
+    appendFallbackActions(result.fallbackActions, specPolicy.fallbackActions)
 
     local patch = selectVersionPatch(specPolicy, interfaceVersion)
     if patch then
@@ -210,6 +250,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.groundEffects then
             result.groundEffects = copyGroundEffects(patch.groundEffects)
         end
+        if patch.fallbackActions then
+            result.fallbackActions = copyFallbackActions(patch.fallbackActions)
+        end
         removeValues(result.reserveExclusions, patch.removeReserveExclusions)
         addUniqueValues(result.reserveExclusions, patch.addReserveExclusions)
         removeValues(result.moveCastAlways, patch.removeMoveCastAlways)
@@ -224,6 +267,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         addUniqueValues(result.clipChannels, patch.addClipChannels)
         appendRangeSequenceRules(result.rangeSequenceRules, patch.addRangeSequenceRules)
         appendGroundEffects(result.groundEffects, patch.addGroundEffects)
+        appendFallbackActions(result.fallbackActions, patch.addFallbackActions)
     end
 
     return result

@@ -542,6 +542,47 @@ local function findReserveRecommendation(queue, startIndex)
     return nil
 end
 
+local function findPolicyMovementEmergencyFallback(position)
+    if not playerIsMoving or JustACBridgeDB.movementFilter == false
+        or not currentPolicy or not currentPolicy.fallbackActions then
+        return nil
+    end
+
+    local enemyCount = 0
+    local enemyOK, detectedEnemies = sourceCall("GetEngagedEnemyCount")
+    if enemyOK and type(detectedEnemies) == "number" and not isSecret(detectedEnemies) then
+        enemyCount = math.max(0, math.floor(detectedEnemies))
+    end
+
+    for _, rule in ipairs(currentPolicy.fallbackActions) do
+        local spellID = tonumber(rule.spellID)
+        local minEnemies = tonumber(rule.minEnemies)
+        local maxEnemies = tonumber(rule.maxEnemies)
+        local eligible = spellID and spellID > 0
+            and (not minEnemies or enemyCount >= minEnemies)
+            and (not maxEnemies or enemyCount <= maxEnemies)
+        if eligible and rule.requireProc then
+            local procOK, procced = sourceCall("IsSpellProcced", spellID)
+            eligible = procOK and procced == true
+        end
+        if eligible and isSpellKnown(spellID)
+            and not isReservedQueueValue(spellID)
+            and not isReserveExcludedQueueValue(spellID)
+            and isSafeQueueValue(spellID)
+            and isUsableNow(spellID) then
+            local data = getSpellData(spellID, position)
+            if data and data.plainHotkey ~= "" then
+                data.movementFallback = true
+                data.emergencyMovementFallback = true
+                data.emergencyFallbackLabel = rule.label
+                data.emergencyFallbackEnemyCount = enemyCount
+                return data
+            end
+        end
+    end
+    return nil
+end
+
 local function toPlainHotkey(hotkey)
     if not hotkey or hotkey == "" then
         return ""
@@ -888,9 +929,12 @@ local function updateUI(dataRows)
             row.icon:SetTexture(data.icon)
             row.icon:SetDesaturated(false)
             row.name:SetText(data.name)
-            local fallbackLabel = data.movementFallback and " · 移动替代"
+            local fallbackLabel = data.emergencyMovementFallback
+                and (" · 移动兜底" .. (data.emergencyFallbackLabel
+                    and ("：" .. data.emergencyFallbackLabel) or ""))
+                or (data.movementFallback and " · 移动替代"
                 or (data.rangeFallback and " · 射程替代"
-                    or (data.groundFallback and " · 场地仍存在" or ""))
+                    or (data.groundFallback and " · 场地仍存在" or "")))
             row.id:SetText((data.kind == "item"
                 and ("物品 " .. tostring(data.itemID))
                 or ("法术 " .. tostring(data.spellID)))
@@ -946,6 +990,9 @@ local function refresh()
     end
 
     local lossless = findSafeRecommendation(queue)
+    if not lossless then
+        lossless = findPolicyMovementEmergencyFallback(1)
+    end
     local preserve
     if lossless and lossless.plainHotkey ~= ""
         and not isReservedQueueValue(lossless.queueValue)
@@ -961,6 +1008,9 @@ local function refresh()
             playerIsMoving and JustACBridgeDB.movementFilter ~= false
                 and 1 or (lossless and 2 or 1)
         )
+        if not preserve then
+            preserve = findPolicyMovementEmergencyFallback(2)
+        end
     end
     local nextRows = { lossless, preserve }
 
