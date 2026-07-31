@@ -1,13 +1,31 @@
 # 职业策略扩展
 
-`Registry.lua` 是唯一公共入口；职业文件只登记数据，不参与像素协议、按键解析或
-JustAC 队列读取。
+`Registry.lua` 是唯一公共入口；策略严格按“职业公共层 + 单专精文件”维护，只登记
+数据，不参与像素协议、按键解析或 JustAC 队列读取。
+
+当前目录结构：
+
+```text
+Policies/Mage.lua                 # 法师三系公共规则
+Policies/Mage/Arcane.lua          # 奥术专精全部规则
+Policies/Mage/Fire.lua            # 火焰专精全部规则
+Policies/Mage/Frost.lua           # 冰霜专精全部规则
+Policies/DeathKnight.lua          # 死亡骑士三系公共规则
+Policies/DeathKnight/Blood.lua    # 鲜血专精全部规则
+Policies/DeathKnight/Frost.lua    # 冰霜专精全部规则
+Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
+```
+
+专精文件通过 `RegisterSpec("CLASSFILE", specIndex, definition)` 原子登记完整定义。
+改版时可直接整体替换一个专精文件，不会触碰同职业的其他专精。
 
 ## 新增职业
 
-1. 新建 `Policies/<ClassFile>.lua`。
-2. 调用 `JustACBridgePolicyRegistry.RegisterClass("CLASSFILE", definition)`。
-3. 在 `JustACBridge.toc` 的 `JustACBridge.lua` 之前增加该文件。
+1. 新建 `Policies/<ClassFile>.lua`，只放职业公共规则，并调用
+   `JustACBridgePolicyRegistry.RegisterClass("CLASSFILE", definition)`。
+2. 每个专精新建 `Policies/<ClassFile>/<Spec>.lua`，调用
+   `JustACBridgePolicyRegistry.RegisterSpec("CLASSFILE", specIndex, definition)`。
+3. 在 `JustACBridge.toc` 中先加载职业公共文件，再逐一加载其专精文件。
 
 没有登记策略的职业仍可工作：Bridge 会使用 JustAC 当前专精检测到的
 `Burst Trigger`，只是没有 Bridge 内置兼容表。
@@ -27,6 +45,9 @@ JustAC 队列读取。
 - `rangeSequenceRules`：只在目标被明确判定超过指定距离时调整技能先后；距离未知时
   不改 JustAC 原顺序。
 - `groundEffects`：成功放置后按持续时间跟踪的场地技能，可在仍有效时抑制重复推荐。
+- `fallbackActions`：仅在玩家移动且 JustAC 的前 8 项没有安全可执行动作时使用的
+  有序兜底。支持 `spellID`、`minEnemies`、`maxEnemies`、`requireProc` 和显示用
+  `label`；仍必须通过已学习、可用、射程、移动安全和快捷键检查。
 
 版本差异放在 `versions`，无需修改主循环：
 
@@ -58,6 +79,11 @@ JustAC 队列读取。
             duration = 10,
             suppressRepeat = true,
         },
+    },
+    fallbackActions = {
+        { spellID = 8001, requireProc = true, label = "触发优先" },
+        { spellID = 8002, minEnemies = 5, label = "五目标兜底" },
+        { spellID = 8003, label = "通用兜底" },
     },
     versions = {
         {
@@ -91,6 +117,7 @@ JustAC 队列读取。
 - 引导规则支持 `clipChannels` 完整替换和 `add/removeClipChannels` 增量修改；
   距离顺序规则支持 `rangeSequenceRules` 完整替换和 `addRangeSequenceRules` 追加。
 - 场地规则支持 `groundEffects` 完整替换和 `addGroundEffects` 追加。
+- 兜底规则支持 `fallbackActions` 完整替换和 `addFallbackActions` 追加。
 - 玩家 `/jacb reserve add/remove` 最后执行，始终高于内置策略。
 - SavedVariables 继续使用稳定键 `CLASSFILE_<专精序号>`，拆文件或升版本不会丢失
   现有覆盖。

@@ -82,7 +82,13 @@ assert(JustACBridgeRecommendationSources.Register("test", {
 
 dofile("JustACBridge.core/Policies/Registry.lua")
 dofile("JustACBridge.core/Policies/Mage.lua")
+dofile("JustACBridge.core/Policies/Mage/Arcane.lua")
+dofile("JustACBridge.core/Policies/Mage/Fire.lua")
+dofile("JustACBridge.core/Policies/Mage/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight.lua")
+dofile("JustACBridge.core/Policies/DeathKnight/Blood.lua")
+dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
+dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
 dofile("JustACBridge.core/Trackers/GroundEffects.lua")
 dofile("JustACBridge.core/JustACBridge.lua")
 
