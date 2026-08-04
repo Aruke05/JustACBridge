@@ -10,6 +10,6 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>JustACBridge.M5</AssemblyName>
     <RootNamespace>JustACBridgeM5</RootNamespace>
-    <Version>2.10.1</Version>
+    <Version>2.10.2</Version>
   </PropertyGroup>
 </Project>

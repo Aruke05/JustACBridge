@@ -42,6 +42,16 @@ internal static unsafe class SelfTest
             Console.Error.WriteLine("protocol v3 queue-ready self-test failed");
             return 14;
         }
+        byte[] version4 = (byte[])version3.Clone();
+        version4[3] = 4;
+        version4[63] = 0x06; // moving + movement filter, queue gate closed
+        RewriteChecksums(version4);
+        if (!PixelProtocol.TryDecode(version4, out var v4Moving) ||
+            v4Moving is not { ProtocolVersion: 4, QueueReady: false, IsMoving: true, MovementFilter: true })
+        {
+            Console.Error.WriteLine("protocol v4 movement-state self-test failed");
+            return 15;
+        }
         byte[] busy = (byte[])sample.Clone();
         busy[6] |= 0x40;
         RewriteChecksums(busy);
