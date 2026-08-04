@@ -53,3 +53,8 @@ dotnet publish .\JustACBridge.M5.csproj -c Release -r win-x64 --self-contained t
 ```
 
 输出位于 `bin\Release\net10.0-windows\win-x64\publish\JustACBridge.M5.exe`。
+## 可选诊断
+
+正式版默认不写诊断日志。仅在复现问题前勾选 Windows 客户端中的
+`启用诊断日志（仅排错时）`，并在游戏内执行 `/jacb debug on`。复现后点击
+`复制完整诊断日志`，再用 `/jacb debug` 复制魔兽端判定；排查结束后关闭两端开关。

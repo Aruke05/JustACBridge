@@ -17,6 +17,8 @@ internal sealed class MainForm : Form
     private readonly Button _setPreserve = new() { AutoSize = true };
     private readonly RadioButton _extreme = new() { AutoSize = true, Checked = true, Text = "极限：连续捕获，零人为等待（推荐）" };
     private readonly RadioButton _balanced = new() { AutoSize = true, Text = "均衡：每 5ms 捕获一次" };
+    private readonly CheckBox _debugEnabled = new() { AutoSize = true, Text = "启用诊断日志（仅排错时）" };
+    private readonly Button _copyDebug = new() { AutoSize = true, Enabled = false, Text = "复制完整诊断日志" };
     private readonly WowPixelReader _reader = new();
     private readonly M5Hook _hook = new();
     private TriggerBinding _losslessTrigger;
@@ -24,6 +26,7 @@ internal sealed class MainForm : Form
     private volatile bool _lastBusy;
     private Packet? _lastPacket;
     private long _blizzardSuppressedUntilTick;
+    private string _lastReaderTrace = "";
 
     internal MainForm()
     {
@@ -65,6 +68,8 @@ internal sealed class MainForm : Form
         panel.Controls.Add(_enabled);
         panel.Controls.Add(_extreme);
         panel.Controls.Add(_balanced);
+        panel.Controls.Add(_debugEnabled);
+        panel.Controls.Add(_copyDebug);
         Controls.Add(panel);
         UpdateTriggerButtons();
 
@@ -73,22 +78,45 @@ internal sealed class MainForm : Form
         _setPreserve.Click += (_, _) => BeginTriggerCapture(ActionSlot.PreserveBurst);
         _extreme.CheckedChanged += (_, _) => { if (_extreme.Checked) _reader.SetPollMs(0); };
         _balanced.CheckedChanged += (_, _) => { if (_balanced.Checked) _reader.SetPollMs(5); };
+        _debugEnabled.CheckedChanged += (_, _) => ToggleDiagnostics();
+        _copyDebug.Click += (_, _) => CopyDebugLog();
         _hook.TriggerCaptured += OnTriggerCaptured;
         _hook.RightClickWhileHolding += OnRightClickWhileHolding;
         _reader.Updated += OnReaderUpdate;
         Shown += (_, _) => StartServices();
     }
 
+    private void ToggleDiagnostics()
+    {
+        DiagnosticLog.Enabled = _debugEnabled.Checked;
+        _copyDebug.Enabled = _debugEnabled.Checked;
+        _lastReaderTrace = "";
+        if (_debugEnabled.Checked)
+        {
+            DiagnosticLog.Write($"UI diagnostics-enabled losslessTrigger={_losslessTrigger.Display} preserveTrigger={_preserveTrigger.Display}");
+            Packet? packet = Volatile.Read(ref _lastPacket);
+            if (packet is not null)
+                DiagnosticLog.Write($"STATE current v={packet.ProtocolVersion} seq={packet.Sequence} moving={packet.IsMoving} movementFilter={packet.MovementFilter} queueReady={packet.QueueReady} gcdMs={packet.GcdRemainingMs} busy={packet.IsBusy} lossless={PacketRecommendation(packet.Lossless)} preserve={PacketRecommendation(packet.PreserveBurst)}");
+            _details.Text = "诊断已开启；魔兽内同时执行 /jacb debug on。";
+        }
+        else
+        {
+            _details.Text = "诊断已关闭。";
+        }
+    }
+
     private void StartServices()
     {
         try
         {
+            DiagnosticLog.Write($"UI services-start losslessTrigger={_losslessTrigger.Display} preserveTrigger={_preserveTrigger.Display}");
             _hook.ConfigureTriggers(_losslessTrigger, _preserveTrigger);
             _hook.Start();
             _reader.Start(0);
         }
         catch (Exception ex)
         {
+            DiagnosticLog.Write("UI services-failed " + ex);
             _state.Text = "启动失败";
             _state.ForeColor = Color.Firebrick;
             _details.Text = ex.Message;
@@ -147,12 +175,30 @@ internal sealed class MainForm : Form
         if (IsDisposed) return;
         if (update.Packet is { } packet)
         {
+            if (DiagnosticLog.Enabled)
+            {
+                string traceKey = $"valid:{update.Window}:{packet.ProtocolVersion}:{packet.Sequence}:{packet.IsMoving}:{packet.MovementFilter}:{packet.QueueReady}:{packet.GcdRemainingMs}:{packet.IsBusy}:{PacketRecommendation(packet.Lossless)}:{PacketRecommendation(packet.PreserveBurst)}:{update.Geometry}";
+                if (traceKey != _lastReaderTrace)
+                {
+                    _lastReaderTrace = traceKey;
+                    DiagnosticLog.Write($"PIXEL valid window={update.Window} v={packet.ProtocolVersion} seq={packet.Sequence} moving={packet.IsMoving} movementFilter={packet.MovementFilter} queueReady={packet.QueueReady} gcdMs={packet.GcdRemainingMs} busy={packet.IsBusy} lossless={PacketRecommendation(packet.Lossless)} preserve={PacketRecommendation(packet.PreserveBurst)} geometry={update.Geometry} captureMs={update.CaptureMs:F2}");
+                }
+            }
             Volatile.Write(ref _lastPacket, packet);
             _lastBusy = packet.IsBusy;
             ApplyHookActions(packet);
         }
         else
         {
+            if (DiagnosticLog.Enabled)
+            {
+                string trace = $"PIXEL invalid state={update.State} window={update.Window}";
+                if (trace != _lastReaderTrace)
+                {
+                    _lastReaderTrace = trace;
+                    DiagnosticLog.Write(trace);
+                }
+            }
             // Busy 状态下遇到撕裂帧时保持保护，直到读到明确的空闲包。
             _hook.SetActions(null, null, _lastBusy, false);
         }
@@ -176,14 +222,18 @@ internal sealed class MainForm : Form
         bool losslessSuppressed = IsBlizzardSuppressed(packet.Lossless);
         bool preserveSuppressed =
             packet.ProtocolVersion >= 2 && IsBlizzardSuppressed(packet.PreserveBurst);
+        bool movementBlocksLossless = packet.ProtocolVersion >= 4 && packet.IsMoving && packet.MovementFilter
+            && ParseBinding(packet.Lossless) is null;
+        bool movementBlocksPreserve = packet.ProtocolVersion >= 4 && packet.IsMoving && packet.MovementFilter
+            && ParseBinding(packet.PreserveBurst) is null;
         _hook.SetActions(
             losslessSuppressed ? null : ParseBinding(packet.Lossless),
             packet.ProtocolVersion >= 2 && !preserveSuppressed
                 ? ParseBinding(packet.PreserveBurst) : null,
             false,
             packet.QueueReady,
-            losslessSuppressed,
-            preserveSuppressed);
+            losslessSuppressed || movementBlocksLossless,
+            preserveSuppressed || movementBlocksPreserve);
     }
 
     private void OnRightClickWhileHolding(ActionSlot slot)
@@ -252,7 +302,15 @@ internal sealed class MainForm : Form
         else
         {
             long remaining = BlizzardSuppressionRemainingMs();
-            if (remaining > 0)
+            if (p.ProtocolVersion >= 4 && p.IsMoving && p.MovementFilter &&
+                (!p.Lossless.Exists || !p.PreserveBurst.Exists))
+            {
+                string slot = !p.Lossless.Exists && !p.PreserveBurst.Exists
+                    ? "两个模式" : !p.Lossless.Exists ? "主推荐" : "保留爆发版";
+                _state.Text = $"移动过滤生效：{slot}当前没有安全技能";
+                _state.ForeColor = Color.DarkOrange;
+            }
+            else if (remaining > 0)
             {
                 _state.Text = $"已取消暴风雪：{remaining / 1000.0:F1} 秒内不再释放";
                 _state.ForeColor = Color.DarkOrange;
@@ -264,10 +322,12 @@ internal sealed class MainForm : Form
             ? $"{_preserveTrigger.Display} → {Format(p.PreserveBurst)}"
             : $"{_preserveTrigger.Display} → — WoW 插件需升级到协议 v2 —";
         string castState = p.IsChanneling ? "channeling" : p.IsCasting ? "casting/empowering" : "idle";
+        string moveState = p.ProtocolVersion >= 4
+            ? $"移动={(p.IsMoving ? "是" : "否")}/{(p.MovementFilter ? "过滤开" : "过滤关")}" : "移动=协议未提供";
         string timing = p.ProtocolVersion >= 3
             ? $"入队={(p.QueueReady ? "开放" : "等待")}  gcd≈{p.GcdRemainingMs}ms"
             : $"tick={p.GameTickMs}  兼容连发";
-        _details.Text = $"v{p.ProtocolVersion}  seq={p.Sequence}  {timing}  状态={castState}  解码={update.CaptureMs:F2}ms  pitch={update.Geometry}";
+        _details.Text = $"v{p.ProtocolVersion}  seq={p.Sequence}  {timing}  状态={castState}  {moveState}  解码={update.CaptureMs:F2}ms  pitch={update.Geometry}";
         _lossless.ForeColor = BindingColor(p.Lossless, p.IsBusy, out string losslessError);
         string preserveError = "";
         _preserve.ForeColor = p.ProtocolVersion >= 2
@@ -289,8 +349,28 @@ internal sealed class MainForm : Form
     private static string Format(Recommendation r) =>
         !r.Exists ? "— 无可用推荐 —" : $"{(r.IsItem ? "物品" : "法术")} {r.Id}    [{(string.IsNullOrEmpty(r.Hotkey) ? "未绑定" : r.Hotkey)}]";
 
+    private static string PacketRecommendation(Recommendation r) =>
+        !r.Exists ? "none" : $"{(r.IsItem ? "item" : "spell")}:{r.Id}:{r.Hotkey}:bound={r.Bound}";
+
+    private void CopyDebugLog()
+    {
+        try
+        {
+            Clipboard.SetText(DiagnosticLog.Snapshot());
+            _copyDebug.Text = "已复制完整日志";
+            _details.Text = "诊断日志已复制；原始文件：" + DiagnosticLog.FilePath;
+            DiagnosticLog.Write("UI diagnostic-log-copied");
+        }
+        catch (Exception ex)
+        {
+            _details.Text = "复制失败：" + ex.Message + "；日志文件：" + DiagnosticLog.FilePath;
+            DiagnosticLog.Write("UI diagnostic-log-copy-failed " + ex.Message);
+        }
+    }
+
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        DiagnosticLog.Enabled = false;
         _hook.CancelCapture();
         _reader.Dispose();
         _hook.Dispose();

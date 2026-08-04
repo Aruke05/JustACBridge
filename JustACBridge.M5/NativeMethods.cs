@@ -151,7 +151,7 @@ internal static class NativeMethods
     [DllImport("user32.dll")] internal static extern bool PostThreadMessage(uint id, uint msg, nuint wParam, nint lParam);
     [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();
     [DllImport("kernel32.dll")] internal static extern nint GetModuleHandle(string? name);
-    [DllImport("user32.dll")] internal static extern uint SendInput(uint count, INPUT[] inputs, int size);
+    [DllImport("user32.dll", SetLastError = true)] internal static extern uint SendInput(uint count, INPUT[] inputs, int size);
     [DllImport("user32.dll")] internal static extern uint MapVirtualKey(uint code, uint mapType);
 
     [DllImport("gdi32.dll", SetLastError = true)] internal static extern nint CreateCompatibleDC(nint dc);

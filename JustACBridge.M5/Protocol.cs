@@ -2,7 +2,7 @@ namespace JustACBridgeM5;
 
 internal sealed record Recommendation(bool Exists, bool IsItem, int Id, string Hotkey, bool Bound);
 internal sealed record Packet(byte ProtocolVersion, ushort Sequence, int GameTickMs, bool QueueReady, int GcdRemainingMs,
-    bool IsChanneling, bool IsCasting,
+    bool IsChanneling, bool IsCasting, bool IsMoving, bool MovementFilter,
     Recommendation Lossless, Recommendation PreserveBurst)
 {
     internal bool IsBusy => IsChanneling || IsCasting;
@@ -84,7 +84,7 @@ internal static unsafe class PixelProtocol
     internal static bool Validate(ReadOnlySpan<byte> data)
     {
         if (data.Length != Bytes || !data[..3].SequenceEqual("JAC"u8) ||
-            data[3] is not (1 or 2 or 3) || !data[69..72].SequenceEqual("END"u8))
+            data[3] is not (1 or 2 or 3 or 4) || !data[69..72].SequenceEqual("END"u8))
             return false;
         int sum1 = 0, sum2 = 0, rolling = 0;
         for (int i = 0; i < 66; i++)
@@ -108,10 +108,12 @@ internal static unsafe class PixelProtocol
             data[3],
             (ushort)(data[4] | data[5] << 8),
             data[3] >= 3 ? 0 : U24(data, 63),
-            data[3] < 3 || data[63] != 0,
+            data[3] < 3 || (data[63] & 0x01) != 0,
             data[3] >= 3 ? data[64] | data[65] << 8 : 0,
             (flags & 0x40) != 0,
             (flags & 0x80) != 0,
+            data[3] >= 4 && (data[63] & 0x02) != 0,
+            data[3] < 4 || (data[63] & 0x04) != 0,
             new Recommendation(firstExists, (flags & 0x02) != 0, firstExists ? U24(data, 7) : 0,
                 firstExists ? System.Text.Encoding.UTF8.GetString(data.Slice(11, data[10])) : "", (flags & 0x04) != 0),
             new Recommendation(secondExists, (flags & 0x10) != 0, secondExists ? U24(data, 35) : 0,

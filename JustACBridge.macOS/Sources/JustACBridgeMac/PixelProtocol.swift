@@ -45,7 +45,7 @@ enum PixelProtocol {
   static func validate(_ data: [UInt8]) -> Bool {
     guard data.count == byteCount,
       Array(data[0..<3]) == [0x4A, 0x41, 0x43],
-      [1, 2, 3].contains(data[3]),
+      [1, 2, 3, 4].contains(data[3]),
       Array(data[69..<72]) == [0x45, 0x4E, 0x44],
       data[10] <= 24,
       data[38] <= 24
@@ -75,7 +75,7 @@ enum PixelProtocol {
       protocolVersion: version,
       sequence: UInt16(data[4]) | UInt16(data[5]) << 8,
       gameTickMs: version >= 3 ? 0 : u24(data, 63),
-      queueReady: version < 3 || data[63] != 0,
+      queueReady: version < 3 || (data[63] & 0x01) != 0,
       gcdRemainingMs: version >= 3 ? Int(data[64]) | Int(data[65]) << 8 : 0,
       isChanneling: flags & 0x40 != 0,
       isCasting: flags & 0x80 != 0,

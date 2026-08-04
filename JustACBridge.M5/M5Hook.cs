@@ -79,6 +79,9 @@ internal sealed class M5Hook : IDisposable
     private readonly HashSet<TriggerBinding> _blockedUps = [];
     private volatile bool _enabled = true;
     private readonly ManualResetEventSlim _ready = new(false);
+    private string _lastPulseState = "";
+    private string _lastActionTrace = "";
+    private long _lastPulseLogTick;
 
     internal M5Hook()
     {
@@ -102,6 +105,7 @@ internal sealed class M5Hook : IDisposable
 
     internal void ConfigureTriggers(TriggerBinding lossless, TriggerBinding preserveBurst)
     {
+        DiagnosticLog.Write($"HOOK configure-triggers lossless={lossless.Display} preserve={preserveBurst.Display}");
         var map = new TriggerMap(lossless, preserveBurst);
         Volatile.Write(ref _pendingTriggers, map);
         if (_threadId != 0)
@@ -120,15 +124,27 @@ internal sealed class M5Hook : IDisposable
         bool suppressLosslessWithoutBinding = false,
         bool suppressPreserveWithoutBinding = false)
     {
-        Volatile.Write(ref _actions, new ActionMap(
+        var next = new ActionMap(
             lossless, preserveBurst, suppressWithoutBinding, canPulse,
-            suppressLosslessWithoutBinding, suppressPreserveWithoutBinding));
+            suppressLosslessWithoutBinding, suppressPreserveWithoutBinding);
+        Volatile.Write(ref _actions, next);
+        if (DiagnosticLog.Enabled)
+        {
+            string trace = $"lossless={BindingName(lossless)} preserve={BindingName(preserveBurst)} suppress={suppressWithoutBinding} canPulse={canPulse} suppressLossless={suppressLosslessWithoutBinding} suppressPreserve={suppressPreserveWithoutBinding}";
+            if (trace != _lastActionTrace)
+            {
+                _lastActionTrace = trace;
+                DiagnosticLog.Write("HOOK actions " + trace);
+            }
+        }
+        else _lastActionTrace = "";
         if (_threadId != 0)
             NativeMethods.PostThreadMessage(_threadId, WmActionsChanged, 0, 0);
     }
 
     internal void Start()
     {
+        DiagnosticLog.Write("HOOK start-request");
         _thread = new Thread(HookThread)
         {
             IsBackground = true,
@@ -138,6 +154,7 @@ internal sealed class M5Hook : IDisposable
         _thread.Start();
         if (!_ready.Wait(2000) || _mouseHook == 0 || _keyboardHook == 0)
             throw new Win32Exception("无法安装全局键鼠钩子");
+        DiagnosticLog.Write($"HOOK started thread={_threadId} mouse=0x{_mouseHook:X} keyboard=0x{_keyboardHook:X}");
         _repeatTimer = new System.Threading.Timer(
             _ =>
             {
@@ -265,13 +282,18 @@ internal sealed class M5Hook : IDisposable
 
     private bool HandleDown(TriggerBinding trigger)
     {
-        if (!_enabled) return false;
+        if (!_enabled)
+        {
+            DiagnosticLog.Write($"INPUT down trigger={trigger.Display} result=passthrough reason=disabled");
+            return false;
+        }
         TriggerMap triggers = Volatile.Read(ref _triggers);
         ActionMap actions = Volatile.Read(ref _actions);
 
         if (trigger == triggers.Lossless)
         {
             bool suppress = actions.SuppressWithoutBinding || actions.SuppressLosslessWithoutBinding;
+            DiagnosticLog.Write($"INPUT down trigger={trigger.Display} slot=lossless binding={BindingName(actions.Lossless)} suppress={suppress} canPulse={actions.CanPulse}");
             if (actions.Lossless is not null || suppress)
                 CancelHeldAction(ref _preserveHeld, blockFollowingUp: true);
             return PressSlot(trigger, actions.Lossless, suppress, actions.CanPulse, ref _losslessHeld);
@@ -279,6 +301,7 @@ internal sealed class M5Hook : IDisposable
         if (trigger == triggers.PreserveBurst)
         {
             bool suppress = actions.SuppressWithoutBinding || actions.SuppressPreserveWithoutBinding;
+            DiagnosticLog.Write($"INPUT down trigger={trigger.Display} slot=preserve binding={BindingName(actions.PreserveBurst)} suppress={suppress} canPulse={actions.CanPulse}");
             if (actions.PreserveBurst is not null || suppress)
                 CancelHeldAction(ref _losslessHeld, blockFollowingUp: true);
             return PressSlot(trigger, actions.PreserveBurst, suppress, actions.CanPulse, ref _preserveHeld);
@@ -290,25 +313,36 @@ internal sealed class M5Hook : IDisposable
     {
         bool handled = ReleaseHeldAction(trigger, ref _losslessHeld);
         handled = ReleaseHeldAction(trigger, ref _preserveHeld) || handled;
-        return _blockedUps.Remove(trigger) || handled;
+        bool blocked = _blockedUps.Remove(trigger);
+        if (handled || blocked) DiagnosticLog.Write($"INPUT up trigger={trigger.Display} handled={handled} blockedUp={blocked}");
+        return blocked || handled;
     }
 
     private bool PressSlot(TriggerBinding trigger, HotkeyBinding? binding, bool suppressWithoutBinding,
         bool canPulse, ref HeldAction? held)
     {
         if (held?.Trigger == trigger || _blockedUps.Contains(trigger))
+        {
+            DiagnosticLog.Write($"INPUT down-repeat trigger={trigger.Display} consumed=true");
             return true; // Ignore keyboard auto-repeat and consumed downs.
+        }
         CancelHeldAction(ref held, blockFollowingUp: true);
         if (binding is not null)
         {
             held = new HeldAction(trigger);
             if (canPulse)
                 Pulse(binding);
+            else
+                DiagnosticLog.Write($"HOLD armed trigger={trigger.Display} binding={binding.Canonical} initialPulse=false reason=queue-gate");
             return true;
         }
         if (!suppressWithoutBinding)
+        {
+            DiagnosticLog.Write($"INPUT trigger={trigger.Display} result=passthrough reason=no-binding");
             return false;
+        }
         held = new HeldAction(trigger);
+        DiagnosticLog.Write($"HOLD armed trigger={trigger.Display} binding=null result=suppressed");
         return true;
     }
 
@@ -335,24 +369,55 @@ internal sealed class M5Hook : IDisposable
 
     private void PulseHeldAction()
     {
-        if (!_enabled) return;
+        if (!_enabled) { TracePulseState("disabled"); return; }
         ActionMap actions = Volatile.Read(ref _actions);
-        if (actions.SuppressWithoutBinding || !actions.CanPulse) return;
+        if (actions.SuppressWithoutBinding) { TracePulseState("blocked-busy"); return; }
+        if (!actions.CanPulse) { TracePulseState("blocked-queue-gate"); return; }
 
         if (_losslessHeld is not null && actions.Lossless is not null)
         {
+            TracePulseState("pulsing-lossless:" + actions.Lossless.Canonical);
             Pulse(actions.Lossless);
             return;
         }
         if (_preserveHeld is not null && actions.PreserveBurst is not null)
+        {
+            TracePulseState("pulsing-preserve:" + actions.PreserveBurst.Canonical);
             Pulse(actions.PreserveBurst);
+            return;
+        }
+        TracePulseState((_losslessHeld is not null || _preserveHeld is not null) ? "held-no-binding" : "idle-no-held-key");
     }
 
-    private static void Pulse(HotkeyBinding binding)
+    private void Pulse(HotkeyBinding binding)
     {
-        binding.Press();
-        binding.Release();
+        if (!DiagnosticLog.Enabled)
+        {
+            binding.Pulse();
+            return;
+        }
+        bool ok = binding.Pulse(out string result);
+        long now = Environment.TickCount64;
+        if (!ok || now - _lastPulseLogTick >= 500)
+        {
+            _lastPulseLogTick = now;
+            DiagnosticLog.Write($"SEND binding={binding.Canonical} ok={ok} {result}");
+        }
     }
+
+    private void TracePulseState(string state)
+    {
+        if (!DiagnosticLog.Enabled)
+        {
+            _lastPulseState = "";
+            return;
+        }
+        if (state == _lastPulseState) return;
+        _lastPulseState = state;
+        DiagnosticLog.Write("HOLD state=" + state);
+    }
+
+    private static string BindingName(HotkeyBinding? binding) => binding?.Canonical ?? "null";
 
     private static bool IsModifierKey(uint vk) => vk is
         0x10 or 0x11 or 0x12 or // Shift, Ctrl, Alt

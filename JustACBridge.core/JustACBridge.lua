@@ -10,6 +10,8 @@ local ADDON_NAME = ...
 local UPDATE_INTERVAL = 0
 local ROW_COUNT = 2
 local QUEUE_SCAN_COUNT = 8
+-- Normal operation remains protocol v3. Diagnostic mode switches to v4 and
+-- adds live movement state without affecting ordinary macOS/v3 clients.
 local PIXEL_PROTOCOL_VERSION = 3
 -- Do not fill WoW's spell queue for the whole SpellQueueWindow.  Waiting until
 -- the end of the GCD leaves late procs/target changes time to change JustAC's
@@ -35,6 +37,8 @@ local supportSource
 local bridgeFrame
 local rows = {}
 local exportBox
+local debugFrame
+local debugBox
 local statusText
 local groundAlertFrame
 local groundAlertText
@@ -49,6 +53,12 @@ local playerIsChanneling = false
 local playerChannelSpellID
 local playerIsCasting = false
 local playerIsMoving = false
+local lastMovementStartedAt = -math.huge
+local movementStopPendingUntil = 0
+local movementFlapCount = 0
+local movementLastDebugAt = -math.huge
+local MOVEMENT_FLAP_WINDOW_SECONDS = 0.12
+local MOVEMENT_STOP_DEBOUNCE_SECONDS = 0.25
 local queueReady = true
 local gcdRemainingMs = 0
 local reservedSpellIDs = {}
@@ -60,6 +70,17 @@ local issecretvalue = issecretvalue
 local statusBaseText = ""
 local lastStatusText
 local groundStatusElapsed = 0
+local debugLines = {}
+local debugLastSnapshot
+local debugLastSnapshotAt = 0
+local debugStartedAt = GetTime()
+local DEBUG_MAX_LINES = 900
+local policyFallbackTraces = {}
+local failedMovementRecommendations = {}
+local debugFailureLastLog = {}
+local FAILURE_WINDOW_SECONDS = 0.30
+local FAILURE_THRESHOLD = 3
+local FAILURE_SUPPRESS_SECONDS = 1.00
 
 local PAD_ATLAS_TO_KEY = {
     Gamepad_Gen_1_64 = "PAD1",
@@ -293,7 +314,12 @@ local function policyContains(field, spellID)
 end
 
 local function channelBlocksInput()
-    return playerIsChanneling and not policyContains("clipChannels", playerChannelSpellID)
+    -- A genuine/attempted movement transition must be allowed to break a
+    -- stationary channel.  Midnight can emit STARTED/STOPPED movement pairs
+    -- every frame while a channel is preventing translation; blocking input
+    -- here would otherwise deadlock the held M4/M5 key until the channel ends.
+    return playerIsChanneling and not playerIsMoving
+        and not policyContains("clipChannels", playerChannelSpellID)
 end
 
 local function resolveChannelSpellID(eventSpellID)
@@ -400,10 +426,19 @@ local function isGroundEffectSafeQueueValue(queueValue)
     return not active or not rule or rule.suppressRepeat == false
 end
 
+local function isFailureSuppressedQueueValue(queueValue)
+    if type(queueValue) ~= "number" or queueValue <= 0 then
+        return false
+    end
+    local state = failedMovementRecommendations[queueValue]
+    return state and (tonumber(state.suppressUntil) or 0) > GetTime() or false
+end
+
 local function isSafeQueueValue(queueValue)
     return isMovementSafeQueueValue(queueValue)
         and isRangeSafeQueueValue(queueValue)
         and isGroundEffectSafeQueueValue(queueValue)
+        and not isFailureSuppressedQueueValue(queueValue)
 end
 
 local function isSpellKnown(spellID)
@@ -476,6 +511,7 @@ local function findSafeRecommendation(queue)
     local primaryMovementBlocked = not isMovementSafeQueueValue(queue[1])
     local primaryRangeBlocked = not isRangeSafeQueueValue(queue[1])
     local primaryGroundBlocked = not isGroundEffectSafeQueueValue(queue[1])
+    local primaryFailureBlocked = isFailureSuppressedQueueValue(queue[1])
     for index = 1, count do
         local queueValue = queue[index]
         if type(queueValue) == "number" and queueValue ~= 0
@@ -488,6 +524,7 @@ local function findSafeRecommendation(queue)
                 data.movementFallback = index ~= 1 and primaryMovementBlocked
                 data.rangeFallback = index ~= 1 and primaryRangeBlocked
                 data.groundFallback = index ~= 1 and primaryGroundBlocked
+                data.failureFallback = index ~= 1 and primaryFailureBlocked
                 return data
             end
         end
@@ -502,6 +539,14 @@ local function refreshPlayerMoving()
     local ok, speed = pcall(GetUnitSpeed, "player")
     if ok and type(speed) == "number" and not isSecret(speed) then
         playerIsMoving = speed > 0
+        movementStopPendingUntil = 0
+    elseif movementStopPendingUntil > 0 and GetTime() >= movementStopPendingUntil then
+        -- When speed is secret, accept a STOP only after no matching START has
+        -- arrived for the debounce interval. Repeated same-frame START/STOP
+        -- pairs therefore represent movement intent instead of stationary.
+        playerIsMoving = false
+        movementStopPendingUntil = 0
+        lastSignature = nil
     end
 end
 
@@ -543,39 +588,87 @@ local function findReserveRecommendation(queue, startIndex)
 end
 
 local function findPolicyMovementEmergencyFallback(position)
-    if not playerIsMoving or JustACBridgeDB.movementFilter == false
-        or not currentPolicy or not currentPolicy.fallbackActions then
+    local trace = {
+        position = position,
+        moving = playerIsMoving,
+        filter = JustACBridgeDB.movementFilter ~= false,
+        policy = currentPolicy and currentPolicy.id,
+        rules = {},
+    }
+    policyFallbackTraces[position] = trace
+    if not playerIsMoving then
+        trace.gate = "not-moving"
+        return nil
+    elseif JustACBridgeDB.movementFilter == false then
+        trace.gate = "movement-filter-off"
+        return nil
+    elseif not currentPolicy then
+        trace.gate = "no-policy"
+        return nil
+    elseif not currentPolicy.fallbackActions or #currentPolicy.fallbackActions == 0 then
+        trace.gate = "no-fallback-actions"
         return nil
     end
+    trace.gate = "evaluating"
 
     local enemyCount = 0
     local enemyOK, detectedEnemies = sourceCall("GetEngagedEnemyCount")
     if enemyOK and type(detectedEnemies) == "number" and not isSecret(detectedEnemies) then
         enemyCount = math.max(0, math.floor(detectedEnemies))
     end
+    trace.enemyOK = enemyOK
+    trace.enemyCount = enemyCount
+    trace.detectedEnemies = detectedEnemies
 
     for _, rule in ipairs(currentPolicy.fallbackActions) do
         local spellID = tonumber(rule.spellID)
         local minEnemies = tonumber(rule.minEnemies)
         local maxEnemies = tonumber(rule.maxEnemies)
-        local eligible = spellID and spellID > 0
+        local enemyEligible = spellID and spellID > 0
             and (not minEnemies or enemyCount >= minEnemies)
             and (not maxEnemies or enemyCount <= maxEnemies)
-        if eligible and rule.requireProc then
-            local procOK, procced = sourceCall("IsSpellProcced", spellID)
-            eligible = procOK and procced == true
+        local procOK, procced = true, true
+        if enemyEligible and rule.requireProc then
+            procOK, procced = sourceCall("IsSpellProcced", spellID)
         end
-        if eligible and isSpellKnown(spellID)
-            and not isReservedQueueValue(spellID)
-            and not isReserveExcludedQueueValue(spellID)
-            and isSafeQueueValue(spellID)
-            and isUsableNow(spellID) then
+        local eligible = enemyEligible and procOK and procced == true
+        local known = spellID and isSpellKnown(spellID) or false
+        local reserved = spellID and isReservedQueueValue(spellID) or false
+        local excluded = spellID and isReserveExcludedQueueValue(spellID) or false
+        local movementSafe = spellID and isMovementSafeQueueValue(spellID) or false
+        local rangeSafe = spellID and isRangeSafeQueueValue(spellID) or false
+        local groundSafe = spellID and isGroundEffectSafeQueueValue(spellID) or false
+        local usable = spellID and isUsableNow(spellID) or false
+        local ruleTrace = {
+            spellID = spellID,
+            label = rule.label,
+            minEnemies = minEnemies,
+            maxEnemies = maxEnemies,
+            requireProc = rule.requireProc == true,
+            enemyEligible = enemyEligible == true,
+            procOK = procOK == true,
+            procced = procced == true,
+            known = known,
+            reserved = reserved,
+            excluded = excluded,
+            movementSafe = movementSafe,
+            rangeSafe = rangeSafe,
+            groundSafe = groundSafe,
+            usable = usable,
+        }
+        trace.rules[#trace.rules + 1] = ruleTrace
+        if eligible and known and not reserved and not excluded
+            and movementSafe and rangeSafe and groundSafe and usable then
             local data = getSpellData(spellID, position)
+            ruleTrace.data = data ~= nil
+            ruleTrace.hotkey = data and data.plainHotkey or ""
             if data and data.plainHotkey ~= "" then
                 data.movementFallback = true
                 data.emergencyMovementFallback = true
                 data.emergencyFallbackLabel = rule.label
                 data.emergencyFallbackEnemyCount = enemyCount
+                ruleTrace.selected = true
+                trace.selected = spellID
                 return data
             end
         end
@@ -644,6 +737,147 @@ getSpellData = function(queueValue, position)
 
     data.plainHotkey = toPlainHotkey(data.hotkey)
     return data
+end
+
+local function debugSafe(value)
+    if isSecret(value) then
+        return "<secret>"
+    end
+    if value == nil then
+        return "nil"
+    end
+    return tostring(value):gsub("[\r\n\t]", " ")
+end
+
+local function appendDebug(line)
+    if JustACBridgeDB.debugEnabled == false then
+        return
+    end
+    debugLines[#debugLines + 1] = ("[%8.3f] %s"):format(GetTime(), tostring(line))
+    while #debugLines > DEBUG_MAX_LINES do
+        table.remove(debugLines, 1)
+    end
+    JustACBridgeExport.debugLog = table.concat(debugLines, "\n")
+    if debugBox and debugBox:IsShown() then
+        debugBox:SetText(JustACBridgeExport.debugLog)
+        debugBox:SetCursorPosition(#JustACBridgeExport.debugLog)
+    end
+end
+
+local function movementDecision(spellID)
+    local displayID = getDisplaySpellID(spellID)
+    local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(displayID)
+    local castTime = info and info.castTime
+    local chOk, channeled = sourceCall("IsChanneled", spellID)
+    local procOk, procced = sourceCall("IsSpellProcced", spellID)
+    local hotkeyOk, hotkey = sourceCall("GetSpellHotkey", spellID)
+    return table.concat({
+        "raw=" .. debugSafe(spellID),
+        "display=" .. debugSafe(displayID),
+        "name=" .. debugSafe(info and info.name),
+        "castMs=" .. debugSafe(castTime),
+        "never=" .. tostring(policyContains("moveCastNever", spellID)),
+        "instantOnly=" .. tostring(policyContains("moveCastInstantOnly", spellID)),
+        "always=" .. tostring(policyContains("moveCastAlways", spellID)),
+        "moveBuff=" .. tostring(hasMovementCastBuff()),
+        "chan=" .. (chOk and debugSafe(channeled) or "call-error"),
+        "proc=" .. (procOk and debugSafe(procced) or "call-error"),
+        "safe=" .. tostring(isMovementSafeQueueValue(spellID)),
+        "usable=" .. tostring(isUsableNow(spellID)),
+        "hotkey=" .. (hotkeyOk and debugSafe(toPlainHotkey(hotkey)) or "call-error"),
+    }, " ")
+end
+
+local function recordDebugSnapshot(reason, queue, lossless, preserve)
+    if JustACBridgeDB.debugEnabled == false then
+        return
+    end
+    local speedOK, speed = pcall(GetUnitSpeed, "player")
+    local queueKey = {}
+    for index = 1, math.min(#queue, QUEUE_SCAN_COUNT) do
+        queueKey[#queueKey + 1] = tostring(queue[index])
+    end
+    local now = GetTime()
+    local snapshotKey = table.concat({
+        tostring(reason), tostring(playerIsMoving), debugSafe(speed),
+        table.concat(queueKey, ","), tostring(lossless and lossless.queueValue),
+        tostring(preserve and preserve.queueValue), tostring(queueReady),
+        tostring(playerIsCasting), tostring(playerIsChanneling),
+    }, ":")
+    if snapshotKey == debugLastSnapshot
+        and (not playerIsMoving or now - debugLastSnapshotAt < 1) then
+        return
+    end
+    debugLastSnapshot = snapshotKey
+    debugLastSnapshotAt = now
+
+    local _, class = UnitClass("player")
+    appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
+        :format(
+            reason, "2.10.2", GetTime() - debugStartedAt,
+            debugSafe(class), debugSafe(currentSpecKey),
+            debugSafe(currentPolicy and currentPolicy.id),
+            debugSafe(currentPolicy and currentPolicy.revision),
+            debugSafe(activeSource and activeSource.id),
+            tostring(JustACBridgeDB.movementFilter ~= false),
+            tostring(playerIsMoving), debugSafe(speed), tostring(speedOK),
+            tostring(playerIsCasting), tostring(playerIsChanneling),
+            debugSafe(playerChannelSpellID), tostring(queueReady), debugSafe(gcdRemainingMs)))
+
+    local queueParts = {}
+    for index = 1, math.min(#queue, QUEUE_SCAN_COUNT) do
+        queueParts[#queueParts + 1] = tostring(index) .. "=" .. debugSafe(queue[index])
+    end
+    appendDebug("QUEUE " .. table.concat(queueParts, " "))
+    appendDebug(("SELECT lossless=%s/%s/%s moveFallback=%s failureFallback=%s emergency=%s preserve=%s/%s/%s moveFallback=%s failureFallback=%s emergency=%s")
+        :format(
+            debugSafe(lossless and lossless.queueValue), debugSafe(lossless and lossless.name),
+            debugSafe(lossless and lossless.plainHotkey),
+            tostring(lossless and lossless.movementFallback == true),
+            tostring(lossless and lossless.failureFallback == true),
+            tostring(lossless and lossless.emergencyMovementFallback == true),
+            debugSafe(preserve and preserve.queueValue), debugSafe(preserve and preserve.name),
+            debugSafe(preserve and preserve.plainHotkey),
+            tostring(preserve and preserve.movementFallback == true),
+            tostring(preserve and preserve.failureFallback == true),
+            tostring(preserve and preserve.emergencyMovementFallback == true)))
+
+    for index = 1, math.min(#queue, QUEUE_SCAN_COUNT) do
+        local value = queue[index]
+        if type(value) == "number" and value > 0 then
+            appendDebug("Q" .. tostring(index) .. " " .. movementDecision(value))
+            local failed = failedMovementRecommendations[value]
+            if failed then
+                appendDebug(("Q%s FAILURE count=%s lastAt=%.3f suppressRemaining=%.3f")
+                    :format(index, debugSafe(failed.count), tonumber(failed.lastAt) or 0,
+                        math.max(0, (tonumber(failed.suppressUntil) or 0) - GetTime())))
+            end
+        else
+            appendDebug("Q" .. tostring(index) .. " value=" .. debugSafe(value))
+        end
+    end
+
+    for position = 1, 2 do
+        local trace = policyFallbackTraces[position]
+        if not trace then
+            appendDebug("FALLBACK slot=" .. tostring(position) .. " invoked=false")
+        else
+            appendDebug(("FALLBACK slot=%s gate=%s policy=%s enemyOK=%s enemyCount=%s rawEnemies=%s selected=%s")
+                :format(position, debugSafe(trace.gate), debugSafe(trace.policy),
+                    tostring(trace.enemyOK), debugSafe(trace.enemyCount),
+                    debugSafe(trace.detectedEnemies), debugSafe(trace.selected)))
+            for ruleIndex, rule in ipairs(trace.rules) do
+                appendDebug(("FALLBACK slot=%s rule=%s spell=%s label=%s enemies=%s min=%s max=%s requireProc=%s procOK=%s proc=%s known=%s reserved=%s excluded=%s moveSafe=%s rangeSafe=%s groundSafe=%s usable=%s data=%s hotkey=%s selected=%s")
+                    :format(position, ruleIndex, debugSafe(rule.spellID), debugSafe(rule.label),
+                        tostring(rule.enemyEligible), debugSafe(rule.minEnemies), debugSafe(rule.maxEnemies),
+                        tostring(rule.requireProc), tostring(rule.procOK), tostring(rule.procced),
+                        tostring(rule.known), tostring(rule.reserved), tostring(rule.excluded),
+                        tostring(rule.movementSafe), tostring(rule.rangeSafe), tostring(rule.groundSafe),
+                        tostring(rule.usable), tostring(rule.data), debugSafe(rule.hotkey),
+                        tostring(rule.selected)))
+            end
+        end
+    end
 end
 
 local function getGcdState()
@@ -768,10 +1002,13 @@ local function updatePixelProtocol(dataRows)
     putU24(bytes, 36, second and (second.spellID or second.itemID) or 0)
     putFixedString(bytes, 39, 40, second and second.plainHotkey or "")
 
-    -- v3 queue timing: byte 64 is the commit gate; bytes 65..66 are the
-    -- remaining GCD milliseconds.  The packet only changes when the gate
-    -- crosses the final 120 ms, avoiding per-frame matrix redraws.
-    bytes[64] = queueReady and 1 or 0
+    -- Diagnostic protocol v4 adds live movement state to the v3 queue gate.
+    bytes[64] = (queueReady and 1 or 0)
+    if PIXEL_PROTOCOL_VERSION >= 4 then
+        bytes[64] = bytes[64]
+            + (playerIsMoving and 2 or 0)
+            + (JustACBridgeDB.movementFilter ~= false and 4 or 0)
+    end
     local remaining = math.min(65535, math.max(0, math.floor(gcdRemainingMs)))
     bytes[65] = remaining % 256
     bytes[66] = math.floor(remaining / 256) % 256
@@ -933,8 +1170,9 @@ local function updateUI(dataRows)
                 and (" · 移动兜底" .. (data.emergencyFallbackLabel
                     and ("：" .. data.emergencyFallbackLabel) or ""))
                 or (data.movementFallback and " · 移动替代"
+                or (data.failureFallback and " · 失败后替代"
                 or (data.rangeFallback and " · 射程替代"
-                    or (data.groundFallback and " · 场地仍存在" or "")))
+                    or (data.groundFallback and " · 场地仍存在" or ""))))
             row.id:SetText((data.kind == "item"
                 and ("物品 " .. tostring(data.itemID))
                 or ("法术 " .. tostring(data.spellID)))
@@ -948,7 +1186,9 @@ local function updateUI(dataRows)
         else
             row.icon:SetTexture(134400)
             row.icon:SetDesaturated(true)
-            row.name:SetText("暂无推荐")
+            row.name:SetText(playerIsMoving and JustACBridgeDB.movementFilter ~= false
+                and (index == 2 and "移动中无安全非爆发推荐" or "移动中无安全推荐")
+                or "暂无推荐")
             row.id:SetText("-")
             row.hotkey:SetText("-")
             row.hotkey:SetTextColor(0.55, 0.55, 0.55)
@@ -989,6 +1229,7 @@ local function refresh()
         return false, ok and "invalid recommendation queue" or tostring(queue)
     end
 
+    policyFallbackTraces = {}
     local lossless = findSafeRecommendation(queue)
     if not lossless then
         lossless = findPolicyMovementEmergencyFallback(1)
@@ -1015,14 +1256,15 @@ local function refresh()
     local nextRows = { lossless, preserve }
 
     local nextQueueReady, nextGcdRemainingMs = getGcdState()
+    queueReady = nextQueueReady
+    gcdRemainingMs = nextGcdRemainingMs
+    recordDebugSnapshot("frame", queue, lossless, preserve)
     local signature = makeSignature(nextRows, nextQueueReady)
     if signature == lastSignature then
         return true
     end
 
     lastSignature = signature
-    queueReady = nextQueueReady
-    gcdRemainingMs = nextGcdRemainingMs
     currentRows = nextRows
     updateSavedExport(currentRows)
     updateUI(currentRows)
@@ -1239,6 +1481,63 @@ local function createUI()
     updatePixelProtocol(currentRows)
 end
 
+local function showDebugWindow()
+    if not debugFrame then
+        debugFrame = CreateFrame("Frame", "JustACBridgeDebugFrame", UIParent, "BackdropTemplate")
+        debugFrame:SetSize(860, 520)
+        debugFrame:SetPoint("CENTER")
+        debugFrame:SetFrameStrata("DIALOG")
+        debugFrame:SetMovable(true)
+        debugFrame:EnableMouse(true)
+        debugFrame:RegisterForDrag("LeftButton")
+        debugFrame:SetScript("OnDragStart", debugFrame.StartMoving)
+        debugFrame:SetScript("OnDragStop", debugFrame.StopMovingOrSizing)
+        debugFrame:SetBackdrop({
+            bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+            edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+            tile = true, tileSize = 16, edgeSize = 12,
+            insets = { left = 3, right = 3, top = 3, bottom = 3 },
+        })
+        debugFrame:SetBackdropColor(0.015, 0.015, 0.02, 0.98)
+
+        local title = debugFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+        title:SetPoint("TOPLEFT", 14, -12)
+        title:SetText("JustACBridge 诊断日志 · Ctrl+A / Ctrl+C 复制全部")
+        local close = CreateFrame("Button", nil, debugFrame, "UIPanelCloseButton")
+        close:SetPoint("TOPRIGHT", 1, 1)
+
+        local scroll = CreateFrame("ScrollFrame", nil, debugFrame, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 14, -42)
+        scroll:SetPoint("BOTTOMRIGHT", -32, 44)
+        debugBox = CreateFrame("EditBox", nil, scroll)
+        debugBox:SetMultiLine(true)
+        debugBox:SetAutoFocus(false)
+        -- Do not inherit ChatFontNormal: users often enlarge their chat font,
+        -- which made each diagnostic line fill the entire window.
+        debugBox:SetFontObject("GameFontHighlightSmall")
+        debugBox:SetWidth(800)
+        debugBox:SetMaxLetters(200000)
+        debugBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+        scroll:SetScrollChild(debugBox)
+
+        local selectAll = CreateFrame("Button", nil, debugFrame, "UIPanelButtonTemplate")
+        selectAll:SetSize(170, 24)
+        selectAll:SetPoint("BOTTOMLEFT", 14, 12)
+        selectAll:SetText("选中全部（然后 Ctrl+C）")
+        selectAll:SetScript("OnClick", function()
+            debugBox:SetFocus()
+            debugBox:HighlightText()
+        end)
+        local hint = debugFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        hint:SetPoint("LEFT", selectAll, "RIGHT", 12, 0)
+        hint:SetText("复现后不要 /reload；输入 /jacb debug，再复制这里和 Windows 客户端日志。")
+    end
+    local text = table.concat(debugLines, "\n")
+    debugBox:SetText(text ~= "" and text or "暂无日志")
+    debugBox:SetCursorPosition(#text)
+    debugFrame:Show()
+end
+
 local API = _G.JustACBridge or {}
 _G.JustACBridge = API
 
@@ -1369,6 +1668,10 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         if JustACBridgeDB.movementFilter == nil then
             JustACBridgeDB.movementFilter = true
         end
+        if JustACBridgeDB.debugEnabled == nil then
+            JustACBridgeDB.debugEnabled = false
+        end
+        PIXEL_PROTOCOL_VERSION = JustACBridgeDB.debugEnabled and 4 or 3
         if JustACBridgeDB.rangeFilter == nil then
             JustACBridgeDB.rangeFilter = true
         end
@@ -1390,6 +1693,10 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshPlayerMoving()
         refreshReservedSpells()
         createUI()
+        appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
+            :format("2.10.2", PIXEL_PROTOCOL_VERSION,
+                debugSafe(GetLocale and GetLocale()),
+                debugSafe(select(4, GetBuildInfo()))))
 
         if not sourceOK then
             statusBaseText = "错误：找不到可用推荐源 · " .. tostring(sourceError)
@@ -1415,11 +1722,37 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         lastSignature = nil
         refreshReservedSpells()
     elseif event == "PLAYER_STARTED_MOVING" then
+        local now = GetTime()
+        local changed = not playerIsMoving
         playerIsMoving = true
-        lastSignature = nil
+        lastMovementStartedAt = now
+        movementStopPendingUntil = 0
+        if changed then lastSignature = nil end
+        local ok, speed = pcall(GetUnitSpeed, "player")
+        if changed or now - movementLastDebugAt >= 0.5 then
+            movementLastDebugAt = now
+            appendDebug(("EVENT PLAYER_STARTED_MOVING speed=%s flapCount=%s")
+                :format(debugSafe(ok and speed or "call-error"), movementFlapCount))
+            movementFlapCount = 0
+        end
     elseif event == "PLAYER_STOPPED_MOVING" then
-        playerIsMoving = false
-        lastSignature = nil
+        local now = GetTime()
+        local deferred = now - lastMovementStartedAt <= MOVEMENT_FLAP_WINDOW_SECONDS
+        if deferred then
+            movementStopPendingUntil = now + MOVEMENT_STOP_DEBOUNCE_SECONDS
+            movementFlapCount = movementFlapCount + 1
+        else
+            playerIsMoving = false
+            movementStopPendingUntil = 0
+            lastSignature = nil
+        end
+        local ok, speed = pcall(GetUnitSpeed, "player")
+        if not deferred or now - movementLastDebugAt >= 0.5 then
+            movementLastDebugAt = now
+            appendDebug(("EVENT PLAYER_STOPPED_MOVING speed=%s deferred=%s flapCount=%s")
+                :format(debugSafe(ok and speed or "call-error"), tostring(deferred), movementFlapCount))
+            if not deferred then movementFlapCount = 0 end
+        end
     elseif event == "PLAYER_SPECIALIZATION_CHANGED"
         or event == "PLAYER_TALENT_UPDATE"
         or event == "TRAIT_CONFIG_UPDATED" then
@@ -1429,6 +1762,9 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         lastSignature = nil
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+        failedMovementRecommendations[tonumber(spellID)] = nil
+        appendDebug(("EVENT %s spell=%s castGUID=%s moving=%s")
+            :format(event, debugSafe(spellID), debugSafe(castGUID), tostring(playerIsMoving)))
         if GroundEffectTracker and GroundEffectTracker.OnSpellcastSucceeded
             and GroundEffectTracker.OnSpellcastSucceeded(spellID) then
             lastSignature = nil
@@ -1439,22 +1775,60 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         playerChannelSpellID = resolveChannelSpellID(spellID)
         playerIsCasting = false
         lastSignature = nil
+        appendDebug(("EVENT %s spell=%s moving=%s"):format(event, debugSafe(spellID), tostring(playerIsMoving)))
     elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
         playerIsChanneling = false
         playerChannelSpellID = nil
         lastSignature = nil
+        appendDebug(("EVENT %s spell=%s moving=%s"):format(event, debugSafe(spellID), tostring(playerIsMoving)))
     elseif event == "UNIT_SPELLCAST_START" or event == "UNIT_SPELLCAST_EMPOWER_START" then
         playerIsCasting = true
         playerIsChanneling = false
         playerChannelSpellID = nil
         lastSignature = nil
+        appendDebug(("EVENT %s spell=%s moving=%s"):format(event, debugSafe(spellID), tostring(playerIsMoving)))
+    elseif event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_FAILED_QUIET" then
+        local numericSpellID = tonumber(spellID)
+        local selected = false
+        for index = 1, ROW_COUNT do
+            local row = currentRows[index]
+            if row and row.spellID == numericSpellID then
+                selected = true
+                break
+            end
+        end
+        local now = GetTime()
+        local state = numericSpellID and failedMovementRecommendations[numericSpellID] or nil
+        local newlySuppressed = false
+        if selected and playerIsMoving and JustACBridgeDB.movementFilter ~= false then
+            if not state or now - (tonumber(state.lastAt) or 0) > FAILURE_WINDOW_SECONDS then
+                state = { count = 0, lastAt = now, suppressUntil = 0 }
+                failedMovementRecommendations[numericSpellID] = state
+            end
+            state.count = (tonumber(state.count) or 0) + 1
+            state.lastAt = now
+            if state.count >= FAILURE_THRESHOLD then
+                local previousUntil = tonumber(state.suppressUntil) or 0
+                state.suppressUntil = math.max(previousUntil, now + FAILURE_SUPPRESS_SECONDS)
+                newlySuppressed = previousUntil <= now
+                lastSignature = nil
+            end
+        end
+        playerIsCasting = false
+        local lastLog = numericSpellID and (debugFailureLastLog[numericSpellID] or 0) or 0
+        if newlySuppressed or now - lastLog >= FAILURE_WINDOW_SECONDS then
+            if numericSpellID then debugFailureLastLog[numericSpellID] = now end
+            appendDebug(("EVENT %s spell=%s moving=%s selected=%s failCount=%s suppressed=%s suppressRemaining=%.3f")
+                :format(event, debugSafe(spellID), tostring(playerIsMoving), tostring(selected),
+                    debugSafe(state and state.count), tostring(newlySuppressed),
+                    math.max(0, (state and tonumber(state.suppressUntil) or 0) - now)))
+        end
     elseif event == "UNIT_SPELLCAST_STOP"
         or event == "UNIT_SPELLCAST_EMPOWER_STOP"
-        or event == "UNIT_SPELLCAST_FAILED"
-        or event == "UNIT_SPELLCAST_FAILED_QUIET"
         or event == "UNIT_SPELLCAST_INTERRUPTED" then
         playerIsCasting = false
         lastSignature = nil
+        appendDebug(("EVENT %s spell=%s moving=%s"):format(event, debugSafe(spellID), tostring(playerIsMoving)))
     end
 end)
 
@@ -1612,6 +1986,23 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         else
             print("|cff40a9ffJustACBridge:|r 当前没有活动的已跟踪场地技能。")
         end
+    elseif command == "debug" or command == "debug show" then
+        showDebugWindow()
+        print("|cff40a9ffJustACBridge:|r 已打开诊断日志；点击选中全部后按 Ctrl+C。")
+    elseif command == "debug on" or command == "debug off" then
+        JustACBridgeDB.debugEnabled = command == "debug on"
+        PIXEL_PROTOCOL_VERSION = JustACBridgeDB.debugEnabled and 4 or 3
+        lastSignature = nil
+        appendDebug("DEBUG enabled=true")
+        print(JustACBridgeDB.debugEnabled
+            and "|cff40a9ffJustACBridge:|r 诊断记录已开启。"
+            or "|cff40a9ffJustACBridge:|r 诊断记录已关闭。")
+    elseif command == "debug clear" then
+        debugLines = {}
+        debugLastSnapshot = nil
+        JustACBridgeExport.debugLog = ""
+        appendDebug("DEBUG log-cleared")
+        showDebugWindow()
     elseif command == "movement on" or command == "movement off" then
         JustACBridgeDB.movementFilter = command == "movement on"
         lastSignature = nil
@@ -1675,6 +2066,7 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         print("/jacb ground alert/sound/voice on|off / test - 到期提醒")
         print("/jacb movement on | off - 移动时跳过不可移动读条/蓄力/引导")
         print("/jacb range on | off - 跳过明确超出目标射程的动作")
+        print("/jacb debug [show|on|off|clear] - 打开并复制完整诊断日志")
         print("/jacb flush - 重载 UI 并将导出数据写入磁盘")
     end
 end

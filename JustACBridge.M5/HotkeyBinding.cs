@@ -131,20 +131,25 @@ internal sealed class HotkeyBinding
         return Stroke.CanCreate(expanded);
     }
 
-    internal void Press()
+    internal bool Pulse(out string result)
     {
-        Send(_pressInputs);
+        uint pressed = Send(_pressInputs);
+        int pressError = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+        uint released = Send(_releaseInputs);
+        int releaseError = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+        bool ok = pressed == _pressInputs.Length && released == _releaseInputs.Length;
+        result = $"press={pressed}/{_pressInputs.Length} err={pressError} release={released}/{_releaseInputs.Length} err={releaseError}";
+        return ok;
     }
 
-    internal void Release()
+    internal void Pulse()
     {
+        Send(_pressInputs);
         Send(_releaseInputs);
     }
 
-    private static void Send(NativeMethods.INPUT[] inputs)
-    {
+    private static uint Send(NativeMethods.INPUT[] inputs) =>
         NativeMethods.SendInput((uint)inputs.Length, inputs, System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.INPUT>());
-    }
 
     private readonly record struct Stroke(bool IsMouse, ushort Scan, bool Extended, uint MouseDown, uint MouseUp, uint MouseData, bool Pulse)
     {
