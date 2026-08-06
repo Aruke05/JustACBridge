@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 5
+Registry.schemaVersion = 6
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -203,6 +203,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         moveCastNever = copyArray(classPolicy.moveCastNever),
         moveCastInstantOnly = copyArray(classPolicy.moveCastInstantOnly),
         clipChannels = copyArray(classPolicy.clipChannels),
+        protectedChannels = copyArray(classPolicy.protectedChannels),
         rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
         groundEffects = copyGroundEffects(classPolicy.groundEffects),
         fallbackActions = copyFallbackActions(classPolicy.fallbackActions),
@@ -213,6 +214,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     addUniqueValues(result.moveCastNever, specPolicy.moveCastNever)
     addUniqueValues(result.moveCastInstantOnly, specPolicy.moveCastInstantOnly)
     addUniqueValues(result.clipChannels, specPolicy.clipChannels)
+    addUniqueValues(result.protectedChannels, specPolicy.protectedChannels)
     appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
     appendGroundEffects(result.groundEffects, specPolicy.groundEffects)
     appendFallbackActions(result.fallbackActions, specPolicy.fallbackActions)
@@ -244,6 +246,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.clipChannels then
             replaceArray(result.clipChannels, patch.clipChannels)
         end
+        if patch.protectedChannels then
+            replaceArray(result.protectedChannels, patch.protectedChannels)
+        end
         if patch.rangeSequenceRules then
             result.rangeSequenceRules = copyRangeSequenceRules(patch.rangeSequenceRules)
         end
@@ -265,6 +270,8 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         addUniqueValues(result.moveCastInstantOnly, patch.addMoveCastInstantOnly)
         removeValues(result.clipChannels, patch.removeClipChannels)
         addUniqueValues(result.clipChannels, patch.addClipChannels)
+        removeValues(result.protectedChannels, patch.removeProtectedChannels)
+        addUniqueValues(result.protectedChannels, patch.addProtectedChannels)
         appendRangeSequenceRules(result.rangeSequenceRules, patch.addRangeSequenceRules)
         appendGroundEffects(result.groundEffects, patch.addGroundEffects)
         appendFallbackActions(result.fallbackActions, patch.addFallbackActions)
