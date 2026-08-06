@@ -74,11 +74,15 @@ local debugLines = {}
 local debugLastSnapshot
 local debugLastSnapshotAt = 0
 local debugStartedAt = GetTime()
-local DEBUG_MAX_LINES = 900
+-- Debug snapshots are intentionally verbose.  Keep enough history for the
+-- user to finish a pull and copy the log without losing the incident that
+-- happened a few minutes earlier.
+local DEBUG_MAX_LINES = 3600
 local policyFallbackTraces = {}
 local failedMovementRecommendations = {}
 local debugFailureLastLog = {}
 local FAILURE_WINDOW_SECONDS = 0.30
+local FAILURE_DUPLICATE_WINDOW_SECONDS = 0.08
 local FAILURE_THRESHOLD = 3
 local FAILURE_SUPPRESS_SECONDS = 1.00
 
@@ -313,12 +317,30 @@ local function policyContains(field, spellID)
     return currentPolicy and spellListContains(currentPolicy[field], spellID) or false
 end
 
+local function isPolicyFallbackSpell(spellID)
+    spellID = tonumber(spellID)
+    if not spellID or not currentPolicy then return false end
+    local displayID = getDisplaySpellID(spellID)
+    for _, rule in ipairs(currentPolicy.fallbackActions or {}) do
+        local configuredID = tonumber(type(rule) == "table" and rule.spellID or rule)
+        if configuredID and (configuredID == spellID or configuredID == displayID
+            or getDisplaySpellID(configuredID) == displayID) then
+            return true
+        end
+    end
+    return false
+end
+
 local function channelBlocksInput()
+    -- Some high-value channels must finish even if WoW emits movement intent
+    -- while the channel itself is still preventing actual translation.  In
+    -- particular, clipping Ray of Frost after the GCD loses most of the cast.
+    local protected = policyContains("protectedChannels", playerChannelSpellID)
     -- A genuine/attempted movement transition must be allowed to break a
     -- stationary channel.  Midnight can emit STARTED/STOPPED movement pairs
     -- every frame while a channel is preventing translation; blocking input
     -- here would otherwise deadlock the held M4/M5 key until the channel ends.
-    return playerIsChanneling and not playerIsMoving
+    return playerIsChanneling and (protected or not playerIsMoving)
         and not policyContains("clipChannels", playerChannelSpellID)
 end
 
@@ -814,7 +836,7 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.10.2", GetTime() - debugStartedAt,
+            reason, "2.10.3", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1516,7 +1538,7 @@ local function showDebugWindow()
         -- which made each diagnostic line fill the entire window.
         debugBox:SetFontObject("GameFontHighlightSmall")
         debugBox:SetWidth(800)
-        debugBox:SetMaxLetters(200000)
+        debugBox:SetMaxLetters(1000000)
         debugBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
         scroll:SetScrollChild(debugBox)
 
@@ -1694,7 +1716,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.10.2", PIXEL_PROTOCOL_VERSION,
+            :format("2.10.3", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -1800,26 +1822,38 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         local now = GetTime()
         local state = numericSpellID and failedMovementRecommendations[numericSpellID] or nil
         local newlySuppressed = false
-        if selected and playerIsMoving and JustACBridgeDB.movementFilter ~= false then
+        local duplicateFailure = false
+        local fallbackSpell = isPolicyFallbackSpell(numericSpellID)
+        if selected and not fallbackSpell and playerIsMoving
+            and JustACBridgeDB.movementFilter ~= false then
             if not state or now - (tonumber(state.lastAt) or 0) > FAILURE_WINDOW_SECONDS then
                 state = { count = 0, lastAt = now, suppressUntil = 0 }
                 failedMovementRecommendations[numericSpellID] = state
             end
-            state.count = (tonumber(state.count) or 0) + 1
-            state.lastAt = now
-            if state.count >= FAILURE_THRESHOLD then
-                local previousUntil = tonumber(state.suppressUntil) or 0
-                state.suppressUntil = math.max(previousUntil, now + FAILURE_SUPPRESS_SECONDS)
-                newlySuppressed = previousUntil <= now
-                lastSignature = nil
+            local failureGUID = type(castGUID) == "string" and castGUID ~= "" and castGUID or nil
+            duplicateFailure = (failureGUID and state.lastCastGUID == failureGUID)
+                or (not failureGUID and state.lastEventAt
+                    and now - state.lastEventAt < FAILURE_DUPLICATE_WINDOW_SECONDS)
+            state.lastEventAt = now
+            if failureGUID then state.lastCastGUID = failureGUID end
+            if not duplicateFailure then
+                state.count = (tonumber(state.count) or 0) + 1
+                state.lastAt = now
+                if state.count >= FAILURE_THRESHOLD then
+                    local previousUntil = tonumber(state.suppressUntil) or 0
+                    state.suppressUntil = math.max(previousUntil, now + FAILURE_SUPPRESS_SECONDS)
+                    newlySuppressed = previousUntil <= now
+                    lastSignature = nil
+                end
             end
         end
         playerIsCasting = false
         local lastLog = numericSpellID and (debugFailureLastLog[numericSpellID] or 0) or 0
         if newlySuppressed or now - lastLog >= FAILURE_WINDOW_SECONDS then
             if numericSpellID then debugFailureLastLog[numericSpellID] = now end
-            appendDebug(("EVENT %s spell=%s moving=%s selected=%s failCount=%s suppressed=%s suppressRemaining=%.3f")
-                :format(event, debugSafe(spellID), tostring(playerIsMoving), tostring(selected),
+            appendDebug(("EVENT %s spell=%s castGUID=%s moving=%s selected=%s fallback=%s duplicate=%s failCount=%s suppressed=%s suppressRemaining=%.3f")
+                :format(event, debugSafe(spellID), debugSafe(castGUID), tostring(playerIsMoving),
+                    tostring(selected), tostring(fallbackSpell), tostring(duplicateFailure),
                     debugSafe(state and state.count), tostring(newlySuppressed),
                     math.max(0, (state and tonumber(state.suppressUntil) or 0) - now)))
         end

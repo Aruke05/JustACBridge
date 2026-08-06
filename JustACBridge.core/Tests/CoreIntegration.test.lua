@@ -7,6 +7,9 @@ local speedSecret = false
 local eventFrame
 local soundCount = 0
 local voiceCount = 0
+local classFile = "DEATHKNIGHT"
+local specIndex = 3
+local testQueue = { 43265, 47541 }
 
 local function makeWidget()
     local widget = {}
@@ -57,8 +60,8 @@ function CreateFrame()
     if not eventFrame then eventFrame = frame end
     return frame
 end
-function UnitClass() return "Death Knight", "DEATHKNIGHT" end
-function GetSpecialization() return 3 end
+function UnitClass() return classFile, classFile end
+function GetSpecialization() return specIndex end
 function GetBuildInfo() return "12.0.7", "", "", 120007 end
 function GetUnitSpeed() return speed end
 function GetTime() return now end
@@ -72,7 +75,7 @@ dofile("JustACBridge.core/Sources/JustAC.lua")
 
 assert(JustACBridgeRecommendationSources.Register("test", {
     name = "Test Source",
-    GetQueue = function() return { 43265, 47541 } end,
+    GetQueue = function() return testQueue end,
     GetSpellHotkey = function(id) return id == 43265 and "1" or "2" end,
     GetDisplaySpellID = function(id) return id end,
     IsSpellUsable = function() return true end,
@@ -119,6 +122,14 @@ speed = 7
 eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
 JustACBridge.Refresh()
 assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
+-- WoW may emit several FAILED events for one physical key pulse.  A shared
+-- cast GUID represents one attempt and must not trip the circuit breaker.
+for _ = 1, 3 do
+    eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player", "same-cast", 43265)
+end
+JustACBridge.Refresh()
+assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
+now = 120
 for index = 1, 3 do
     eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player", "cast-fail-" .. index, 43265)
 end
@@ -126,27 +137,53 @@ JustACBridge.Refresh()
 local failureFallback = JustACBridge.GetCurrentRecommendation()
 assert(failureFallback.spellID == 47541 and failureFallback.failureFallback == true)
 
-now = 111.1
+now = 121.1
 JustACBridge.Refresh()
-assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
+local restored = JustACBridge.GetCurrentRecommendation()
+assert(restored.spellID == 43265,
+    ("primary not restored: spell=%s failureFallback=%s")
+        :format(tostring(restored.spellID), tostring(restored.failureFallback)))
+
+-- A specialization's final fallback must never enter the failure circuit
+-- breaker.  It has no safer action to advance to, so repeated game-side
+-- failures must leave it selected as the normal queue action.
+testQueue = { 47541 }
+JustACBridge.Refresh()
+for index = 1, 3 do
+    eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player",
+        "fallback-fail-" .. index, 47541)
+end
+JustACBridge.Refresh()
+local finalFallback = JustACBridge.GetCurrentRecommendation()
+assert(finalFallback.spellID == 47541
+    and finalFallback.failureFallback ~= true
+    and finalFallback.emergencyMovementFallback ~= true)
+testQueue = { 43265, 47541 }
 
 -- Midnight can report speed as secret and emit START/STOP movement events in
--- the same frame while a stationary channel resists movement.  The STOP must
--- be debounced, and movement intent must be allowed to interrupt the channel.
+-- the same frame while a stationary channel resists movement.  Ray of Frost
+-- is explicitly protected by the Frost policy and must not be clipped merely
+-- because movement intent was reported during its channel.
+classFile = "MAGE"
+specIndex = 3
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 speedSecret = true
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "channel-1", 205021)
 eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
 eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
 local movingChannel = JustACBridge.GetPlayerCastState()
-assert(movingChannel.isMoving == true and movingChannel.channelBlocksInput == false)
+assert(movingChannel.isMoving == true and movingChannel.channelBlocksInput == true,
+    ("Ray protection failed: moving=%s blocking=%s channel=%s")
+        :format(tostring(movingChannel.isMoving), tostring(movingChannel.channelBlocksInput),
+            tostring(movingChannel.channelSpellID)))
 
-now = 111.2
+now = 121.2
 eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
 eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
 JustACBridge.Refresh()
 assert(JustACBridge.IsPlayerMoving() == true)
 
-now = 111.5
+now = 121.5
 JustACBridge.Refresh()
 assert(JustACBridge.IsPlayerMoving() == false)
 

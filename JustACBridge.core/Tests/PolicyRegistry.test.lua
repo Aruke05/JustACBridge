@@ -16,7 +16,7 @@ dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
 
 local registry = JustACBridgePolicyRegistry
-assert(registry.schemaVersion == 5)
+assert(registry.schemaVersion == 6)
 
 local arcane = assert(registry.Resolve("MAGE", 1, 120007))
 assert(arcane.storageKey == "MAGE_1" and arcane.id == "arcane")
@@ -34,6 +34,7 @@ assert(frostMage.rangeSequenceRules[1].requiresSpell == 431044)
 assert(frostMage.rangeSequenceRules[1].defer[1] == 199786)
 assert(frostMage.rangeSequenceRules[1].prefer[1] == 44614)
 assert(#frostMage.fallbackActions == 1 and frostMage.fallbackActions[1].spellID == 30455)
+assert(#frostMage.protectedChannels == 1 and frostMage.protectedChannels[1] == 205021)
 
 local blood = assert(registry.Resolve("DEATHKNIGHT", 1, 120007))
 assert(#blood.reserve == 2 and blood.reserve[2] == 194844)
