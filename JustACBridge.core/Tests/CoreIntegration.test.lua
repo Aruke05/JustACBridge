@@ -106,20 +106,36 @@ eventFrame.OnEvent(eventFrame, "PLAYER_LOGIN")
 assert(JustACBridge.GetRecommendationSource().id == "test")
 assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
 
--- No normal recommendation must never leave either trigger empty.  The
--- specialization fallback is final and remains exportable even when the
--- source's runtime usability/range checks cannot approve it.
-testQueue = {}
-JustACBridge.Refresh()
-local emptyQueueFallback = JustACBridge.GetCurrentRecommendation()
-assert(emptyQueueFallback.spellID == 47541
-    and emptyQueueFallback.emergencyMovementFallback == true)
+-- No normal recommendation must never leave either trigger empty.  This is a
+-- core rule, not a Frost Mage exception: every independently maintained
+-- class/spec policy must reach its own final fallback through the same path.
+local fallbackCases = {
+    { class = "MAGE", spec = 1, spell = 44425 },
+    { class = "MAGE", spec = 2, spell = 2948 },
+    { class = "MAGE", spec = 3, spell = 30455 },
+    { class = "DEATHKNIGHT", spec = 1, spell = 50842 },
+    { class = "DEATHKNIGHT", spec = 2, spell = 49184 },
+    { class = "DEATHKNIGHT", spec = 3, spell = 47541 },
+}
+for _, case in ipairs(fallbackCases) do
+    classFile, specIndex = case.class, case.spec
+    eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+    testQueue = {}
+    JustACBridge.Refresh()
+    local emptyQueueFallback = JustACBridge.GetCurrentRecommendation()
+    assert(emptyQueueFallback.spellID == case.spell
+        and emptyQueueFallback.finalFallback == true,
+        ("final fallback failed for %s/%s: got %s")
+            :format(case.class, case.spec, tostring(emptyQueueFallback.spellID)))
+end
+classFile, specIndex = "DEATHKNIGHT", 3
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 testQueue = { 43265, 47541 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
 
--- Source usability does not include cooldown readiness.  A stale first queue
--- entry that is still on cooldown must advance instead of being sent forever.
+-- Cooldown readiness is likewise a core selector rule for every class/spec.
+-- A stale first queue entry must advance instead of being sent forever.
 cooldownSpellID = 43265
 cooldownEndsAt = now + 2
 JustACBridge.Refresh()

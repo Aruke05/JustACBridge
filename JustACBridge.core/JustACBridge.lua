@@ -668,7 +668,12 @@ local function findPolicyFinalFallback(position)
     trace.enemyCount = enemyCount
     trace.detectedEnemies = detectedEnemies
 
-    for _, rule in ipairs(currentPolicy.fallbackActions) do
+    for _, configuredRule in ipairs(currentPolicy.fallbackActions) do
+        -- Final fallback selection is a core invariant shared by every class
+        -- and specialization.  Policies only provide the ordered actions;
+        -- the selector must not contain spell- or class-specific branches.
+        local rule = type(configuredRule) == "table"
+            and configuredRule or { spellID = configuredRule }
         local spellID = tonumber(rule.spellID)
         local minEnemies = tonumber(rule.minEnemies)
         local maxEnemies = tonumber(rule.maxEnemies)
@@ -715,6 +720,10 @@ local function findPolicyFinalFallback(position)
             ruleTrace.data = data ~= nil
             ruleTrace.hotkey = data and data.plainHotkey or ""
             if data and data.plainHotkey ~= "" then
+                data.finalFallback = true
+                data.finalFallbackLabel = rule.label
+                data.finalFallbackEnemyCount = enemyCount
+                -- Kept for consumers of the 2.10.4 SavedVariables schema.
                 data.movementFallback = true
                 data.emergencyMovementFallback = true
                 data.emergencyFallbackLabel = rule.label
@@ -866,7 +875,7 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.10.4", GetTime() - debugStartedAt,
+            reason, "2.10.5", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1218,13 +1227,16 @@ local function updateUI(dataRows)
             row.icon:SetTexture(data.icon)
             row.icon:SetDesaturated(false)
             row.name:SetText(data.name)
-            local fallbackLabel = data.emergencyMovementFallback
+            local fallbackLabel = data.finalFallback
+                and (" · 专精兜底" .. (data.finalFallbackLabel
+                    and ("：" .. data.finalFallbackLabel) or ""))
+                or (data.emergencyMovementFallback
                 and (" · 移动兜底" .. (data.emergencyFallbackLabel
                     and ("：" .. data.emergencyFallbackLabel) or ""))
                 or (data.movementFallback and " · 移动替代"
                 or (data.failureFallback and " · 失败后替代"
                 or (data.rangeFallback and " · 射程替代"
-                    or (data.groundFallback and " · 场地仍存在" or ""))))
+                    or (data.groundFallback and " · 场地仍存在" or "")))))
             row.id:SetText((data.kind == "item"
                 and ("物品 " .. tostring(data.itemID))
                 or ("法术 " .. tostring(data.spellID)))
@@ -1746,7 +1758,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.10.4", PIXEL_PROTOCOL_VERSION,
+            :format("2.10.5", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
