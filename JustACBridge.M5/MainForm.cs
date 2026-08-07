@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Drawing;
 
 namespace JustACBridgeM5;
@@ -5,6 +6,7 @@ namespace JustACBridgeM5;
 internal sealed class MainForm : Form
 {
     private const int BlizzardSpellId = 190356;
+    private const int FrostFallbackSpellId = 30455;
     private const long BlizzardCancelSuppressionMs = 3000;
 
     private readonly Label _state = new() { AutoSize = true, Font = new Font("Microsoft YaHei UI", 16, FontStyle.Bold), ForeColor = Color.DarkOrange };
@@ -25,6 +27,7 @@ internal sealed class MainForm : Form
     private TriggerBinding _preserveTrigger;
     private volatile bool _lastBusy;
     private Packet? _lastPacket;
+    private readonly ConcurrentDictionary<int, HotkeyBinding> _recentSpellBindings = [];
     private long _blizzardSuppressedUntilTick;
     private string _lastReaderTrace = "";
 
@@ -213,6 +216,8 @@ internal sealed class MainForm : Form
 
     private void ApplyHookActions(Packet packet)
     {
+        RememberSpellBinding(packet.Lossless);
+        RememberSpellBinding(packet.PreserveBurst);
         if (packet.IsBusy)
         {
             _hook.SetActions(null, null, true, false);
@@ -222,19 +227,35 @@ internal sealed class MainForm : Form
         bool losslessSuppressed = IsBlizzardSuppressed(packet.Lossless);
         bool preserveSuppressed =
             packet.ProtocolVersion >= 2 && IsBlizzardSuppressed(packet.PreserveBurst);
+        HotkeyBinding? frostFallback = RecentSpellBinding(FrostFallbackSpellId);
+        HotkeyBinding? losslessBinding = losslessSuppressed
+            ? frostFallback : ParseBinding(packet.Lossless);
+        HotkeyBinding? preserveBinding = preserveSuppressed
+            ? frostFallback : ParseBinding(packet.PreserveBurst);
         bool movementBlocksLossless = packet.ProtocolVersion >= 4 && packet.IsMoving && packet.MovementFilter
-            && ParseBinding(packet.Lossless) is null;
+            && losslessBinding is null;
         bool movementBlocksPreserve = packet.ProtocolVersion >= 4 && packet.IsMoving && packet.MovementFilter
-            && ParseBinding(packet.PreserveBurst) is null;
+            && preserveBinding is null;
         _hook.SetActions(
-            losslessSuppressed ? null : ParseBinding(packet.Lossless),
-            packet.ProtocolVersion >= 2 && !preserveSuppressed
-                ? ParseBinding(packet.PreserveBurst) : null,
+            losslessBinding,
+            packet.ProtocolVersion >= 2 ? preserveBinding : null,
             false,
             packet.QueueReady,
-            losslessSuppressed || movementBlocksLossless,
-            preserveSuppressed || movementBlocksPreserve);
+            (losslessSuppressed && losslessBinding is null) || movementBlocksLossless,
+            (preserveSuppressed && preserveBinding is null) || movementBlocksPreserve);
     }
+
+    private void RememberSpellBinding(Recommendation recommendation)
+    {
+        if (!recommendation.Exists || recommendation.IsItem || !recommendation.Bound)
+            return;
+        HotkeyBinding? binding = ParseBinding(recommendation);
+        if (binding is not null)
+            _recentSpellBindings[recommendation.Id] = binding;
+    }
+
+    private HotkeyBinding? RecentSpellBinding(int spellId) =>
+        _recentSpellBindings.TryGetValue(spellId, out HotkeyBinding? binding) ? binding : null;
 
     private void OnRightClickWhileHolding(ActionSlot slot)
     {
@@ -248,12 +269,16 @@ internal sealed class MainForm : Form
         Interlocked.Exchange(
             ref _blizzardSuppressedUntilTick,
             Environment.TickCount64 + BlizzardCancelSuppressionMs);
+        HotkeyBinding? fallback = RecentSpellBinding(FrostFallbackSpellId);
+        DiagnosticLog.Write($"BLIZZARD cancel slot={slot} fallback={fallback?.Canonical ?? "null"}");
         ApplyHookActions(packet);
         try
         {
             BeginInvoke(() =>
             {
-                _state.Text = "已取消暴风雪：3.0 秒内不再释放";
+                _state.Text = fallback is null
+                    ? "已取消暴风雪：3.0 秒内不再释放"
+                    : "已取消暴风雪：3.0 秒内改用冰枪术兜底";
                 _state.ForeColor = Color.DarkOrange;
             });
         }

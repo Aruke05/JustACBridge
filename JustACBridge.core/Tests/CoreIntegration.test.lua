@@ -10,6 +10,8 @@ local voiceCount = 0
 local classFile = "DEATHKNIGHT"
 local specIndex = 3
 local testQueue = { 43265, 47541 }
+local cooldownSpellID
+local cooldownEndsAt = 0
 
 local function makeWidget()
     local widget = {}
@@ -43,7 +45,10 @@ C_Spell = {
     GetSpellInfo = function(id)
         return { name = "Spell " .. id, iconID = 134400, castTime = 0 }
     end,
-    GetSpellCooldown = function() return nil end,
+    GetSpellCooldown = function(id)
+        if id ~= cooldownSpellID then return nil end
+        return { startTime = cooldownEndsAt - 2, duration = 2, modRate = 1 }
+    end,
 }
 C_UnitAuras = {
     GetPlayerAuraBySpellID = function() return nil end,
@@ -99,6 +104,28 @@ dofile("JustACBridge.core/JustACBridge.lua")
 
 eventFrame.OnEvent(eventFrame, "PLAYER_LOGIN")
 assert(JustACBridge.GetRecommendationSource().id == "test")
+assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
+
+-- No normal recommendation must never leave either trigger empty.  The
+-- specialization fallback is final and remains exportable even when the
+-- source's runtime usability/range checks cannot approve it.
+testQueue = {}
+JustACBridge.Refresh()
+local emptyQueueFallback = JustACBridge.GetCurrentRecommendation()
+assert(emptyQueueFallback.spellID == 47541
+    and emptyQueueFallback.emergencyMovementFallback == true)
+testQueue = { 43265, 47541 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
+
+-- Source usability does not include cooldown readiness.  A stale first queue
+-- entry that is still on cooldown must advance instead of being sent forever.
+cooldownSpellID = 43265
+cooldownEndsAt = now + 2
+JustACBridge.Refresh()
+assert(JustACBridge.GetCurrentRecommendation().spellID == 47541)
+cooldownSpellID = nil
+JustACBridge.Refresh()
 assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
 
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast-1", 43265)

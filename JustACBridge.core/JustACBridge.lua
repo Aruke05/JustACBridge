@@ -1,4 +1,4 @@
-local ADDON_NAME = ...
+﻿local ADDON_NAME = ...
 
 -- WoW addons cannot open sockets or write arbitrary files.  This addon therefore
 -- exposes live data to other addons through _G.JustACBridge, and exposes data to
@@ -277,14 +277,6 @@ local function isReserveExcludedQueueValue(queueValue)
         and reserveExcludedSpellIDs[queueValue] == true
 end
 
-local function isUsableNow(spellID)
-    local ok, isUsable = sourceCall("IsSpellUsable", spellID)
-    if not ok then
-        return true
-    end
-    return isUsable ~= false
-end
-
 local function isSecret(value)
     return issecretvalue and issecretvalue(value) or false
 end
@@ -296,6 +288,46 @@ local function getDisplaySpellID(spellID)
     end
     local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
     return ok and type(displayID) == "number" and displayID > 0 and displayID or spellID
+end
+
+local function cooldownRemainingSeconds(spellID)
+    if type(spellID) ~= "number" or spellID <= 0 or not C_Spell then return nil end
+    local displayID = getDisplaySpellID(spellID)
+    if C_Spell.GetSpellCharges then
+        local ok, charges = pcall(C_Spell.GetSpellCharges, displayID)
+        if ok and type(charges) == "table" then
+            local current = charges.currentCharges
+            if type(current) == "number" and not isSecret(current) then
+                if current > 0 then return 0 end
+                local start = charges.cooldownStartTime
+                local duration = charges.cooldownDuration
+                local rate = charges.chargeModRate
+                if type(start) == "number" and type(duration) == "number"
+                    and not isSecret(start) and not isSecret(duration) then
+                    rate = type(rate) == "number" and not isSecret(rate) and rate > 0 and rate or 1
+                    return math.max(0, start + duration / rate - GetTime())
+                end
+            end
+        end
+    end
+    if not C_Spell.GetSpellCooldown then return nil end
+    local ok, cooldown = pcall(C_Spell.GetSpellCooldown, displayID)
+    if not ok or type(cooldown) ~= "table" then return nil end
+    local start = cooldown.startTime
+    local duration = cooldown.duration
+    local rate = cooldown.modRate
+    if type(start) ~= "number" or type(duration) ~= "number"
+        or isSecret(start) or isSecret(duration) then return nil end
+    if start <= 0 or duration <= 0 then return 0 end
+    rate = type(rate) == "number" and not isSecret(rate) and rate > 0 and rate or 1
+    return math.max(0, start + duration / rate - GetTime())
+end
+
+local function isUsableNow(spellID)
+    local ok, isUsable = sourceCall("IsSpellUsable", spellID)
+    if ok and isUsable == false then return false end
+    local remaining = cooldownRemainingSeconds(spellID)
+    return remaining == nil or remaining * 1000 <= QUEUE_COMMIT_WINDOW_MS
 end
 
 local function spellListContains(list, spellID)
@@ -609,7 +641,7 @@ local function findReserveRecommendation(queue, startIndex)
     return nil
 end
 
-local function findPolicyMovementEmergencyFallback(position)
+local function findPolicyFinalFallback(position)
     local trace = {
         position = position,
         moving = playerIsMoving,
@@ -618,13 +650,7 @@ local function findPolicyMovementEmergencyFallback(position)
         rules = {},
     }
     policyFallbackTraces[position] = trace
-    if not playerIsMoving then
-        trace.gate = "not-moving"
-        return nil
-    elseif JustACBridgeDB.movementFilter == false then
-        trace.gate = "movement-filter-off"
-        return nil
-    elseif not currentPolicy then
+    if not currentPolicy then
         trace.gate = "no-policy"
         return nil
     elseif not currentPolicy.fallbackActions or #currentPolicy.fallbackActions == 0 then
@@ -657,7 +683,9 @@ local function findPolicyMovementEmergencyFallback(position)
         local known = spellID and isSpellKnown(spellID) or false
         local reserved = spellID and isReservedQueueValue(spellID) or false
         local excluded = spellID and isReserveExcludedQueueValue(spellID) or false
-        local movementSafe = spellID and isMovementSafeQueueValue(spellID) or false
+        local movementSafe = spellID and (not playerIsMoving
+            or JustACBridgeDB.movementFilter == false
+            or isMovementSafeQueueValue(spellID)) or false
         local rangeSafe = spellID and isRangeSafeQueueValue(spellID) or false
         local groundSafe = spellID and isGroundEffectSafeQueueValue(spellID) or false
         local usable = spellID and isUsableNow(spellID) or false
@@ -679,8 +707,10 @@ local function findPolicyMovementEmergencyFallback(position)
             usable = usable,
         }
         trace.rules[#trace.rules + 1] = ruleTrace
-        if eligible and known and not reserved and not excluded
-            and movementSafe and rangeSafe and groundSafe and usable then
+        -- This is the final action, not another recommendation candidate.
+        -- Range/usability failures are deliberately diagnostic-only: when no
+        -- normal action exists, M4/M5 must still have a bound fallback to send.
+        if eligible and known and not reserved and not excluded and movementSafe then
             local data = getSpellData(spellID, position)
             ruleTrace.data = data ~= nil
             ruleTrace.hotkey = data and data.plainHotkey or ""
@@ -836,7 +866,7 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.10.3", GetTime() - debugStartedAt,
+            reason, "2.10.4", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1254,7 +1284,7 @@ local function refresh()
     policyFallbackTraces = {}
     local lossless = findSafeRecommendation(queue)
     if not lossless then
-        lossless = findPolicyMovementEmergencyFallback(1)
+        lossless = findPolicyFinalFallback(1)
     end
     local preserve
     if lossless and lossless.plainHotkey ~= ""
@@ -1272,7 +1302,7 @@ local function refresh()
                 and 1 or (lossless and 2 or 1)
         )
         if not preserve then
-            preserve = findPolicyMovementEmergencyFallback(2)
+            preserve = findPolicyFinalFallback(2)
         end
     end
     local nextRows = { lossless, preserve }
@@ -1716,7 +1746,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.10.3", PIXEL_PROTOCOL_VERSION,
+            :format("2.10.4", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
