@@ -44,6 +44,9 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
   API 明确报告为零读条时允许。
 - `clipChannels`：循环明确要求可在 GCD 末主动截断的引导技能。引导状态仍会导出，
   但不会一直占用动作队列。
+- `conditionalProtectedChannels`：仅在施放瞬间具有指定 Buff 时完整保护的引导。
+  每条规则使用 `spellID`、`buffs` 和可选 `label`；Bridge 会在
+  `UNIT_SPELLCAST_SENT` 时、Buff 被技能消耗前锁存状态。
 - `rangeSequenceRules`：只在目标被明确判定超过指定距离时调整技能先后；距离未知时
   不改 JustAC 原顺序。
 - `groundEffects`：成功放置后按持续时间跟踪的场地技能，可在仍有效时抑制重复推荐。
@@ -66,6 +69,9 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
     moveCastNever = { 4002 },
     moveCastInstantOnly = { 4003 },
     clipChannels = { 5001 },
+    conditionalProtectedChannels = {
+        { spellID = 5001, buffs = { 5002 }, label = "强化引导" },
+    },
     rangeSequenceRules = {
         {
             requiresSpell = 6001,
@@ -121,6 +127,8 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
   `moveCastNever` 同样支持完整替换和 `add/removeMoveCastNever`；
   `moveCastInstantOnly` 同样支持完整替换和 `add/removeMoveCastInstantOnly`。
 - 引导规则支持 `clipChannels` 完整替换和 `add/removeClipChannels` 增量修改；
+  条件保护支持 `conditionalProtectedChannels` 完整替换和
+  `addConditionalProtectedChannels` 追加；
   距离顺序规则支持 `rangeSequenceRules` 完整替换和 `addRangeSequenceRules` 追加。
 - 场地规则支持 `groundEffects` 完整替换和 `addGroundEffects` 追加。
 - 兜底规则支持 `fallbackActions` 完整替换和 `addFallbackActions` 追加。

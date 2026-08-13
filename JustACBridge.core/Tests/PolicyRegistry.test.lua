@@ -16,7 +16,7 @@ dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
 
 local registry = JustACBridgePolicyRegistry
-assert(registry.schemaVersion == 7)
+assert(registry.schemaVersion == 8)
 
 local arcane = assert(registry.Resolve("MAGE", 1, 120007))
 assert(arcane.storageKey == "MAGE_1" and arcane.id == "arcane")
@@ -28,6 +28,13 @@ assert(#arcane.moveCastAlways == 1 and arcane.moveCastAlways[1] == 2948)
 assert(#arcane.moveCastBuffs == 1 and arcane.moveCastBuffs[1] == 108839)
 assert(#arcane.clipChannels == 0)
 assert(#arcane.fallbackActions == 1 and arcane.fallbackActions[1].spellID == 44425)
+
+local arcane121 = assert(registry.Resolve("MAGE", 1, 120100))
+assert(arcane121.ruleset == "midnight-12.1")
+assert(#arcane121.clipChannels == 1 and arcane121.clipChannels[1] == 5143)
+assert(#arcane121.conditionalProtectedChannels == 1)
+assert(arcane121.conditionalProtectedChannels[1].spellID == 5143)
+assert(arcane121.conditionalProtectedChannels[1].buffs[1] == 1277009)
 
 local arcaneTwwS3 = assert(registry.Resolve("MAGE", 1, 110207))
 assert(arcaneTwwS3.ruleset == "tww-s3")
