@@ -52,6 +52,10 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
 - `fallbackActions`：仅在玩家移动且 JustAC 的前 8 项没有安全可执行动作时使用的
   有序兜底。支持 `spellID`、`minEnemies`、`maxEnemies`、`requireProc` 和显示用
   `label`；仍必须通过已学习、可用、射程、移动安全和快捷键检查。
+- `maintenanceBuffs`：自身 Buff 明确不存在时插入的维护技能。每项登记
+  `spellID`、`auraID`，并用 `lossless`/`preserve` 指定作用于哪一路；只有光环缺失、
+  法术已学习、冷却明确就绪且快捷键已绑定时才会加入；`reserveCharges` 可要求自动
+  施放后仍保留指定充能数，任何未知状态都保守跳过。
 
 版本差异放在 `versions`，无需修改主循环：
 
@@ -91,6 +95,15 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
         { spellID = 8002, minEnemies = 5, label = "五目标兜底" },
         { spellID = 8003, label = "通用兜底" },
     },
+    maintenanceBuffs = {
+        {
+            spellID = 9001,
+            auraID = 9001,
+            lossless = true,
+            preserve = true,
+            reserveCharges = 1,
+        },
+    },
     versions = {
         {
             id = "12.1",
@@ -129,6 +142,7 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
   距离顺序规则支持 `rangeSequenceRules` 完整替换和 `addRangeSequenceRules` 追加。
 - 场地规则支持 `groundEffects` 完整替换和 `addGroundEffects` 追加。
 - 兜底规则支持 `fallbackActions` 完整替换和 `addFallbackActions` 追加。
+- Buff 维护规则支持 `maintenanceBuffs` 完整替换和 `addMaintenanceBuffs` 追加。
 - 玩家 `/jacb reserve add/remove` 最后执行，始终高于内置策略。
 - SavedVariables 继续使用稳定键 `CLASSFILE_<专精序号>`，拆文件或升版本不会丢失
   现有覆盖。

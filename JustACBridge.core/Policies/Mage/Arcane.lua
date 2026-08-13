@@ -4,9 +4,21 @@ if not Registry then return end
 Registry.RegisterSpec("MAGE", 1, {
     id = "arcane",
     name = "奥术",
-    revision = 8,
+    revision = 9,
     fallbackActions = {
         { spellID = 44425, label = "奥术弹幕" },
+    },
+    -- The aura's presence is directly observable. Recast only after the
+    -- existing absorb has actually ended; never guess from remaining time.
+    maintenanceBuffs = {
+        {
+            spellID = 235450, -- Prismatic Barrier
+            auraID = 235450,
+            lossless = true,
+            preserve = true,
+            reserveCharges = 1,
+            label = "棱彩屏障",
+        },
     },
 
     -- Midnight 12.0 rebuilt Arcane.  Evocation is mana recovery again rather
@@ -51,7 +63,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 8,
+            revision = 9,
             -- The guide recommends clipping ordinary Missiles but completing
             -- Overpowered Missiles. WoW event/aura ordering has not been
             -- verified in live telemetry, so use the loss-minimizing fallback:

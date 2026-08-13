@@ -4,9 +4,22 @@ if not Registry then return end
 Registry.RegisterSpec("MAGE", 3, {
     id = "frost",
     name = "冰霜",
-    revision = 11,
+    revision = 12,
     fallbackActions = {
         { spellID = 30455, label = "冰枪术" },
+    },
+    -- Maintain the barrier only from its exact self aura. This also works
+    -- with Glacial Bulwark charges because readiness is read from the live
+    -- charge/cooldown API rather than inferred from the talent build.
+    maintenanceBuffs = {
+        {
+            spellID = 11426, -- Ice Barrier
+            auraID = 11426,
+            lossless = true,
+            preserve = true,
+            reserveCharges = 1,
+            label = "寒冰护体",
+        },
     },
     reserve = {
         12472, -- Icy Veins

@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 9
+Registry.schemaVersion = 10
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -89,6 +89,33 @@ end
 
 local function appendFallbackActions(target, source)
     for _, rule in ipairs(copyFallbackActions(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+local function copyMaintenanceBuffs(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        if type(rule) == "table" then
+            local spellID = tonumber(rule.spellID)
+            local auraID = tonumber(rule.auraID) or spellID
+            if spellID and spellID > 0 and auraID and auraID > 0 then
+                result[#result + 1] = {
+                    spellID = spellID,
+                    auraID = auraID,
+                    lossless = rule.lossless == true,
+                    preserve = rule.preserve == true,
+                    reserveCharges = math.max(0, tonumber(rule.reserveCharges) or 0),
+                    label = rule.label,
+                }
+            end
+        end
+    end
+    return result
+end
+
+local function appendMaintenanceBuffs(target, source)
+    for _, rule in ipairs(copyMaintenanceBuffs(source)) do
         target[#target + 1] = rule
     end
 end
@@ -209,6 +236,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
         groundEffects = copyGroundEffects(classPolicy.groundEffects),
         fallbackActions = copyFallbackActions(classPolicy.fallbackActions),
+        maintenanceBuffs = copyMaintenanceBuffs(classPolicy.maintenanceBuffs),
     }
     addUniqueValues(result.reservePassthrough, specPolicy.reservePassthrough)
     addUniqueValues(result.reserveExclusions, specPolicy.reserveExclusions)
@@ -222,6 +250,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
     appendGroundEffects(result.groundEffects, specPolicy.groundEffects)
     appendFallbackActions(result.fallbackActions, specPolicy.fallbackActions)
+    appendMaintenanceBuffs(result.maintenanceBuffs, specPolicy.maintenanceBuffs)
 
     local patch = selectVersionPatch(specPolicy, interfaceVersion)
     if patch then
@@ -268,6 +297,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.fallbackActions then
             result.fallbackActions = copyFallbackActions(patch.fallbackActions)
         end
+        if patch.maintenanceBuffs then
+            result.maintenanceBuffs = copyMaintenanceBuffs(patch.maintenanceBuffs)
+        end
         removeValues(result.reservePassthrough, patch.removeReservePassthrough)
         addUniqueValues(result.reservePassthrough, patch.addReservePassthrough)
         removeValues(result.reserveExclusions, patch.removeReserveExclusions)
@@ -289,6 +321,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         appendRangeSequenceRules(result.rangeSequenceRules, patch.addRangeSequenceRules)
         appendGroundEffects(result.groundEffects, patch.addGroundEffects)
         appendFallbackActions(result.fallbackActions, patch.addFallbackActions)
+        appendMaintenanceBuffs(result.maintenanceBuffs, patch.addMaintenanceBuffs)
     end
 
     return result

@@ -13,6 +13,14 @@ local testQueue = { 43265, 47541 }
 local burstTriggers = {}
 local cooldownSpellID
 local cooldownEndsAt = 0
+local playerAuras = {
+    [11426] = {},  -- Ice Barrier
+    [235450] = {}, -- Prismatic Barrier
+}
+local spellCharges = {
+    [11426] = 2,
+    [235450] = 2,
+}
 local spellCastTimes = {
     [30451] = 2000, -- Arcane Blast
 }
@@ -54,12 +62,25 @@ C_Spell = {
         return { name = "Spell " .. id, iconID = 134400, castTime = spellCastTimes[id] or 0 }
     end,
     GetSpellCooldown = function(id)
-        if id ~= cooldownSpellID then return nil end
+        if id ~= cooldownSpellID then
+            return { startTime = 0, duration = 0, modRate = 1 }
+        end
         return { startTime = cooldownEndsAt - 2, duration = 2, modRate = 1 }
+    end,
+    GetSpellCharges = function(id)
+        local current = spellCharges[id]
+        if current == nil then return nil end
+        return {
+            currentCharges = current,
+            maxCharges = 2,
+            cooldownStartTime = 0,
+            cooldownDuration = 0,
+            chargeModRate = 1,
+        }
     end,
 }
 C_UnitAuras = {
-    GetPlayerAuraBySpellID = function() return nil end,
+    GetPlayerAuraBySpellID = function(id) return playerAuras[id] end,
 }
 C_TTSSettings = {
     GetVoiceOptionID = function() return 1 end,
@@ -131,6 +152,29 @@ JustACBridge.Refresh()
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 JustACBridgeDB.reserveOverrides.MAGE_1 = nil
 burstTriggers = {}
+
+-- Mage barriers are policy-driven maintenance actions rather than guessed
+-- encounter timing. Exact aura absence promotes the ready, bound barrier to
+-- both M5 and M4; an active aura leaves the JustAC order untouched.
+playerAuras[235450] = nil
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 235450)
+assert(JustACBridge.GetLosslessRecommendation().maintenanceBuff == true)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 235450)
+playerAuras[235450] = {}
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+
+-- Keep one charge for the player's manual defensive. If the absorb breaks
+-- with only that reserved charge available, continue the ordinary queues.
+playerAuras[235450] = nil
+spellCharges[235450] = 1
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+spellCharges[235450] = 2
+playerAuras[235450] = {}
 
 -- M4 must remain safe to hold through movement/mechanics even during a
 -- momentary stationary frame. It skips the reserved Touch, the Missiles
@@ -280,7 +324,21 @@ testQueue = { 43265, 47541 }
 -- because movement intent was reported during its channel.
 classFile = "MAGE"
 specIndex = 3
+testQueue = { 30455 }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+playerAuras[11426] = nil
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 11426)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 11426)
+spellCharges[11426] = 1
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30455)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 30455)
+spellCharges[11426] = 2
+playerAuras[11426] = {}
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30455)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 30455)
 speedSecret = true
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "channel-1", 205021)
 eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")

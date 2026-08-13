@@ -561,6 +561,71 @@ local function isSpellKnown(spellID)
     return false
 end
 
+local function isPlayerAuraDefinitelyMissing(auraID)
+    local getAura = C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID
+    if not getAura then
+        return false
+    end
+    local ok, aura = pcall(getAura, auraID)
+    -- Maintenance actions are injected outside the recommendation source.
+    -- Fail closed unless absence is explicit; an API error or secret value
+    -- must never make the bridge repeatedly guess that the buff is missing.
+    return ok and not isSecret(aura) and aura == nil
+end
+
+local function isMaintenanceSpellReadyNow(spellID, reserveCharges)
+    local ok, usable = sourceCall("IsSpellUsable", spellID)
+    if not ok or isSecret(usable) or usable ~= true then
+        return false
+    end
+    reserveCharges = math.max(0, tonumber(reserveCharges) or 0)
+    if reserveCharges > 0 then
+        local getCharges = C_Spell and C_Spell.GetSpellCharges
+        if not getCharges then
+            return false
+        end
+        local chargesOK, charges = pcall(getCharges, getDisplaySpellID(spellID))
+        local current = chargesOK and type(charges) == "table" and charges.currentCharges
+        -- Spending is allowed only when the live count proves that the
+        -- configured manual reserve will remain afterwards.
+        return type(current) == "number" and not isSecret(current)
+            and current > reserveCharges
+    end
+    local remaining = cooldownRemainingSeconds(spellID)
+    -- Unlike an action already supplied by JustAC, a policy-injected spell
+    -- needs positive cooldown evidence. Unknown readiness therefore skips it.
+    return remaining ~= nil and remaining * 1000 <= QUEUE_COMMIT_WINDOW_MS
+end
+
+local function findMaintenanceRecommendation(position)
+    if not currentPolicy then
+        return nil
+    end
+    for _, rule in ipairs(currentPolicy.maintenanceBuffs or {}) do
+        local enabled = position == 1 and rule.lossless == true
+            or position == 2 and rule.preserve == true
+        local spellID = tonumber(rule.spellID)
+        local auraID = tonumber(rule.auraID) or spellID
+        if enabled and spellID and auraID
+            and isSpellKnown(spellID)
+            and isPlayerAuraDefinitelyMissing(auraID)
+            and isMaintenanceSpellReadyNow(spellID, rule.reserveCharges)
+            and (position == 1 and isSafeQueueValue(spellID)
+                or position == 2 and not isReservedQueueValue(spellID)
+                    and not isReserveExcludedQueueValue(spellID)
+                    and isHoldSafeQueueValue(spellID)) then
+            local data = getSpellData(spellID, position)
+            if data and data.plainHotkey ~= "" then
+                data.maintenanceBuff = true
+                data.maintenanceAuraID = auraID
+                data.maintenanceLabel = rule.label
+                return data
+            end
+        end
+    end
+    return nil
+end
+
 local function findRangeSequenceRecommendation(queue, count)
     local primary = queue[1]
     if JustACBridgeDB.rangeFilter == false or type(primary) ~= "number"
@@ -1347,18 +1412,18 @@ local function refresh()
     end
 
     policyFallbackTraces = {}
-    local lossless = findSafeRecommendation(queue)
+    local lossless = findMaintenanceRecommendation(1) or findSafeRecommendation(queue)
     if not lossless then
         lossless = findPolicyFinalFallback(1)
     end
-    local preserve
-    if lossless and lossless.plainHotkey ~= ""
+    local preserve = findMaintenanceRecommendation(2)
+    if not preserve and lossless and lossless.plainHotkey ~= ""
         and not isReservedQueueValue(lossless.queueValue)
         and not isReserveExcludedQueueValue(lossless.queueValue)
         and isHoldSafeQueueValue(lossless.queueValue) then
         preserve = copyTable(lossless)
         preserve.position = 2
-    else
+    elseif not preserve then
         -- A movement fallback may originate from any queue position.  Rescan
         -- from the front so reserve mode still gets the best safe non-burst
         -- action rather than accidentally skipping an earlier candidate.
