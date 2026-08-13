@@ -4,10 +4,15 @@ if not Registry then return end
 Registry.RegisterSpec("DEATHKNIGHT", 2, {
     id = "frost",
     name = "冰霜",
-    revision = 2,
+    revision = 3,
     fallbackActions = {
         { spellID = 49184, requireProc = true, label = "白霜凛风冲击" },
         { spellID = 49184, label = "凛风冲击" },
+    },
+    -- Death Grip is encounter utility, never a rotational damage action.
+    -- Filter stale queue/gap-closer injections from both M5 and M4.
+    rotationExclusions = {
+        49576, -- Death Grip
     },
     reserve = {
         51271,   -- Pillar of Frost
@@ -16,5 +21,19 @@ Registry.RegisterSpec("DEATHKNIGHT", 2, {
         47568,   -- Empower Rune Weapon
         279302,  -- Frostwyrm's Fury
         439843,  -- Reaper's Mark
+    },
+    versions = {
+        {
+            id = "midnight-12.1",
+            minInterface = 120100,
+            maxInterface = 120199,
+            revision = 3,
+            -- Current Rider/Deathbringer openers pair Raise Dead with the
+            -- Pillar package. Preserve both live/compatibility spell IDs.
+            addReserve = {
+                46584, -- Raise Dead (compatibility ID)
+                46585, -- Raise Dead
+            },
+        },
     },
 })

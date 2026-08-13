@@ -65,6 +65,7 @@ local queueReady = true
 local gcdRemainingMs = 0
 local reservedSpellIDs = {}
 local reserveExcludedSpellIDs = {}
+local rotationExcludedSpellIDs = {}
 local currentSpecKey
 local currentPolicy
 local getSpellData
@@ -215,12 +216,27 @@ local function refreshReserveExclusions(spellIDs)
     end
 end
 
+local function refreshRotationExclusions(spellIDs)
+    rotationExcludedSpellIDs = {}
+    for _, spellID in ipairs(spellIDs or {}) do
+        spellID = tonumber(spellID)
+        if spellID and spellID > 0 then
+            rotationExcludedSpellIDs[spellID] = true
+            local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
+            if ok and type(displayID) == "number" and displayID > 0 then
+                rotationExcludedSpellIDs[displayID] = true
+            end
+        end
+    end
+end
+
 local function refreshReservedSpells()
     reservedSpellIDs = {}
     local storageKey, _, _, policy = getSpecContext()
     currentSpecKey = storageKey
     currentPolicy = policy
     refreshReserveExclusions(currentPolicy and currentPolicy.reserveExclusions)
+    refreshRotationExclusions(currentPolicy and currentPolicy.rotationExclusions)
     if GroundEffectTracker and GroundEffectTracker.Configure then
         GroundEffectTracker.Configure(
             currentPolicy and currentPolicy.groundEffects or {},
@@ -285,6 +301,12 @@ local function isReserveExcludedQueueValue(queueValue)
     return type(queueValue) == "number"
         and queueValue > 0
         and reserveExcludedSpellIDs[queueValue] == true
+end
+
+local function isRotationExcludedQueueValue(queueValue)
+    return type(queueValue) == "number"
+        and queueValue > 0
+        and rotationExcludedSpellIDs[queueValue] == true
 end
 
 local function isSecret(value)
@@ -525,7 +547,8 @@ local function isFailureSuppressedQueueValue(queueValue)
 end
 
 local function isSafeQueueValue(queueValue)
-    return isMovementSafeQueueValue(queueValue)
+    return not isRotationExcludedQueueValue(queueValue)
+        and isMovementSafeQueueValue(queueValue)
         and isRangeSafeQueueValue(queueValue)
         and isGroundEffectSafeQueueValue(queueValue)
         and not isFailureSuppressedQueueValue(queueValue)
@@ -602,6 +625,7 @@ local function findSafeRecommendation(queue)
     local primaryRangeBlocked = not isRangeSafeQueueValue(queue[1])
     local primaryGroundBlocked = not isGroundEffectSafeQueueValue(queue[1])
     local primaryFailureBlocked = isFailureSuppressedQueueValue(queue[1])
+    local primaryRotationBlocked = isRotationExcludedQueueValue(queue[1])
     for index = 1, count do
         local queueValue = queue[index]
         if type(queueValue) == "number" and queueValue ~= 0
@@ -615,6 +639,7 @@ local function findSafeRecommendation(queue)
                 data.rangeFallback = index ~= 1 and primaryRangeBlocked
                 data.groundFallback = index ~= 1 and primaryGroundBlocked
                 data.failureFallback = index ~= 1 and primaryFailureBlocked
+                data.rotationFallback = index ~= 1 and primaryRotationBlocked
                 return data
             end
         end
@@ -724,6 +749,7 @@ local function findPolicyFinalFallback(position)
         local known = spellID and isSpellKnown(spellID) or false
         local reserved = spellID and isReservedQueueValue(spellID) or false
         local excluded = spellID and isReserveExcludedQueueValue(spellID) or false
+        local rotationExcluded = spellID and isRotationExcludedQueueValue(spellID) or false
         local movementSafe = spellID and (not playerIsMoving
             or JustACBridgeDB.movementFilter == false
             or isMovementSafeQueueValue(spellID)) or false
@@ -742,6 +768,7 @@ local function findPolicyFinalFallback(position)
             known = known,
             reserved = reserved,
             excluded = excluded,
+            rotationExcluded = rotationExcluded,
             movementSafe = movementSafe,
             rangeSafe = rangeSafe,
             groundSafe = groundSafe,
@@ -751,7 +778,8 @@ local function findPolicyFinalFallback(position)
         -- This is the final action, not another recommendation candidate.
         -- Range/usability failures are deliberately diagnostic-only: when no
         -- normal action exists, M4/M5 must still have a bound fallback to send.
-        if eligible and known and not reserved and not excluded and movementSafe then
+        if eligible and known and not reserved and not excluded
+            and not rotationExcluded and movementSafe then
             local data = getSpellData(spellID, position)
             ruleTrace.data = data ~= nil
             ruleTrace.hotkey = data and data.plainHotkey or ""
@@ -911,7 +939,7 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.10.7", GetTime() - debugStartedAt,
+            reason, "2.10.8", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1811,7 +1839,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.10.7", PIXEL_PROTOCOL_VERSION,
+            :format("2.10.8", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 

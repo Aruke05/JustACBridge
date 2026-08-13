@@ -125,6 +125,22 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 JustACBridgeDB.reserveOverrides.MAGE_1 = nil
 burstTriggers = {}
 
+-- Death Grip is encounter utility rather than a Frost damage action. A stale
+-- queue/gap-closer injection must be skipped by both exported actions.
+classFile, specIndex = "DEATHKNIGHT", 2
+testQueue = { 49576, 49184 }
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+JustACBridge.Refresh()
+local frostLossless = JustACBridge.GetLosslessRecommendation()
+local frostPreserve = JustACBridge.GetPreserveBurstRecommendation()
+assert(frostLossless.spellID == 49184 and frostLossless.rotationFallback == true)
+assert(frostPreserve.spellID == 49184)
+
+classFile, specIndex = "MAGE", 1
+testQueue = { 12051, 44425 }
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+JustACBridge.Refresh()
+
 -- 12.1 clips ordinary Arcane Missiles, but an Overpowered Missiles proc is
 -- snapshotted at SENT (before WoW consumes its aura) and protects the whole
 -- matching channel.

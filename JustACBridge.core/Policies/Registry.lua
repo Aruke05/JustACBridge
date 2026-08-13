@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 8
+Registry.schemaVersion = 9
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -220,6 +220,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         reserve = copyArray(specPolicy.reserve),
         reservePassthrough = copyArray(classPolicy.reservePassthrough),
         reserveExclusions = copyArray(classPolicy.reserveExclusions),
+        rotationExclusions = copyArray(classPolicy.rotationExclusions),
         moveCastAlways = copyArray(classPolicy.moveCastAlways),
         moveCastBuffs = copyArray(classPolicy.moveCastBuffs),
         moveCastNever = copyArray(classPolicy.moveCastNever),
@@ -234,6 +235,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     }
     addUniqueValues(result.reservePassthrough, specPolicy.reservePassthrough)
     addUniqueValues(result.reserveExclusions, specPolicy.reserveExclusions)
+    addUniqueValues(result.rotationExclusions, specPolicy.rotationExclusions)
     addUniqueValues(result.moveCastAlways, specPolicy.moveCastAlways)
     addUniqueValues(result.moveCastBuffs, specPolicy.moveCastBuffs)
     addUniqueValues(result.moveCastNever, specPolicy.moveCastNever)
@@ -260,6 +262,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         end
         if patch.reserveExclusions then
             replaceArray(result.reserveExclusions, patch.reserveExclusions)
+        end
+        if patch.rotationExclusions then
+            replaceArray(result.rotationExclusions, patch.rotationExclusions)
         end
         if patch.moveCastAlways then
             replaceArray(result.moveCastAlways, patch.moveCastAlways)
@@ -296,6 +301,8 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         addUniqueValues(result.reservePassthrough, patch.addReservePassthrough)
         removeValues(result.reserveExclusions, patch.removeReserveExclusions)
         addUniqueValues(result.reserveExclusions, patch.addReserveExclusions)
+        removeValues(result.rotationExclusions, patch.removeRotationExclusions)
+        addUniqueValues(result.rotationExclusions, patch.addRotationExclusions)
         removeValues(result.moveCastAlways, patch.removeMoveCastAlways)
         addUniqueValues(result.moveCastAlways, patch.addMoveCastAlways)
         removeValues(result.moveCastBuffs, patch.removeMoveCastBuffs)

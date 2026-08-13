@@ -16,7 +16,7 @@ dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
 
 local registry = JustACBridgePolicyRegistry
-assert(registry.schemaVersion == 8)
+assert(registry.schemaVersion == 9)
 
 local arcane = assert(registry.Resolve("MAGE", 1, 120007))
 assert(arcane.storageKey == "MAGE_1" and arcane.id == "arcane")
@@ -60,6 +60,13 @@ assert(blood.fallbackActions[1].spellID == 50842)
 local frostDK = assert(registry.Resolve("DEATHKNIGHT", 2, 120007))
 assert(#frostDK.fallbackActions == 2)
 assert(frostDK.fallbackActions[1].spellID == 49184 and frostDK.fallbackActions[1].requireProc)
+assert(#frostDK.rotationExclusions == 1 and frostDK.rotationExclusions[1] == 49576)
+
+local frostDK121 = assert(registry.Resolve("DEATHKNIGHT", 2, 120100))
+assert(frostDK121.ruleset == "midnight-12.1" and frostDK121.revision == 3)
+assert(#frostDK121.reserve == 8)
+assert(frostDK121.reserve[7] == 46584 and frostDK121.reserve[8] == 46585)
+assert(#frostDK121.rotationExclusions == 1 and frostDK121.rotationExclusions[1] == 49576)
 
 local unholy = assert(registry.Resolve("DEATHKNIGHT", 3, 120007))
 assert(#unholy.reserve == 10 and unholy.reserve[3] == 42650)
