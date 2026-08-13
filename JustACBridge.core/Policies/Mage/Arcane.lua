@@ -4,7 +4,7 @@ if not Registry then return end
 Registry.RegisterSpec("MAGE", 1, {
     id = "arcane",
     name = "奥术",
-    revision = 7,
+    revision = 8,
     fallbackActions = {
         { spellID = 44425, label = "奥术弹幕" },
     },
@@ -19,6 +19,13 @@ Registry.RegisterSpec("MAGE", 1, {
     },
     reservePassthrough = {
         12051, -- Evocation
+    },
+    -- Arcane Orb travels along the player's facing rather than locking to the
+    -- selected target. Instances do not expose enough positional information
+    -- to aim it reliably, so the hold-safe M4 action must never fire it.
+    reserveExclusions = {
+        153626, -- Arcane Orb
+        153640, -- Arcane Orb override/compatibility form
     },
 
     -- TWW S3 used Evocation as part of the Surge/Touch setup and explicitly
@@ -44,7 +51,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 7,
+            revision = 8,
             -- The guide recommends clipping ordinary Missiles but completing
             -- Overpowered Missiles. WoW event/aura ordering has not been
             -- verified in live telemetry, so use the loss-minimizing fallback:

@@ -134,12 +134,18 @@ burstTriggers = {}
 
 -- M4 must remain safe to hold through movement/mechanics even during a
 -- momentary stationary frame. It skips the reserved Touch, the Missiles
--- channel and the Arcane Blast hardcast, preserving JustAC's remaining order
--- and selecting its first instant candidate (Arcane Explosion).
-testQueue = { 321507, 5143, 30451, 1449, 44425 }
+-- channel, the Arcane Blast hardcast and the facing-dependent Arcane Orb,
+-- preserving JustAC's remaining order and selecting Arcane Explosion.
+testQueue = { 321507, 5143, 30451, 153626, 1449, 44425 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 1449)
+
+-- Orb remains available to M5 for manual aiming but never leaks into M4.
+testQueue = { 153626, 44425 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 
 -- The shortcut that normally copies a non-reserved M5 action into M4 must not
 -- leak a stationary hardcast into the hold-safe action.
