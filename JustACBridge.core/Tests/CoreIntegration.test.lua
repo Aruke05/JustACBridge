@@ -13,6 +13,13 @@ local testQueue = { 43265, 47541 }
 local burstTriggers = {}
 local cooldownSpellID
 local cooldownEndsAt = 0
+local spellCastTimes = {
+    [30451] = 2000, -- Arcane Blast
+}
+local channeledSpells = {
+    [12051] = true, -- Evocation
+    [5143] = true,  -- Arcane Missiles
+}
 
 local function makeWidget()
     local widget = {}
@@ -44,7 +51,7 @@ C_Item = {
 }
 C_Spell = {
     GetSpellInfo = function(id)
-        return { name = "Spell " .. id, iconID = 134400, castTime = 0 }
+        return { name = "Spell " .. id, iconID = 134400, castTime = spellCastTimes[id] or 0 }
     end,
     GetSpellCooldown = function(id)
         if id ~= cooldownSpellID then return nil end
@@ -86,7 +93,7 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     GetDisplaySpellID = function(id) return id end,
     IsSpellUsable = function() return true end,
     IsSpellProcced = function() return false end,
-    IsChanneled = function() return false end,
+    IsChanneled = function(id) return channeledSpells[id] == true end,
     IsConfirmedOutOfRange = function() return false end,
     GetDetectedBurstTriggers = function() return burstTriggers end,
 }))
@@ -109,20 +116,37 @@ assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
 
 -- Midnight removed Evocation's Siphon Storm setup role.  Even if an old
 -- JustAC profile still detects it as a burst trigger, the 12.0 Arcane policy
--- must let it pass through M4.  M5 remains an exact first recommendation.
+-- must remove it from the burst set. M5 remains an exact first recommendation,
+-- while the mechanics-safe M4 still rejects its stationary channel.
 classFile, specIndex = "MAGE", 1
 burstTriggers = { 12051 }
 testQueue = { 12051, 44425 }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 12051)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 JustACBridgeDB.reserveOverrides.MAGE_1 = { include = { [12051] = true } }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 JustACBridge.Refresh()
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 JustACBridgeDB.reserveOverrides.MAGE_1 = nil
 burstTriggers = {}
+
+-- M4 must remain safe to hold through movement/mechanics even during a
+-- momentary stationary frame. It skips the reserved Touch, the Missiles
+-- channel and the Arcane Blast hardcast, preserving JustAC's remaining order
+-- and selecting its first instant candidate (Arcane Explosion).
+testQueue = { 321507, 5143, 30451, 1449, 44425 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 1449)
+
+-- The shortcut that normally copies a non-reserved M5 action into M4 must not
+-- leak a stationary hardcast into the hold-safe action.
+testQueue = { 30451, 1449, 44425 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 1449)
 
 -- Death Grip is encounter utility rather than a Frost damage action. A stale
 -- queue/gap-closer injection must be skipped by both exported actions.

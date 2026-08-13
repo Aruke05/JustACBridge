@@ -529,6 +529,18 @@ local function isSafeQueueValue(queueValue)
         and not isFailureSuppressedQueueValue(queueValue)
 end
 
+local function isHoldSafeQueueValue(queueValue)
+    -- M4 is a mechanics/movement hold key, not merely the ordinary selector
+    -- with major cooldowns removed.  Always evaluate it as if the player were
+    -- moving so a momentary stop cannot start a hardcast or channel.
+    return type(queueValue) == "number" and queueValue > 0
+        and not isRotationExcludedQueueValue(queueValue)
+        and isSpellMoveCastableNow(queueValue)
+        and isRangeSafeQueueValue(queueValue)
+        and isGroundEffectSafeQueueValue(queueValue)
+        and not isFailureSuppressedQueueValue(queueValue)
+end
+
 local function isSpellKnown(spellID)
     if not spellID then
         return true
@@ -648,7 +660,7 @@ local function findReserveRecommendation(queue, startIndex)
             and not isReservedQueueValue(queueValue)
             and not isReserveExcludedQueueValue(queueValue)
             and isUsableNow(queueValue)
-            and isSafeQueueValue(queueValue) then
+            and isHoldSafeQueueValue(queueValue) then
             local data = getSpellData(queueValue, 2)
             if data and data.plainHotkey ~= "" then
                 return data
@@ -667,7 +679,7 @@ local function findReserveRecommendation(queue, startIndex)
     if ok and type(spellID) == "number" and spellID > 0
         and spellID ~= queue[1] and not isReservedQueueValue(spellID)
         and not isReserveExcludedQueueValue(spellID)
-        and isUsableNow(spellID) and isSafeQueueValue(spellID) then
+        and isUsableNow(spellID) and isHoldSafeQueueValue(spellID) then
         local data = getSpellData(spellID, 2)
         if data and data.plainHotkey ~= "" then
             return data
@@ -725,9 +737,11 @@ local function findPolicyFinalFallback(position)
         local reserved = spellID and isReservedQueueValue(spellID) or false
         local excluded = spellID and isReserveExcludedQueueValue(spellID) or false
         local rotationExcluded = spellID and isRotationExcludedQueueValue(spellID) or false
-        local movementSafe = spellID and (not playerIsMoving
-            or JustACBridgeDB.movementFilter == false
-            or isMovementSafeQueueValue(spellID)) or false
+        local movementSafe = spellID and (position == 2
+            and isSpellMoveCastableNow(spellID)
+            or (not playerIsMoving
+                or JustACBridgeDB.movementFilter == false
+                or isMovementSafeQueueValue(spellID))) or false
         local rangeSafe = spellID and isRangeSafeQueueValue(spellID) or false
         local groundSafe = spellID and isGroundEffectSafeQueueValue(spellID) or false
         local usable = spellID and isUsableNow(spellID) or false
@@ -914,7 +928,7 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.10.9", GetTime() - debugStartedAt,
+            reason, "2.10.10", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1340,7 +1354,8 @@ local function refresh()
     local preserve
     if lossless and lossless.plainHotkey ~= ""
         and not isReservedQueueValue(lossless.queueValue)
-        and not isReserveExcludedQueueValue(lossless.queueValue) then
+        and not isReserveExcludedQueueValue(lossless.queueValue)
+        and isHoldSafeQueueValue(lossless.queueValue) then
         preserve = copyTable(lossless)
         preserve.position = 2
     else
@@ -1797,7 +1812,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.10.9", PIXEL_PROTOCOL_VERSION,
+            :format("2.10.10", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
