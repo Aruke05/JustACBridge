@@ -51,8 +51,6 @@ local lastSignature
 local currentRows = {}
 local playerIsChanneling = false
 local playerChannelSpellID
-local playerChannelIsConditionallyProtected = false
-local pendingConditionalChannelProtection
 local playerIsCasting = false
 local playerIsMoving = false
 local lastMovementStartedAt = -math.huge
@@ -381,28 +379,6 @@ local function policyContains(field, spellID)
     return currentPolicy and spellListContains(currentPolicy[field], spellID) or false
 end
 
-local function getConditionalProtectedChannelRule(spellID)
-    if not currentPolicy or not spellID then return nil end
-    for _, rule in ipairs(currentPolicy.conditionalProtectedChannels or {}) do
-        if type(rule) == "table" and spellListContains({ rule.spellID }, spellID) then
-            return rule
-        end
-    end
-    return nil
-end
-
-local function conditionalChannelBuffActive(rule)
-    local getAura = C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID
-    if not getAura or type(rule) ~= "table" then return false end
-    for _, auraID in ipairs(rule.buffs or {}) do
-        local ok, aura = pcall(getAura, auraID)
-        if ok and not isSecret(aura) and aura ~= nil then
-            return true
-        end
-    end
-    return false
-end
-
 local function isPolicyFallbackSpell(spellID)
     spellID = tonumber(spellID)
     if not spellID or not currentPolicy then return false end
@@ -421,8 +397,7 @@ local function channelBlocksInput()
     -- Some high-value channels must finish even if WoW emits movement intent
     -- while the channel itself is still preventing actual translation.  In
     -- particular, clipping Ray of Frost after the GCD loses most of the cast.
-    local protected = playerChannelIsConditionallyProtected
-        or policyContains("protectedChannels", playerChannelSpellID)
+    local protected = policyContains("protectedChannels", playerChannelSpellID)
     if playerIsChanneling and protected then
         return true
     end
@@ -939,7 +914,7 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.10.8", GetTime() - debugStartedAt,
+            reason, "2.10.9", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1715,7 +1690,6 @@ function API.GetPlayerCastState()
         isChanneling = playerIsChanneling,
         channelSpellID = playerChannelSpellID,
         channelBlocksInput = channelBlocksInput(),
-        channelConditionallyProtected = playerChannelIsConditionallyProtected,
         isCasting = playerIsCasting,
         isMoving = playerIsMoving,
     }
@@ -1773,7 +1747,6 @@ eventFrame:RegisterEvent("PLAYER_STARTED_MOVING")
 eventFrame:RegisterEvent("PLAYER_STOPPED_MOVING")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")
-eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SENT", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_START", "player")
@@ -1782,23 +1755,8 @@ eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED_QUIET", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
-eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID, sentSpellID)
-    if event == "UNIT_SPELLCAST_SENT" then
-        -- SENT fires before proc auras are consumed. Snapshot conditional
-        -- channel protection here, then bind it to the matching channel GUID.
-        local sentCastGUID = spellID
-        local numericSpellID = tonumber(sentSpellID)
-        local rule = getConditionalProtectedChannelRule(numericSpellID)
-        pendingConditionalChannelProtection = rule and conditionalChannelBuffActive(rule) and {
-            castGUID = sentCastGUID,
-            spellID = numericSpellID,
-            at = GetTime(),
-            label = rule.label,
-        } or nil
-        appendDebug(("EVENT %s spell=%s castGUID=%s conditionalProtected=%s")
-            :format(event, debugSafe(numericSpellID), debugSafe(sentCastGUID),
-                tostring(pendingConditionalChannelProtection ~= nil)))
-    elseif event == "PLAYER_LOGIN" then
+eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID)
+    if event == "PLAYER_LOGIN" then
         JustACBridgeDB = JustACBridgeDB or {}
         if JustACBridgeDB.visible == nil then
             JustACBridgeDB.visible = true
@@ -1839,7 +1797,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.10.8", PIXEL_PROTOCOL_VERSION,
+            :format("2.10.9", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -1859,8 +1817,6 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
     elseif event == "PLAYER_ENTERING_WORLD" then
         playerIsChanneling = false
         playerChannelSpellID = nil
-        playerChannelIsConditionallyProtected = false
-        pendingConditionalChannelProtection = nil
         playerIsCasting = false
         if GroundEffectTracker and GroundEffectTracker.Reset then
             GroundEffectTracker.Reset()
@@ -1907,7 +1863,6 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
             GroundEffectTracker.Reset()
         end
         refreshReservedSpells()
-        pendingConditionalChannelProtection = nil
         lastSignature = nil
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         failedMovementRecommendations[tonumber(spellID)] = nil
@@ -1921,34 +1876,19 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
     elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
         playerIsChanneling = true
         playerChannelSpellID = resolveChannelSpellID(spellID)
-        local rule = getConditionalProtectedChannelRule(playerChannelSpellID)
-        local pending = pendingConditionalChannelProtection
-        -- Only trust the pre-cast SENT snapshot.  The channel itself may grant
-        -- a proc for the *next* Missiles before CHANNEL_START is delivered;
-        -- reading the live aura here would then protect the wrong channel.
-        playerChannelIsConditionallyProtected = rule ~= nil
-            and pending ~= nil
-            and pending.castGUID == castGUID
-            and GetTime() - (tonumber(pending.at) or 0) <= 1
-            and spellListContains({ pending.spellID }, playerChannelSpellID)
-            or false
-        pendingConditionalChannelProtection = nil
         playerIsCasting = false
         lastSignature = nil
-        appendDebug(("EVENT %s spell=%s moving=%s conditionalProtected=%s")
-            :format(event, debugSafe(spellID), tostring(playerIsMoving),
-                tostring(playerChannelIsConditionallyProtected)))
+        appendDebug(("EVENT %s spell=%s moving=%s")
+            :format(event, debugSafe(spellID), tostring(playerIsMoving)))
     elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
         playerIsChanneling = false
         playerChannelSpellID = nil
-        playerChannelIsConditionallyProtected = false
         lastSignature = nil
         appendDebug(("EVENT %s spell=%s moving=%s"):format(event, debugSafe(spellID), tostring(playerIsMoving)))
     elseif event == "UNIT_SPELLCAST_START" or event == "UNIT_SPELLCAST_EMPOWER_START" then
         playerIsCasting = true
         playerIsChanneling = false
         playerChannelSpellID = nil
-        playerChannelIsConditionallyProtected = false
         lastSignature = nil
         appendDebug(("EVENT %s spell=%s moving=%s"):format(event, debugSafe(spellID), tostring(playerIsMoving)))
     elseif event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_FAILED_QUIET" then
@@ -2006,8 +1946,6 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         if event == "UNIT_SPELLCAST_INTERRUPTED" then
             playerIsChanneling = false
             playerChannelSpellID = nil
-            playerChannelIsConditionallyProtected = false
-            pendingConditionalChannelProtection = nil
         end
         lastSignature = nil
         appendDebug(("EVENT %s spell=%s moving=%s"):format(event, debugSafe(spellID), tostring(playerIsMoving)))

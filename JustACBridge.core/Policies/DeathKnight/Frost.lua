@@ -22,18 +22,4 @@ Registry.RegisterSpec("DEATHKNIGHT", 2, {
         279302,  -- Frostwyrm's Fury
         439843,  -- Reaper's Mark
     },
-    versions = {
-        {
-            id = "midnight-12.1",
-            minInterface = 120100,
-            maxInterface = 120199,
-            revision = 3,
-            -- Current Rider/Deathbringer openers pair Raise Dead with the
-            -- Pillar package. Preserve both live/compatibility spell IDs.
-            addReserve = {
-                46584, -- Raise Dead (compatibility ID)
-                46585, -- Raise Dead
-            },
-        },
-    },
 })

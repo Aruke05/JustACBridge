@@ -13,7 +13,6 @@ local testQueue = { 43265, 47541 }
 local burstTriggers = {}
 local cooldownSpellID
 local cooldownEndsAt = 0
-local activeAuras = {}
 
 local function makeWidget()
     local widget = {}
@@ -53,7 +52,7 @@ C_Spell = {
     end,
 }
 C_UnitAuras = {
-    GetPlayerAuraBySpellID = function(id) return activeAuras[id] and { spellId = id } or nil end,
+    GetPlayerAuraBySpellID = function() return nil end,
 }
 C_TTSSettings = {
     GetVoiceOptionID = function() return 1 end,
@@ -141,41 +140,12 @@ testQueue = { 12051, 44425 }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 JustACBridge.Refresh()
 
--- 12.1 clips ordinary Arcane Missiles, but an Overpowered Missiles proc is
--- snapshotted at SENT (before WoW consumes its aura) and protects the whole
--- matching channel.
-eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SENT", "player", "target", "missiles-1", 5143)
+-- Live telemetry has not proved a reliable way to bind Overpowered Missiles
+-- to the exact channel. The conservative 12.1 policy therefore protects every
+-- Arcane Missiles cast instead of risking an incorrect early clip.
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "missiles-1", 5143)
-local ordinaryMissiles = JustACBridge.GetPlayerCastState()
-assert(ordinaryMissiles.channelBlocksInput == false
-    and ordinaryMissiles.channelConditionallyProtected == false)
+assert(JustACBridge.GetPlayerCastState().channelBlocksInput == true)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "missiles-1", 5143)
-
--- A proc that appears only after SENT belongs to a future cast; it must not
--- retroactively protect the current ordinary Missiles channel.
-eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SENT", "player", "target", "missiles-next-proc", 5143)
-activeAuras[1277009] = true
-eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "missiles-next-proc", 5143)
-assert(JustACBridge.GetPlayerCastState().channelConditionallyProtected == false)
-eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "missiles-next-proc", 5143)
-activeAuras[1277009] = nil
-
-activeAuras[1277009] = true
-eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SENT", "player", "target", "missiles-2", 5143)
-activeAuras[1277009] = nil -- consumed before CHANNEL_START
-eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "missiles-2", 5143)
-local overpoweredMissiles = JustACBridge.GetPlayerCastState()
-assert(overpoweredMissiles.channelBlocksInput == true
-    and overpoweredMissiles.channelConditionallyProtected == true)
-eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "missiles-2", 5143)
-
--- A stale/mismatched SENT snapshot must never protect a later normal channel.
-activeAuras[1277009] = true
-eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SENT", "player", "target", "missiles-stale", 5143)
-activeAuras[1277009] = nil
-eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "missiles-3", 5143)
-assert(JustACBridge.GetPlayerCastState().channelBlocksInput == false)
-eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "missiles-3", 5143)
 
 -- No normal recommendation must never leave either trigger empty.  This is a
 -- core rule, not a Frost Mage exception: every independently maintained

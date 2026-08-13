@@ -31,10 +31,8 @@ assert(#arcane.fallbackActions == 1 and arcane.fallbackActions[1].spellID == 444
 
 local arcane121 = assert(registry.Resolve("MAGE", 1, 120100))
 assert(arcane121.ruleset == "midnight-12.1")
-assert(#arcane121.clipChannels == 1 and arcane121.clipChannels[1] == 5143)
-assert(#arcane121.conditionalProtectedChannels == 1)
-assert(arcane121.conditionalProtectedChannels[1].spellID == 5143)
-assert(arcane121.conditionalProtectedChannels[1].buffs[1] == 1277009)
+assert(#arcane121.clipChannels == 0)
+assert(#arcane121.protectedChannels == 1 and arcane121.protectedChannels[1] == 5143)
 
 local arcaneTwwS3 = assert(registry.Resolve("MAGE", 1, 110207))
 assert(arcaneTwwS3.ruleset == "tww-s3")
@@ -63,9 +61,8 @@ assert(frostDK.fallbackActions[1].spellID == 49184 and frostDK.fallbackActions[1
 assert(#frostDK.rotationExclusions == 1 and frostDK.rotationExclusions[1] == 49576)
 
 local frostDK121 = assert(registry.Resolve("DEATHKNIGHT", 2, 120100))
-assert(frostDK121.ruleset == "midnight-12.1" and frostDK121.revision == 3)
-assert(#frostDK121.reserve == 8)
-assert(frostDK121.reserve[7] == 46584 and frostDK121.reserve[8] == 46585)
+assert(frostDK121.ruleset == "base" and frostDK121.revision == 3)
+assert(#frostDK121.reserve == 6)
 assert(#frostDK121.rotationExclusions == 1 and frostDK121.rotationExclusions[1] == 49576)
 
 local unholy = assert(registry.Resolve("DEATHKNIGHT", 3, 120007))

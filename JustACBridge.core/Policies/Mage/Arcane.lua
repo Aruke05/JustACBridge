@@ -4,7 +4,7 @@ if not Registry then return end
 Registry.RegisterSpec("MAGE", 1, {
     id = "arcane",
     name = "奥术",
-    revision = 6,
+    revision = 7,
     fallbackActions = {
         { spellID = 44425, label = "奥术弹幕" },
     },
@@ -44,21 +44,14 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 6,
-            -- 12.1 once again clips ordinary Missiles as soon as the next GCD
-            -- can be queued.  The Overpowered proc doubles their damage and
-            -- grants maximum Salvo, so that specific channel must finish.
-            clipChannels = {
+            revision = 7,
+            -- The guide recommends clipping ordinary Missiles but completing
+            -- Overpowered Missiles. WoW event/aura ordering has not been
+            -- verified in live telemetry, so use the loss-minimizing fallback:
+            -- protect every 12.1 Missiles channel rather than guess wrong.
+            clipChannels = {},
+            protectedChannels = {
                 5143, -- Arcane Missiles
-            },
-            conditionalProtectedChannels = {
-                {
-                    spellID = 5143,
-                    buffs = {
-                        1277009, -- Overpowered Missiles
-                    },
-                    label = "Overpowered Missiles",
-                },
             },
         },
     },

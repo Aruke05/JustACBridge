@@ -93,27 +93,6 @@ local function appendFallbackActions(target, source)
     end
 end
 
-local function copyConditionalProtectedChannels(source)
-    local result = {}
-    for _, rule in ipairs(source or {}) do
-        local spellID = type(rule) == "table" and tonumber(rule.spellID) or nil
-        if spellID and spellID > 0 then
-            result[#result + 1] = {
-                spellID = spellID,
-                buffs = copyArray(rule.buffs),
-                label = rule.label,
-            }
-        end
-    end
-    return result
-end
-
-local function appendConditionalProtectedChannels(target, source)
-    for _, rule in ipairs(copyConditionalProtectedChannels(source)) do
-        target[#target + 1] = rule
-    end
-end
-
 local function removeValues(target, values)
     local removed = {}
     for _, value in ipairs(values or {}) do
@@ -227,8 +206,6 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         moveCastInstantOnly = copyArray(classPolicy.moveCastInstantOnly),
         clipChannels = copyArray(classPolicy.clipChannels),
         protectedChannels = copyArray(classPolicy.protectedChannels),
-        conditionalProtectedChannels = copyConditionalProtectedChannels(
-            classPolicy.conditionalProtectedChannels),
         rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
         groundEffects = copyGroundEffects(classPolicy.groundEffects),
         fallbackActions = copyFallbackActions(classPolicy.fallbackActions),
@@ -242,8 +219,6 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     addUniqueValues(result.moveCastInstantOnly, specPolicy.moveCastInstantOnly)
     addUniqueValues(result.clipChannels, specPolicy.clipChannels)
     addUniqueValues(result.protectedChannels, specPolicy.protectedChannels)
-    appendConditionalProtectedChannels(result.conditionalProtectedChannels,
-        specPolicy.conditionalProtectedChannels)
     appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
     appendGroundEffects(result.groundEffects, specPolicy.groundEffects)
     appendFallbackActions(result.fallbackActions, specPolicy.fallbackActions)
@@ -284,10 +259,6 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.protectedChannels then
             replaceArray(result.protectedChannels, patch.protectedChannels)
         end
-        if patch.conditionalProtectedChannels then
-            result.conditionalProtectedChannels = copyConditionalProtectedChannels(
-                patch.conditionalProtectedChannels)
-        end
         if patch.rangeSequenceRules then
             result.rangeSequenceRules = copyRangeSequenceRules(patch.rangeSequenceRules)
         end
@@ -315,8 +286,6 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         addUniqueValues(result.clipChannels, patch.addClipChannels)
         removeValues(result.protectedChannels, patch.removeProtectedChannels)
         addUniqueValues(result.protectedChannels, patch.addProtectedChannels)
-        appendConditionalProtectedChannels(result.conditionalProtectedChannels,
-            patch.addConditionalProtectedChannels)
         appendRangeSequenceRules(result.rangeSequenceRules, patch.addRangeSequenceRules)
         appendGroundEffects(result.groundEffects, patch.addGroundEffects)
         appendFallbackActions(result.fallbackActions, patch.addFallbackActions)
