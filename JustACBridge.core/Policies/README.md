@@ -35,6 +35,8 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
 稳定的默认规则放在专精的 `reserve` 中。职业或专精还可以登记：
 
 - `reserveExclusions`：保留爆发版本始终跳过、仅允许无损版本释放的技能。
+- `reservePassthrough`：即使推荐源把技能识别为爆发触发器，保留爆发版仍允许它
+  正常通过；适合新版本已移除爆发联动、但旧推荐源配置可能仍残留的技能。
 - `moveCastAlways`：自身带读条，但天生允许移动施放的技能。
 - `moveCastBuffs`：激活后允许该职业移动施法的玩家 Buff。
 - `moveCastNever`：移动时始终跳过的硬读条技能，优先于移动 Buff 和 Proc 判断。
@@ -57,6 +59,7 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
     name = "示例",
     revision = 2,
     reserve = { 1001, 1002 },
+    reservePassthrough = { 1000 },
     reserveExclusions = { 1003 },
     moveCastAlways = { 3001 },
     moveCastBuffs = { 4001 },
@@ -108,6 +111,9 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
 
 - Interface 区间匹配时，`minInterface` 最大的补丁生效。
 - `reserve` 表示完整替换；`removeReserve` 后执行 `addReserve`。
+- 爆发透传支持 `reservePassthrough` 完整替换和
+  `add/removeReservePassthrough` 增量修改；它在推荐源爆发项合并后执行，玩家
+  `/jacb reserve add/remove` 覆盖仍最后执行。
 - 保留版技能排除支持 `reserveExclusions` 完整替换和
   `add/removeReserveExclusions` 增量修改。
 - 移动规则对应支持 `moveCastAlways/moveCastBuffs` 完整替换，以及

@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 6
+Registry.schemaVersion = 7
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -197,6 +197,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         interfaceVersion = interfaceVersion,
         ruleset = "base",
         reserve = copyArray(specPolicy.reserve),
+        reservePassthrough = copyArray(classPolicy.reservePassthrough),
         reserveExclusions = copyArray(classPolicy.reserveExclusions),
         moveCastAlways = copyArray(classPolicy.moveCastAlways),
         moveCastBuffs = copyArray(classPolicy.moveCastBuffs),
@@ -208,6 +209,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         groundEffects = copyGroundEffects(classPolicy.groundEffects),
         fallbackActions = copyFallbackActions(classPolicy.fallbackActions),
     }
+    addUniqueValues(result.reservePassthrough, specPolicy.reservePassthrough)
     addUniqueValues(result.reserveExclusions, specPolicy.reserveExclusions)
     addUniqueValues(result.moveCastAlways, specPolicy.moveCastAlways)
     addUniqueValues(result.moveCastBuffs, specPolicy.moveCastBuffs)
@@ -228,6 +230,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         end
         removeValues(result.reserve, patch.removeReserve)
         addUniqueValues(result.reserve, patch.addReserve)
+        if patch.reservePassthrough then
+            replaceArray(result.reservePassthrough, patch.reservePassthrough)
+        end
         if patch.reserveExclusions then
             replaceArray(result.reserveExclusions, patch.reserveExclusions)
         end
@@ -258,6 +263,8 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.fallbackActions then
             result.fallbackActions = copyFallbackActions(patch.fallbackActions)
         end
+        removeValues(result.reservePassthrough, patch.removeReservePassthrough)
+        addUniqueValues(result.reservePassthrough, patch.addReservePassthrough)
         removeValues(result.reserveExclusions, patch.removeReserveExclusions)
         addUniqueValues(result.reserveExclusions, patch.addReserveExclusions)
         removeValues(result.moveCastAlways, patch.removeMoveCastAlways)

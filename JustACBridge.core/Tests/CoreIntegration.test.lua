@@ -10,6 +10,7 @@ local voiceCount = 0
 local classFile = "DEATHKNIGHT"
 local specIndex = 3
 local testQueue = { 43265, 47541 }
+local burstTriggers = {}
 local cooldownSpellID
 local cooldownEndsAt = 0
 
@@ -87,7 +88,7 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     IsSpellProcced = function() return false end,
     IsChanneled = function() return false end,
     IsConfirmedOutOfRange = function() return false end,
-    GetDetectedBurstTriggers = function() return {} end,
+    GetDetectedBurstTriggers = function() return burstTriggers end,
 }))
 
 dofile("JustACBridge.core/Policies/Registry.lua")
@@ -105,6 +106,23 @@ dofile("JustACBridge.core/JustACBridge.lua")
 eventFrame.OnEvent(eventFrame, "PLAYER_LOGIN")
 assert(JustACBridge.GetRecommendationSource().id == "test")
 assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
+
+-- Midnight removed Evocation's Siphon Storm setup role.  Even if an old
+-- JustAC profile still detects it as a burst trigger, the 12.0 Arcane policy
+-- must let it pass through M4.  M5 remains an exact first recommendation.
+classFile, specIndex = "MAGE", 1
+burstTriggers = { 12051 }
+testQueue = { 12051, 44425 }
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 12051)
+JustACBridgeDB.reserveOverrides.MAGE_1 = { include = { [12051] = true } }
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+JustACBridge.Refresh()
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+JustACBridgeDB.reserveOverrides.MAGE_1 = nil
+burstTriggers = {}
 
 -- No normal recommendation must never leave either trigger empty.  This is a
 -- core rule, not a Frost Mage exception: every independently maintained
