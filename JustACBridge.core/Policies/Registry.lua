@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 10
+Registry.schemaVersion = 11
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -226,7 +226,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         reserve = copyArray(specPolicy.reserve),
         reservePassthrough = copyArray(classPolicy.reservePassthrough),
         reserveExclusions = copyArray(classPolicy.reserveExclusions),
+        reserveEffectiveExclusions = copyArray(classPolicy.reserveEffectiveExclusions),
         rotationExclusions = copyArray(classPolicy.rotationExclusions),
+        rotationEffectiveExclusions = copyArray(classPolicy.rotationEffectiveExclusions),
         moveCastAlways = copyArray(classPolicy.moveCastAlways),
         moveCastBuffs = copyArray(classPolicy.moveCastBuffs),
         moveCastNever = copyArray(classPolicy.moveCastNever),
@@ -240,7 +242,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     }
     addUniqueValues(result.reservePassthrough, specPolicy.reservePassthrough)
     addUniqueValues(result.reserveExclusions, specPolicy.reserveExclusions)
+    addUniqueValues(result.reserveEffectiveExclusions, specPolicy.reserveEffectiveExclusions)
     addUniqueValues(result.rotationExclusions, specPolicy.rotationExclusions)
+    addUniqueValues(result.rotationEffectiveExclusions, specPolicy.rotationEffectiveExclusions)
     addUniqueValues(result.moveCastAlways, specPolicy.moveCastAlways)
     addUniqueValues(result.moveCastBuffs, specPolicy.moveCastBuffs)
     addUniqueValues(result.moveCastNever, specPolicy.moveCastNever)
@@ -267,8 +271,14 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.reserveExclusions then
             replaceArray(result.reserveExclusions, patch.reserveExclusions)
         end
+        if patch.reserveEffectiveExclusions then
+            replaceArray(result.reserveEffectiveExclusions, patch.reserveEffectiveExclusions)
+        end
         if patch.rotationExclusions then
             replaceArray(result.rotationExclusions, patch.rotationExclusions)
+        end
+        if patch.rotationEffectiveExclusions then
+            replaceArray(result.rotationEffectiveExclusions, patch.rotationEffectiveExclusions)
         end
         if patch.moveCastAlways then
             replaceArray(result.moveCastAlways, patch.moveCastAlways)
@@ -304,8 +314,12 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         addUniqueValues(result.reservePassthrough, patch.addReservePassthrough)
         removeValues(result.reserveExclusions, patch.removeReserveExclusions)
         addUniqueValues(result.reserveExclusions, patch.addReserveExclusions)
+        removeValues(result.reserveEffectiveExclusions, patch.removeReserveEffectiveExclusions)
+        addUniqueValues(result.reserveEffectiveExclusions, patch.addReserveEffectiveExclusions)
         removeValues(result.rotationExclusions, patch.removeRotationExclusions)
         addUniqueValues(result.rotationExclusions, patch.addRotationExclusions)
+        removeValues(result.rotationEffectiveExclusions, patch.removeRotationEffectiveExclusions)
+        addUniqueValues(result.rotationEffectiveExclusions, patch.addRotationEffectiveExclusions)
         removeValues(result.moveCastAlways, patch.removeMoveCastAlways)
         addUniqueValues(result.moveCastAlways, patch.addMoveCastAlways)
         removeValues(result.moveCastBuffs, patch.removeMoveCastBuffs)

@@ -38,6 +38,7 @@ JustACBridgeRecommendationSources.Register("my-rotation", {
 - `GetSpellHotkey(spellID)`
 - `GetItemHotkey(itemID)`
 - `GetDisplaySpellID(spellID)`
+- `GetEffectiveSpellID(spellID)`（推荐；先解析动态动作栏形态，再解析天赋替换）
 - `IsSpellUsable(spellID)`
 - `IsSpellProcced(spellID)`
 - `IsChanneled(spellID)`
@@ -52,5 +53,5 @@ JustACBridgeRecommendationSources.Register("my-rotation", {
 - `IsTargetBoss()`
 
 所有方法都是无 `self` 的普通函数。Bridge 对调用使用 `pcall`；未知或 secret
-状态遵循现有 fail-open/fail-closed 策略。
-
+状态遵循现有 fail-open/fail-closed 策略。自定义源未实现 `GetEffectiveSpellID`
+时会回退到 `GetDisplaySpellID`，因此旧源保持兼容。

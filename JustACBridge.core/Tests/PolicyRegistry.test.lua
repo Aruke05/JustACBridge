@@ -16,7 +16,7 @@ dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
 
 local registry = JustACBridgePolicyRegistry
-assert(registry.schemaVersion == 10)
+assert(registry.schemaVersion == 11)
 
 local arcane = assert(registry.Resolve("MAGE", 1, 120007))
 assert(arcane.storageKey == "MAGE_1" and arcane.id == "arcane")
@@ -26,10 +26,12 @@ assert(arcane.reserve[1] == 365350 and arcane.reserve[2] == 321507)
 assert(#arcane.reservePassthrough == 1 and arcane.reservePassthrough[1] == 12051)
 assert(#arcane.reserveExclusions == 2)
 assert(arcane.reserveExclusions[1] == 153626 and arcane.reserveExclusions[2] == 153640)
+assert(#arcane.reserveEffectiveExclusions == 1
+    and arcane.reserveEffectiveExclusions[1] == 1449)
 assert(#arcane.moveCastAlways == 1 and arcane.moveCastAlways[1] == 2948)
 assert(#arcane.moveCastBuffs == 1 and arcane.moveCastBuffs[1] == 108839)
 assert(#arcane.clipChannels == 0)
-assert(#arcane.fallbackActions == 1 and arcane.fallbackActions[1].spellID == 44425)
+assert(#arcane.fallbackActions == 0)
 assert(#arcane.maintenanceBuffs == 1)
 assert(arcane.maintenanceBuffs[1].spellID == 235450)
 assert(arcane.maintenanceBuffs[1].auraID == 235450)
@@ -38,6 +40,10 @@ assert(arcane.maintenanceBuffs[1].reserveCharges == 1)
 
 local arcane121 = assert(registry.Resolve("MAGE", 1, 120100))
 assert(arcane121.ruleset == "midnight-12.1")
+assert(arcane121.revision == 12)
+assert(#arcane121.rotationExclusions == 0)
+assert(#arcane121.rotationEffectiveExclusions == 1
+    and arcane121.rotationEffectiveExclusions[1] == 1449)
 assert(#arcane121.clipChannels == 0)
 assert(#arcane121.protectedChannels == 1 and arcane121.protectedChannels[1] == 5143)
 

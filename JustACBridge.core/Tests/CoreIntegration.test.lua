@@ -13,6 +13,7 @@ local testQueue = { 43265, 47541 }
 local burstTriggers = {}
 local cooldownSpellID
 local cooldownEndsAt = 0
+local effectiveSpellOverrides = {}
 local playerAuras = {
     [11426] = {},  -- Ice Barrier
     [235450] = {}, -- Prismatic Barrier
@@ -23,6 +24,7 @@ local spellCharges = {
 }
 local spellCastTimes = {
     [30451] = 2000, -- Arcane Blast
+    [1241462] = 2000, -- Arcane Pulse (12.1 talent replacement)
 }
 local channeledSpells = {
     [12051] = true, -- Evocation
@@ -112,6 +114,7 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     GetQueue = function() return testQueue end,
     GetSpellHotkey = function(id) return id == 43265 and "1" or "2" end,
     GetDisplaySpellID = function(id) return id end,
+    GetEffectiveSpellID = function(id) return effectiveSpellOverrides[id] or id end,
     IsSpellUsable = function() return true end,
     IsSpellProcced = function() return false end,
     IsChanneled = function(id) return channeledSpells[id] == true end,
@@ -178,12 +181,12 @@ playerAuras[235450] = {}
 
 -- M4 must remain safe to hold through movement/mechanics even during a
 -- momentary stationary frame. It skips the reserved Touch, the Missiles
--- channel, the Arcane Blast hardcast and the facing-dependent Arcane Orb,
--- preserving JustAC's remaining order and selecting Arcane Explosion.
+-- channel, the Arcane Blast hardcast, the facing-dependent Arcane Orb and
+-- Arcane Explosion. Barrage is selected only because JustAC supplied it.
 testQueue = { 321507, 5143, 30451, 153626, 1449, 44425 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 1449)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 
 -- Orb remains available to M5 for manual aiming but never leaks into M4.
 testQueue = { 153626, 44425 }
@@ -196,7 +199,61 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 testQueue = { 30451, 1449, 44425 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 1449)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+
+-- Midnight 12.1 excludes Arcane Explosion from both automatic outputs. A
+-- transient Assisted Combat primary with no later action leaves both empty;
+-- manual casting is outside the Bridge and remains available.
+testQueue = { 1449 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation() == nil)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+
+-- Arcane Pulse replaces the Arcane Explosion action-bar button.  The 12.1
+-- exclusion is deliberately matched against the effective spell, so a raw
+-- Assisted Combat queue value of 1449 must not suppress the valid Pulse.  The
+-- exported spell ID is also the effective one, preventing Windows M5 from
+-- applying Arcane Explosion's 100 ms stability delay to Pulse.
+effectiveSpellOverrides[1449] = 1241462
+testQueue = { 1449, 44425 }
+JustACBridge.Refresh()
+local pulseLossless = JustACBridge.GetLosslessRecommendation()
+local pulsePreserve = JustACBridge.GetPreserveBurstRecommendation()
+assert(pulseLossless.spellID == 1241462 and pulseLossless.sourceSpellID == 1449)
+assert(pulsePreserve.spellID == 44425) -- Pulse is still a stationary 12.1 hardcast.
+effectiveSpellOverrides[1449] = nil
+
+-- Prismatic Bolt dynamically upgrades Arcane Blast and is instant. Resolve
+-- the active action before movement classification so M4 may use the proc,
+-- while retaining the raw queue value for failure suppression/diagnostics.
+effectiveSpellOverrides[30451] = 1295939
+testQueue = { 30451 }
+JustACBridge.Refresh()
+local boltLossless = JustACBridge.GetLosslessRecommendation()
+local boltPreserve = JustACBridge.GetPreserveBurstRecommendation()
+assert(boltLossless.spellID == 1295939 and boltLossless.sourceSpellID == 30451)
+assert(boltPreserve.spellID == 1295939 and boltPreserve.sourceSpellID == 30451)
+
+-- Spellcast failures report the transformed ID. Suppression must still attach
+-- to the raw queue entry, otherwise a failed instant Bolt would be retried
+-- forever as Arcane Blast.
+speed = 7
+eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
+JustACBridge.Refresh()
+for index = 1, 3 do
+    eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player",
+        "bolt-fail-" .. index, 1295939)
+end
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation() == nil)
+now = 101.1
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 1295939)
+speed = 0
+eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
+JustACBridge.Refresh()
+effectiveSpellOverrides[30451] = nil
+now = 100
 
 -- Death Grip is encounter utility rather than a Frost damage action. A stale
 -- queue/gap-closer injection must be skipped by both exported actions.
@@ -225,7 +282,6 @@ eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "missile
 -- core rule, not a Frost Mage exception: every independently maintained
 -- class/spec policy must reach its own final fallback through the same path.
 local fallbackCases = {
-    { class = "MAGE", spec = 1, spell = 44425 },
     { class = "MAGE", spec = 2, spell = 2948 },
     { class = "MAGE", spec = 3, spell = 30455 },
     { class = "DEATHKNIGHT", spec = 1, spell = 50842 },
@@ -243,6 +299,15 @@ for _, case in ipairs(fallbackCases) do
         ("final fallback failed for %s/%s: got %s")
             :format(case.class, case.spec, tostring(emptyQueueFallback.spellID)))
 end
+-- Arcane deliberately has no invented final fallback. With no source action
+-- and no missing barrier maintenance, both outputs remain empty.
+classFile, specIndex = "MAGE", 1
+playerAuras[235450] = {}
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+testQueue = {}
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation() == nil)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
 classFile, specIndex = "DEATHKNIGHT", 3
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 testQueue = { 43265, 47541 }

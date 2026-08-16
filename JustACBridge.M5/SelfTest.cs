@@ -159,6 +159,17 @@ internal static unsafe class SelfTest
             Console.Error.WriteLine("trigger display self-test failed");
             return 9;
         }
+        var stableDelay = new StableRecommendationDelay();
+        if (stableDelay.Observe(1449, 100, 1000) ||
+            stableDelay.Observe(1449, 100, 1099) ||
+            !stableDelay.Observe(1449, 100, 1100) ||
+            !stableDelay.Observe(30451, 0, 1101) ||
+            stableDelay.Observe(1449, 100, 1102) ||
+            !stableDelay.Observe(1449, 100, 1202))
+        {
+            Console.Error.WriteLine("stable recommendation delay self-test failed");
+            return 16;
+        }
         Console.WriteLine("self-test passed");
         return 0;
     }

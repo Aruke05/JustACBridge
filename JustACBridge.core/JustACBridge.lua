@@ -63,10 +63,13 @@ local queueReady = true
 local gcdRemainingMs = 0
 local reservedSpellIDs = {}
 local reserveExcludedSpellIDs = {}
+local reserveEffectiveExcludedSpellIDs = {}
 local rotationExcludedSpellIDs = {}
+local rotationEffectiveExcludedSpellIDs = {}
 local currentSpecKey
 local currentPolicy
 local getSpellData
+local getEffectiveSpellID
 local issecretvalue = issecretvalue
 local statusBaseText = ""
 local lastStatusText
@@ -182,9 +185,9 @@ local function addReservedSpell(spellID)
     end
 
     reservedSpellIDs[spellID] = true
-    local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-    if ok and type(displayID) == "number" and displayID > 0 then
-        reservedSpellIDs[displayID] = true
+    local effectiveID = getEffectiveSpellID(spellID)
+    if type(effectiveID) == "number" and effectiveID > 0 then
+        reservedSpellIDs[effectiveID] = true
     end
 end
 
@@ -194,9 +197,9 @@ local function removeReservedSpell(spellID)
         return
     end
     reservedSpellIDs[spellID] = nil
-    local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-    if ok and type(displayID) == "number" and displayID > 0 then
-        reservedSpellIDs[displayID] = nil
+    local effectiveID = getEffectiveSpellID(spellID)
+    if type(effectiveID) == "number" and effectiveID > 0 then
+        reservedSpellIDs[effectiveID] = nil
     end
 end
 
@@ -206,10 +209,20 @@ local function refreshReserveExclusions(spellIDs)
         spellID = tonumber(spellID)
         if spellID and spellID > 0 then
             reserveExcludedSpellIDs[spellID] = true
-            local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-            if ok and type(displayID) == "number" and displayID > 0 then
-                reserveExcludedSpellIDs[displayID] = true
+            local effectiveID = getEffectiveSpellID(spellID)
+            if type(effectiveID) == "number" and effectiveID > 0 then
+                reserveExcludedSpellIDs[effectiveID] = true
             end
+        end
+    end
+end
+
+local function refreshReserveEffectiveExclusions(spellIDs)
+    reserveEffectiveExcludedSpellIDs = {}
+    for _, spellID in ipairs(spellIDs or {}) do
+        spellID = tonumber(spellID)
+        if spellID and spellID > 0 then
+            reserveEffectiveExcludedSpellIDs[spellID] = true
         end
     end
 end
@@ -220,10 +233,20 @@ local function refreshRotationExclusions(spellIDs)
         spellID = tonumber(spellID)
         if spellID and spellID > 0 then
             rotationExcludedSpellIDs[spellID] = true
-            local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-            if ok and type(displayID) == "number" and displayID > 0 then
-                rotationExcludedSpellIDs[displayID] = true
+            local effectiveID = getEffectiveSpellID(spellID)
+            if type(effectiveID) == "number" and effectiveID > 0 then
+                rotationExcludedSpellIDs[effectiveID] = true
             end
+        end
+    end
+end
+
+local function refreshRotationEffectiveExclusions(spellIDs)
+    rotationEffectiveExcludedSpellIDs = {}
+    for _, spellID in ipairs(spellIDs or {}) do
+        spellID = tonumber(spellID)
+        if spellID and spellID > 0 then
+            rotationEffectiveExcludedSpellIDs[spellID] = true
         end
     end
 end
@@ -234,13 +257,14 @@ local function refreshReservedSpells()
     currentSpecKey = storageKey
     currentPolicy = policy
     refreshReserveExclusions(currentPolicy and currentPolicy.reserveExclusions)
+    refreshReserveEffectiveExclusions(currentPolicy and currentPolicy.reserveEffectiveExclusions)
     refreshRotationExclusions(currentPolicy and currentPolicy.rotationExclusions)
+    refreshRotationEffectiveExclusions(currentPolicy and currentPolicy.rotationEffectiveExclusions)
     if GroundEffectTracker and GroundEffectTracker.Configure then
         GroundEffectTracker.Configure(
             currentPolicy and currentPolicy.groundEffects or {},
             function(spellID)
-                local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-                return ok and displayID or spellID
+                return getEffectiveSpellID(spellID)
             end
         )
     end
@@ -293,36 +317,45 @@ local function isReservedQueueValue(queueValue)
     -- Items in an offensive queue are normally potions/on-use trinkets. Keep
     -- all of them for the player's chosen burst window in reserve mode.
     return queueValue < 0 or reservedSpellIDs[queueValue] == true
+        or reservedSpellIDs[getEffectiveSpellID(queueValue)] == true
 end
 
 local function isReserveExcludedQueueValue(queueValue)
-    return type(queueValue) == "number"
-        and queueValue > 0
-        and reserveExcludedSpellIDs[queueValue] == true
+    if type(queueValue) ~= "number" or queueValue <= 0 then
+        return false
+    end
+    return reserveExcludedSpellIDs[queueValue] == true
+        or reserveEffectiveExcludedSpellIDs[getEffectiveSpellID(queueValue)] == true
 end
 
 local function isRotationExcludedQueueValue(queueValue)
-    return type(queueValue) == "number"
-        and queueValue > 0
-        and rotationExcludedSpellIDs[queueValue] == true
+    if type(queueValue) ~= "number" or queueValue <= 0 then
+        return false
+    end
+    return rotationExcludedSpellIDs[queueValue] == true
+        or rotationEffectiveExcludedSpellIDs[getEffectiveSpellID(queueValue)] == true
 end
 
 local function isSecret(value)
     return issecretvalue and issecretvalue(value) or false
 end
 
-local function getDisplaySpellID(spellID)
+getEffectiveSpellID = function(spellID)
     spellID = tonumber(spellID)
     if not spellID then
         return spellID
     end
-    local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-    return ok and type(displayID) == "number" and displayID > 0 and displayID or spellID
+    local ok, effectiveID = sourceCall("GetEffectiveSpellID", spellID)
+    if ok and type(effectiveID) == "number" and effectiveID > 0 then
+        return effectiveID
+    end
+    local displayOK, displayID = sourceCall("GetDisplaySpellID", spellID)
+    return displayOK and type(displayID) == "number" and displayID > 0 and displayID or spellID
 end
 
 local function cooldownRemainingSeconds(spellID)
     if type(spellID) ~= "number" or spellID <= 0 or not C_Spell then return nil end
-    local displayID = getDisplaySpellID(spellID)
+    local displayID = getEffectiveSpellID(spellID)
     if C_Spell.GetSpellCharges then
         local ok, charges = pcall(C_Spell.GetSpellCharges, displayID)
         if ok and type(charges) == "table" then
@@ -365,10 +398,10 @@ local function spellListContains(list, spellID)
     if not spellID then
         return false
     end
-    local displayID = getDisplaySpellID(spellID)
+    local displayID = getEffectiveSpellID(spellID)
     for _, configuredID in ipairs(list or {}) do
         if configuredID == spellID or configuredID == displayID
-            or getDisplaySpellID(configuredID) == displayID then
+            or getEffectiveSpellID(configuredID) == displayID then
             return true
         end
     end
@@ -382,11 +415,11 @@ end
 local function isPolicyFallbackSpell(spellID)
     spellID = tonumber(spellID)
     if not spellID or not currentPolicy then return false end
-    local displayID = getDisplaySpellID(spellID)
+    local displayID = getEffectiveSpellID(spellID)
     for _, rule in ipairs(currentPolicy.fallbackActions or {}) do
         local configuredID = tonumber(type(rule) == "table" and rule.spellID or rule)
         if configuredID and (configuredID == spellID or configuredID == displayID
-            or getDisplaySpellID(configuredID) == displayID) then
+            or getEffectiveSpellID(configuredID) == displayID) then
             return true
         end
     end
@@ -453,7 +486,7 @@ local function isSpellMoveCastableNow(spellID)
         return false
     end
 
-    local effectiveSpellID = getDisplaySpellID(spellID)
+    local effectiveSpellID = getEffectiveSpellID(spellID)
     local info = C_Spell and C_Spell.GetSpellInfo
         and C_Spell.GetSpellInfo(effectiveSpellID)
     local castTime = info and info.castTime
@@ -553,7 +586,7 @@ local function isSpellKnown(spellID)
     if ok and known == true then
         return true
     end
-    local displayID = getDisplaySpellID(spellID)
+    local displayID = getEffectiveSpellID(spellID)
     if displayID ~= spellID then
         ok, known = pcall(check, displayID)
         return ok and known == true
@@ -584,7 +617,7 @@ local function isMaintenanceSpellReadyNow(spellID, reserveCharges)
         if not getCharges then
             return false
         end
-        local chargesOK, charges = pcall(getCharges, getDisplaySpellID(spellID))
+        local chargesOK, charges = pcall(getCharges, getEffectiveSpellID(spellID))
         local current = chargesOK and type(charges) == "table" and charges.currentCharges
         -- Spending is allowed only when the live count proves that the
         -- configured manual reserve will remain afterwards.
@@ -902,9 +935,11 @@ getSpellData = function(queueValue, position)
         local ok, hotkey = sourceCall("GetItemHotkey", itemID)
         data.hotkey = ok and hotkey or ""
     else
-        data.spellID = queueValue
+        local effectiveSpellID = getEffectiveSpellID(queueValue)
+        data.spellID = effectiveSpellID
+        data.sourceSpellID = queueValue
 
-        local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(queueValue)
+        local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(effectiveSpellID)
         if info then
             data.name = info.name or data.name
             data.icon = info.iconID or data.icon
@@ -944,7 +979,7 @@ local function appendDebug(line)
 end
 
 local function movementDecision(spellID)
-    local displayID = getDisplaySpellID(spellID)
+    local displayID = getEffectiveSpellID(spellID)
     local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(displayID)
     local castTime = info and info.castTime
     local chOk, channeled = sourceCall("IsChanneled", spellID)
@@ -1945,7 +1980,17 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         lastSignature = nil
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
-        failedMovementRecommendations[tonumber(spellID)] = nil
+        local succeededSpellID = tonumber(spellID)
+        failedMovementRecommendations[succeededSpellID] = nil
+        -- Queue entries may use the base button while spellcast events report
+        -- the currently transformed spell. Clear the raw queue alias as well.
+        for index = 1, ROW_COUNT do
+            local row = currentRows[index]
+            if row and (row.spellID == succeededSpellID
+                or row.queueValue == succeededSpellID) then
+                failedMovementRecommendations[row.queueValue] = nil
+            end
+        end
         appendDebug(("EVENT %s spell=%s castGUID=%s moving=%s")
             :format(event, debugSafe(spellID), debugSafe(castGUID), tostring(playerIsMoving)))
         if GroundEffectTracker and GroundEffectTracker.OnSpellcastSucceeded
@@ -1974,23 +2019,26 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
     elseif event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_FAILED_QUIET" then
         local numericSpellID = tonumber(spellID)
         local selected = false
+        local selectedQueueValue
         for index = 1, ROW_COUNT do
             local row = currentRows[index]
-            if row and row.spellID == numericSpellID then
+            if row and (row.spellID == numericSpellID or row.queueValue == numericSpellID) then
                 selected = true
+                selectedQueueValue = tonumber(row.queueValue)
                 break
             end
         end
+        local failureKey = selectedQueueValue or numericSpellID
         local now = GetTime()
-        local state = numericSpellID and failedMovementRecommendations[numericSpellID] or nil
+        local state = failureKey and failedMovementRecommendations[failureKey] or nil
         local newlySuppressed = false
         local duplicateFailure = false
-        local fallbackSpell = isPolicyFallbackSpell(numericSpellID)
+        local fallbackSpell = isPolicyFallbackSpell(failureKey)
         if selected and not fallbackSpell and playerIsMoving
             and JustACBridgeDB.movementFilter ~= false then
             if not state or now - (tonumber(state.lastAt) or 0) > FAILURE_WINDOW_SECONDS then
                 state = { count = 0, lastAt = now, suppressUntil = 0 }
-                failedMovementRecommendations[numericSpellID] = state
+                failedMovementRecommendations[failureKey] = state
             end
             local failureGUID = type(castGUID) == "string" and castGUID ~= "" and castGUID or nil
             duplicateFailure = (failureGUID and state.lastCastGUID == failureGUID)

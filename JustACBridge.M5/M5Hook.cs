@@ -70,7 +70,7 @@ internal sealed class M5Hook : IDisposable
     private nint _mouseHook;
     private nint _keyboardHook;
     private uint _threadId;
-    private ActionMap _actions = new(null, null, false, false, false, false);
+    private ActionMap _actions = new(null, null, false, false, false, false, 0, 0);
     private TriggerMap _triggers = new(TriggerBinding.M5, TriggerBinding.M4);
     private TriggerMap _pendingTriggers = new(TriggerBinding.M5, TriggerBinding.M4);
     private CaptureRequest? _captureRequest;
@@ -122,15 +122,18 @@ internal sealed class M5Hook : IDisposable
     internal void SetActions(HotkeyBinding? lossless, HotkeyBinding? preserveBurst,
         bool suppressWithoutBinding, bool canPulse,
         bool suppressLosslessWithoutBinding = false,
-        bool suppressPreserveWithoutBinding = false)
+        bool suppressPreserveWithoutBinding = false,
+        int losslessStabilityKey = 0,
+        int losslessStabilityDelayMs = 0)
     {
         var next = new ActionMap(
             lossless, preserveBurst, suppressWithoutBinding, canPulse,
-            suppressLosslessWithoutBinding, suppressPreserveWithoutBinding);
+            suppressLosslessWithoutBinding, suppressPreserveWithoutBinding,
+            losslessStabilityKey, Math.Max(0, losslessStabilityDelayMs));
         Volatile.Write(ref _actions, next);
         if (DiagnosticLog.Enabled)
         {
-            string trace = $"lossless={BindingName(lossless)} preserve={BindingName(preserveBurst)} suppress={suppressWithoutBinding} canPulse={canPulse} suppressLossless={suppressLosslessWithoutBinding} suppressPreserve={suppressPreserveWithoutBinding}";
+            string trace = $"lossless={BindingName(lossless)} preserve={BindingName(preserveBurst)} suppress={suppressWithoutBinding} canPulse={canPulse} suppressLossless={suppressLosslessWithoutBinding} suppressPreserve={suppressPreserveWithoutBinding} losslessStability={losslessStabilityKey}/{Math.Max(0, losslessStabilityDelayMs)}ms";
             if (trace != _lastActionTrace)
             {
                 _lastActionTrace = trace;
@@ -296,7 +299,8 @@ internal sealed class M5Hook : IDisposable
             DiagnosticLog.Write($"INPUT down trigger={trigger.Display} slot=lossless binding={BindingName(actions.Lossless)} suppress={suppress} canPulse={actions.CanPulse}");
             if (actions.Lossless is not null || suppress)
                 CancelHeldAction(ref _preserveHeld, blockFollowingUp: true);
-            return PressSlot(trigger, actions.Lossless, suppress, actions.CanPulse, ref _losslessHeld);
+            return PressSlot(trigger, actions.Lossless, suppress, actions.CanPulse,
+                actions.LosslessStabilityKey, actions.LosslessStabilityDelayMs, ref _losslessHeld);
         }
         if (trigger == triggers.PreserveBurst)
         {
@@ -304,7 +308,8 @@ internal sealed class M5Hook : IDisposable
             DiagnosticLog.Write($"INPUT down trigger={trigger.Display} slot=preserve binding={BindingName(actions.PreserveBurst)} suppress={suppress} canPulse={actions.CanPulse}");
             if (actions.PreserveBurst is not null || suppress)
                 CancelHeldAction(ref _losslessHeld, blockFollowingUp: true);
-            return PressSlot(trigger, actions.PreserveBurst, suppress, actions.CanPulse, ref _preserveHeld);
+            return PressSlot(trigger, actions.PreserveBurst, suppress, actions.CanPulse,
+                0, 0, ref _preserveHeld);
         }
         return false;
     }
@@ -319,7 +324,7 @@ internal sealed class M5Hook : IDisposable
     }
 
     private bool PressSlot(TriggerBinding trigger, HotkeyBinding? binding, bool suppressWithoutBinding,
-        bool canPulse, ref HeldAction? held)
+        bool canPulse, int stabilityKey, int stabilityDelayMs, ref HeldAction? held)
     {
         if (held?.Trigger == trigger || _blockedUps.Contains(trigger))
         {
@@ -330,8 +335,12 @@ internal sealed class M5Hook : IDisposable
         if (binding is not null)
         {
             held = new HeldAction(trigger);
-            if (canPulse)
+            long now = Environment.TickCount64;
+            bool stabilityReady = held.StabilityDelay.Observe(stabilityKey, stabilityDelayMs, now);
+            if (canPulse && stabilityReady)
                 Pulse(binding);
+            else if (canPulse)
+                DiagnosticLog.Write($"HOLD armed trigger={trigger.Display} binding={binding.Canonical} initialPulse=false reason=stability-delay remainingMs={held.StabilityDelay.RemainingMs(now)}");
             else
                 DiagnosticLog.Write($"HOLD armed trigger={trigger.Display} binding={binding.Canonical} initialPulse=false reason=queue-gate");
             return true;
@@ -369,13 +378,24 @@ internal sealed class M5Hook : IDisposable
 
     private void PulseHeldAction()
     {
-        if (!_enabled) { TracePulseState("disabled"); return; }
         ActionMap actions = Volatile.Read(ref _actions);
+        long now = Environment.TickCount64;
+        bool losslessStabilityReady = _losslessHeld?.StabilityDelay.Observe(
+            actions.LosslessStabilityKey,
+            actions.LosslessStabilityDelayMs,
+            now) ?? true;
+
+        if (!_enabled) { TracePulseState("disabled"); return; }
         if (actions.SuppressWithoutBinding) { TracePulseState("blocked-busy"); return; }
         if (!actions.CanPulse) { TracePulseState("blocked-queue-gate"); return; }
 
         if (_losslessHeld is not null && actions.Lossless is not null)
         {
+            if (!losslessStabilityReady)
+            {
+                TracePulseState("blocked-lossless-stability-delay");
+                return;
+            }
             TracePulseState("pulsing-lossless:" + actions.Lossless.Canonical);
             Pulse(actions.Lossless);
             return;
@@ -436,8 +456,12 @@ internal sealed class M5Hook : IDisposable
 
     private sealed record ActionMap(HotkeyBinding? Lossless, HotkeyBinding? PreserveBurst,
         bool SuppressWithoutBinding, bool CanPulse,
-        bool SuppressLosslessWithoutBinding, bool SuppressPreserveWithoutBinding);
+        bool SuppressLosslessWithoutBinding, bool SuppressPreserveWithoutBinding,
+        int LosslessStabilityKey, int LosslessStabilityDelayMs);
     private sealed record TriggerMap(TriggerBinding Lossless, TriggerBinding PreserveBurst);
     private sealed record CaptureRequest(ActionSlot Slot);
-    private sealed record HeldAction(TriggerBinding Trigger);
+    private sealed record HeldAction(TriggerBinding Trigger)
+    {
+        internal StableRecommendationDelay StabilityDelay { get; } = new();
+    }
 }

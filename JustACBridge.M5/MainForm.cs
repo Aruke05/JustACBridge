@@ -7,6 +7,8 @@ internal sealed class MainForm : Form
 {
     private const int BlizzardSpellId = 190356;
     private const int FrostFallbackSpellId = 30455;
+    private const int ArcaneExplosionSpellId = 1449;
+    private const int ArcaneExplosionStabilityDelayMs = 100;
     private const long BlizzardCancelSuppressionMs = 3000;
 
     private readonly Label _state = new() { AutoSize = true, Font = new Font("Microsoft YaHei UI", 16, FontStyle.Bold), ForeColor = Color.DarkOrange };
@@ -17,7 +19,7 @@ internal sealed class MainForm : Form
     private readonly CheckBox _enabled = new() { AutoSize = true, Checked = true, Text = "启用双键按住连发" };
     private readonly Button _setLossless = new() { AutoSize = true };
     private readonly Button _setPreserve = new() { AutoSize = true };
-    private readonly RadioButton _extreme = new() { AutoSize = true, Checked = true, Text = "极限：连续捕获，零人为等待（推荐）" };
+    private readonly RadioButton _extreme = new() { AutoSize = true, Checked = true, Text = "极限：连续捕获（推荐）" };
     private readonly RadioButton _balanced = new() { AutoSize = true, Text = "均衡：每 5ms 捕获一次" };
     private readonly CheckBox _debugEnabled = new() { AutoSize = true, Text = "启用诊断日志（仅排错时）" };
     private readonly Button _copyDebug = new() { AutoSize = true, Enabled = false, Text = "复制完整诊断日志" };
@@ -236,13 +238,17 @@ internal sealed class MainForm : Form
             && losslessBinding is null;
         bool movementBlocksPreserve = packet.ProtocolVersion >= 4 && packet.IsMoving && packet.MovementFilter
             && preserveBinding is null;
+        bool delayArcaneExplosion = packet.Lossless is
+            { Exists: true, IsItem: false, Id: ArcaneExplosionSpellId };
         _hook.SetActions(
             losslessBinding,
             packet.ProtocolVersion >= 2 ? preserveBinding : null,
             false,
             packet.QueueReady,
             (losslessSuppressed && losslessBinding is null) || movementBlocksLossless,
-            (preserveSuppressed && preserveBinding is null) || movementBlocksPreserve);
+            (preserveSuppressed && preserveBinding is null) || movementBlocksPreserve,
+            delayArcaneExplosion ? ArcaneExplosionSpellId : 0,
+            delayArcaneExplosion ? ArcaneExplosionStabilityDelayMs : 0);
     }
 
     private void RememberSpellBinding(Recommendation recommendation)

@@ -52,6 +52,20 @@ function Source.GetDisplaySpellID(spellID)
         and BlizzardAPI.GetDisplaySpellID(spellID) or spellID
 end
 
+-- The Assisted Combat queue may return the base action-bar spell while a
+-- talent replacement is active.  Dynamic action-bar transforms (for example
+-- Arcane Blast -> Prismatic Bolt) are authoritative first; when none exists,
+-- fall back to JustAC's separate talent-override resolver (for example
+-- Arcane Explosion -> Arcane Pulse).
+function Source.GetEffectiveSpellID(spellID)
+    local displayID = Source.GetDisplaySpellID(spellID)
+    if displayID and displayID ~= 0 and displayID ~= spellID then
+        return displayID
+    end
+    return BlizzardAPI and BlizzardAPI.ResolveSpellID
+        and BlizzardAPI.ResolveSpellID(spellID) or spellID
+end
+
 function Source.IsSpellUsable(spellID)
     return not BlizzardAPI or not BlizzardAPI.IsSpellUsable
         or BlizzardAPI.IsSpellUsable(spellID)
