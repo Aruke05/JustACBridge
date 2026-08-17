@@ -4,6 +4,8 @@
 local now = 100
 local speed = 0
 local speedSecret = false
+local auraSecret = false
+local secretAuraValue = {}
 local eventFrame
 local soundCount = 0
 local voiceCount = 0
@@ -14,6 +16,7 @@ local burstTriggers = {}
 local cooldownSpellID
 local cooldownEndsAt = 0
 local effectiveSpellOverrides = {}
+local unlearnedSpells = {}
 local playerAuras = {
     [11426] = {},  -- Ice Barrier
     [235450] = {}, -- Prismatic Barrier
@@ -102,8 +105,11 @@ function GetBuildInfo() return "12.1.0", "", "", 120100 end
 function GetUnitSpeed() return speed end
 function GetTime() return now end
 function time() return 100000 end
-function IsPlayerSpell() return true end
-function issecretvalue(value) return speedSecret and value == speed end
+function IsPlayerSpell(id) return unlearnedSpells[id] ~= true end
+function issecretvalue(value)
+    return (speedSecret and value == speed)
+        or (auraSecret and value == secretAuraValue)
+end
 function PlaySound() soundCount = soundCount + 1 end
 
 dofile("JustACBridge.core/Sources/Registry.lua")
@@ -193,6 +199,48 @@ testQueue = { 153626, 44425 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+
+-- Midnight 12.1 movement exceptions are allowed only while their exact live
+-- requirements are observable. Slipstream plus Clearcasting permits the
+-- Missiles channel while moving; either missing condition fails closed.
+speed = 7
+eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
+testQueue = { 5143, 44425 }
+playerAuras[263725] = {}
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 5143)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 5143)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "moving-missiles", 5143)
+assert(JustACBridge.GetPlayerCastState().channelBlocksInput == true)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "moving-missiles", 5143)
+unlearnedSpells[236457] = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+unlearnedSpells[236457] = nil
+playerAuras[263725] = nil
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+
+-- Presence of Mind's player aura is sufficient and spell-specific evidence
+-- that Arcane Blast is instant. Losing the aura immediately restores the
+-- ordinary moving fallback without relying on an action-button glow.
+testQueue = { 30451, 44425 }
+playerAuras[205025] = {}
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 30451)
+playerAuras[205025] = nil
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+playerAuras[205025] = secretAuraValue
+auraSecret = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+auraSecret = false
+playerAuras[205025] = nil
+speed = 0
+eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
 
 -- The shortcut that normally copies a non-reserved M5 action into M4 must not
 -- leak a stationary hardcast into the hold-safe action.

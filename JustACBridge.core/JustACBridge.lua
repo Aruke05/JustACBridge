@@ -465,6 +465,31 @@ local function hasMovementCastBuff()
     return false
 end
 
+local isSpellKnown
+
+local function hasObservablePlayerAura(auraID)
+    local getAura = C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID
+    if not getAura or type(auraID) ~= "number" or auraID <= 0 then
+        return false
+    end
+    local ok, aura = pcall(getAura, auraID)
+    return ok and not isSecret(aura) and aura ~= nil
+end
+
+local function getConditionalMoveCastLabel(spellID)
+    for _, rule in ipairs(currentPolicy and currentPolicy.moveCastConditions or {}) do
+        local configuredSpellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local requiresSpell = type(rule) == "table" and tonumber(rule.requiresSpell) or nil
+        local auraID = type(rule) == "table" and tonumber(rule.auraID) or nil
+        if configuredSpellID and spellListContains({ configuredSpellID }, spellID)
+            and (not requiresSpell or isSpellKnown(requiresSpell))
+            and (not auraID or hasObservablePlayerAura(auraID)) then
+            return rule.label or tostring(configuredSpellID)
+        end
+    end
+    return nil
+end
+
 local function isSpellMoveCastableNow(spellID)
     -- Some replacement spells share the base button's proc/highlight state.
     -- Stationary-only policy must win before generic movement buffs or proc
@@ -473,6 +498,9 @@ local function isSpellMoveCastableNow(spellID)
         return false
     end
     local instantOnly = policyContains("moveCastInstantOnly", spellID)
+    if getConditionalMoveCastLabel(spellID) then
+        return true
+    end
     if not instantOnly
         and (policyContains("moveCastAlways", spellID) or hasMovementCastBuff()) then
         return true
@@ -574,7 +602,7 @@ local function isHoldSafeQueueValue(queueValue)
         and not isFailureSuppressedQueueValue(queueValue)
 end
 
-local function isSpellKnown(spellID)
+isSpellKnown = function(spellID)
     if not spellID then
         return true
     end
@@ -994,6 +1022,7 @@ local function movementDecision(spellID)
         "instantOnly=" .. tostring(policyContains("moveCastInstantOnly", spellID)),
         "always=" .. tostring(policyContains("moveCastAlways", spellID)),
         "moveBuff=" .. tostring(hasMovementCastBuff()),
+        "moveCondition=" .. debugSafe(getConditionalMoveCastLabel(spellID)),
         "chan=" .. (chOk and debugSafe(channeled) or "call-error"),
         "proc=" .. (procOk and debugSafe(procced) or "call-error"),
         "safe=" .. tostring(isMovementSafeQueueValue(spellID)),
@@ -1028,7 +1057,7 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.10.10", GetTime() - debugStartedAt,
+            reason, "2.10.16", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1912,7 +1941,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.10.10", PIXEL_PROTOCOL_VERSION,
+            :format("2.10.16", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 

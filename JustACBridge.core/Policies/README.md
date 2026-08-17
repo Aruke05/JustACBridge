@@ -48,6 +48,9 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
 - `moveCastNever`：移动时始终跳过的硬读条技能，优先于移动 Buff 和 Proc 判断。
 - `moveCastInstantOnly`：忽略 Proc 高亮和移动施法 Buff；仅在当前有效法术形态被
   API 明确报告为零读条时允许。
+- `moveCastConditions`：只对指定 `spellID` 生效的移动施法例外；可用
+  `requiresSpell` 要求已学习的天赋/法术，并用 `auraID` 要求当前玩家 Buff。配置的
+  条件全部可确认时才允许，未知状态保守跳过。
 - `clipChannels`：循环明确要求可在 GCD 末主动截断的引导技能。引导状态仍会导出，
   但不会一直占用动作队列。
 - `rangeSequenceRules`：只在目标被明确判定超过指定距离时调整技能先后；距离未知时
@@ -78,6 +81,9 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
     moveCastBuffs = { 4001 },
     moveCastNever = { 4002 },
     moveCastInstantOnly = { 4003 },
+    moveCastConditions = {
+        { spellID = 4004, requiresSpell = 4005, auraID = 4006 },
+    },
     clipChannels = { 5001 },
     rangeSequenceRules = {
         {
@@ -147,7 +153,8 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
 - 移动规则对应支持 `moveCastAlways/moveCastBuffs` 完整替换，以及
   `add/removeMoveCastAlways`、`add/removeMoveCastBuffs` 增量修改；
   `moveCastNever` 同样支持完整替换和 `add/removeMoveCastNever`；
-  `moveCastInstantOnly` 同样支持完整替换和 `add/removeMoveCastInstantOnly`。
+  `moveCastInstantOnly` 同样支持完整替换和 `add/removeMoveCastInstantOnly`；
+  条件移动规则支持 `moveCastConditions` 完整替换和 `addMoveCastConditions` 追加。
 - 引导规则支持 `clipChannels` 完整替换和 `add/removeClipChannels` 增量修改；
   距离顺序规则支持 `rangeSequenceRules` 完整替换和 `addRangeSequenceRules` 追加。
 - 场地规则支持 `groundEffects` 完整替换和 `addGroundEffects` 追加。

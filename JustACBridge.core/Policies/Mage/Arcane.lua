@@ -4,7 +4,7 @@ if not Registry then return end
 Registry.RegisterSpec("MAGE", 1, {
     id = "arcane",
     name = "奥术",
-    revision = 12,
+    revision = 13,
     -- The aura's presence is directly observable. Recast only after the
     -- existing absorb has actually ended; never guess from remaining time.
     maintenanceBuffs = {
@@ -66,7 +66,24 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 12,
+            revision = 13,
+            -- These are exact, live-observable movement exceptions rather
+            -- than an invented fallback. Slipstream makes a Clearcasting
+            -- Missiles channel movable; Presence of Mind makes Arcane Blast
+            -- instant. If the talent/aura cannot be proven, both fail closed.
+            moveCastConditions = {
+                {
+                    spellID = 5143,          -- Arcane Missiles
+                    requiresSpell = 236457,  -- Slipstream
+                    auraID = 263725,         -- Clearcasting
+                    label = "Slipstream + Clearcasting",
+                },
+                {
+                    spellID = 30451,  -- Arcane Blast
+                    auraID = 205025,  -- Presence of Mind
+                    label = "Presence of Mind",
+                },
+            },
             -- Current Midnight S2 SimC and guide priorities do not contain
             -- Arcane Explosion in either Spellslinger or Sunfury. JustAC's
             -- bundled MAGE_1 SimC queue omits it as well, so a transient

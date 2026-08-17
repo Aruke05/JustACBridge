@@ -16,7 +16,7 @@ dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
 
 local registry = JustACBridgePolicyRegistry
-assert(registry.schemaVersion == 11)
+assert(registry.schemaVersion == 12)
 
 local arcane = assert(registry.Resolve("MAGE", 1, 120007))
 assert(arcane.storageKey == "MAGE_1" and arcane.id == "arcane")
@@ -40,12 +40,18 @@ assert(arcane.maintenanceBuffs[1].reserveCharges == 1)
 
 local arcane121 = assert(registry.Resolve("MAGE", 1, 120100))
 assert(arcane121.ruleset == "midnight-12.1")
-assert(arcane121.revision == 12)
+assert(arcane121.revision == 13)
 assert(#arcane121.rotationExclusions == 0)
 assert(#arcane121.rotationEffectiveExclusions == 1
     and arcane121.rotationEffectiveExclusions[1] == 1449)
 assert(#arcane121.clipChannels == 0)
 assert(#arcane121.protectedChannels == 1 and arcane121.protectedChannels[1] == 5143)
+assert(#arcane121.moveCastConditions == 2)
+assert(arcane121.moveCastConditions[1].spellID == 5143)
+assert(arcane121.moveCastConditions[1].requiresSpell == 236457)
+assert(arcane121.moveCastConditions[1].auraID == 263725)
+assert(arcane121.moveCastConditions[2].spellID == 30451)
+assert(arcane121.moveCastConditions[2].auraID == 205025)
 
 local arcaneTwwS3 = assert(registry.Resolve("MAGE", 1, 110207))
 assert(arcaneTwwS3.ruleset == "tww-s3")
@@ -53,6 +59,7 @@ assert(#arcaneTwwS3.reserve == 3)
 assert(arcaneTwwS3.reserve[1] == 365350 and arcaneTwwS3.reserve[3] == 321507)
 assert(#arcaneTwwS3.reservePassthrough == 0)
 assert(#arcaneTwwS3.clipChannels == 1 and arcaneTwwS3.clipChannels[1] == 5143)
+assert(#arcaneTwwS3.moveCastConditions == 0)
 
 local frostMage = assert(registry.Resolve("MAGE", 3, 120007))
 assert(#frostMage.reserve == 1 and frostMage.reserve[1] == 12472)

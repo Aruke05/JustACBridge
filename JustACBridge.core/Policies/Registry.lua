@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 11
+Registry.schemaVersion = 12
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -116,6 +116,36 @@ end
 
 local function appendMaintenanceBuffs(target, source)
     for _, rule in ipairs(copyMaintenanceBuffs(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+local function copyMoveCastConditions(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        if type(rule) == "table" then
+            local spellID = tonumber(rule.spellID)
+            local requiresSpell = tonumber(rule.requiresSpell)
+            local auraID = tonumber(rule.auraID)
+            -- A condition without a live requirement would silently become a
+            -- second moveCastAlways list. Reject it so conditional exceptions
+            -- always fail closed on an observable talent and/or player aura.
+            if spellID and spellID > 0
+                and ((requiresSpell and requiresSpell > 0) or (auraID and auraID > 0)) then
+                result[#result + 1] = {
+                    spellID = spellID,
+                    requiresSpell = requiresSpell,
+                    auraID = auraID,
+                    label = rule.label,
+                }
+            end
+        end
+    end
+    return result
+end
+
+local function appendMoveCastConditions(target, source)
+    for _, rule in ipairs(copyMoveCastConditions(source)) do
         target[#target + 1] = rule
     end
 end
@@ -233,6 +263,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         moveCastBuffs = copyArray(classPolicy.moveCastBuffs),
         moveCastNever = copyArray(classPolicy.moveCastNever),
         moveCastInstantOnly = copyArray(classPolicy.moveCastInstantOnly),
+        moveCastConditions = copyMoveCastConditions(classPolicy.moveCastConditions),
         clipChannels = copyArray(classPolicy.clipChannels),
         protectedChannels = copyArray(classPolicy.protectedChannels),
         rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
@@ -249,6 +280,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     addUniqueValues(result.moveCastBuffs, specPolicy.moveCastBuffs)
     addUniqueValues(result.moveCastNever, specPolicy.moveCastNever)
     addUniqueValues(result.moveCastInstantOnly, specPolicy.moveCastInstantOnly)
+    appendMoveCastConditions(result.moveCastConditions, specPolicy.moveCastConditions)
     addUniqueValues(result.clipChannels, specPolicy.clipChannels)
     addUniqueValues(result.protectedChannels, specPolicy.protectedChannels)
     appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
@@ -292,6 +324,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.moveCastInstantOnly then
             replaceArray(result.moveCastInstantOnly, patch.moveCastInstantOnly)
         end
+        if patch.moveCastConditions then
+            result.moveCastConditions = copyMoveCastConditions(patch.moveCastConditions)
+        end
         if patch.clipChannels then
             replaceArray(result.clipChannels, patch.clipChannels)
         end
@@ -328,6 +363,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         addUniqueValues(result.moveCastNever, patch.addMoveCastNever)
         removeValues(result.moveCastInstantOnly, patch.removeMoveCastInstantOnly)
         addUniqueValues(result.moveCastInstantOnly, patch.addMoveCastInstantOnly)
+        appendMoveCastConditions(result.moveCastConditions, patch.addMoveCastConditions)
         removeValues(result.clipChannels, patch.removeClipChannels)
         addUniqueValues(result.clipChannels, patch.addClipChannels)
         removeValues(result.protectedChannels, patch.removeProtectedChannels)
