@@ -160,32 +160,33 @@ SlashCmdList.JUSTACBRIDGE("debug")
 
 -- 12.1 Arcane owns an exact two-spell preserve set. Stale/custom JustAC Burst
 -- Trigger entries (including ordinary Barrage) must not silently add more M4
--- holds. M5 keeps Evocation first, while hold-safe M4 rejects its channel and
--- may still execute Barrage.
+-- holds. Evocation is not one of the two reserved actions, so both outputs
+-- keep it; an explicit player override may still reserve it.
 classFile, specIndex = "MAGE", 1
 burstTriggers = { 12051, 44425 }
 testQueue = { 12051, 44425 }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 12051)
 JustACBridgeDB.reserveOverrides.MAGE_1 = { include = { [12051] = true } }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 JustACBridge.Refresh()
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 JustACBridgeDB.reserveOverrides.MAGE_1 = nil
 burstTriggers = {}
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 
 -- Defensive maintenance must not steal damage GCDs from Arcane M5. Missing
 -- Prismatic Barrier now leaves the source order unchanged for both outputs.
 playerAuras[235450] = nil
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 12051)
 playerAuras[235450] = {}
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 12051)
 
 -- A custom M5 source may own a different queue, while M4 must consume its
 -- explicit untouched preserve queue. It must never copy the M5 action across.
@@ -196,14 +197,13 @@ assert(JustACBridge.GetLosslessRecommendation().spellID == 365350)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 testPreserveQueue = nil
 
--- M4 must remain safe to hold through movement/mechanics even during a
--- momentary stationary frame. It skips the reserved Touch, the Missiles
--- channel and the Arcane Blast hardcast, then may use Orb once its stationary
--- delay is satisfied. Arcane Explosion remains excluded.
+-- 12.1 Arcane M4 is the same live rotation as M5 minus the two reserved
+-- cooldowns. After skipping Touch it must keep the owned Missiles action;
+-- Arcane Explosion remains excluded from both outputs.
 testQueue = { 321507, 5143, 30451, 153626, 1449, 44425 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 153626)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 5143)
 
 -- Stationary Arcane M5 and M4 share Orb after the resume delay.
 testQueue = { 153626, 44425 }
@@ -241,17 +241,19 @@ testQueue = { 5143, 44425 }
 playerAuras[263725] = {}
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 5143)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 5143)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "moving-missiles", 5143)
 assert(JustACBridge.GetPlayerCastState().channelBlocksInput == true)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "moving-missiles", 5143)
 unlearnedSpells[236457] = true
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 unlearnedSpells[236457] = nil
 playerAuras[263725] = nil
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 
 -- Presence of Mind's player aura is sufficient and spell-specific evidence
 -- that Arcane Blast is instant. Losing the aura immediately restores the
@@ -289,7 +291,7 @@ JustACBridge.Refresh()
 local surgeCue = JustACBridge.GetLosslessRecommendation()
 assert(surgeCue.spellID == 365350 and surgeCue.sourceBurstCue == true
     and surgeCue.sourceQueueIndex == 2)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 30451)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "missiles-2", 5143)
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 365350)
@@ -301,14 +303,13 @@ burstCues[365350] = nil
 burstTriggers = {}
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 30451)
 
--- The shortcut that normally copies a non-reserved M5 action into M4 must not
--- leak a stationary hardcast into the hold-safe action.
+-- Arcane's explicit exception shares stationary hardcasts between M5 and M4.
 testQueue = { 30451, 1449, 44425 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 30451)
 
 -- Midnight 12.1 excludes Arcane Explosion from both automatic outputs. A
 -- transient Assisted Combat primary with no later action leaves both empty;
@@ -329,7 +330,7 @@ JustACBridge.Refresh()
 local pulseLossless = JustACBridge.GetLosslessRecommendation()
 local pulsePreserve = JustACBridge.GetPreserveBurstRecommendation()
 assert(pulseLossless.spellID == 1241462 and pulseLossless.sourceSpellID == 1449)
-assert(pulsePreserve.spellID == 44425) -- Pulse is still a stationary 12.1 hardcast.
+assert(pulsePreserve.spellID == 1241462 and pulsePreserve.sourceSpellID == 1449)
 effectiveSpellOverrides[1449] = nil
 
 -- Prismatic Bolt dynamically upgrades Arcane Blast and is instant. Resolve

@@ -4,7 +4,7 @@ if not Registry then return end
 Registry.RegisterSpec("MAGE", 1, {
     id = "arcane",
     name = "奥术",
-    revision = 18,
+    revision = 19,
 
     -- Midnight 12.0 rebuilt Arcane.  Evocation is mana recovery again rather
     -- than a Siphon Storm setup spell, so M4 must not hold it with the actual
@@ -59,7 +59,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 18,
+            revision = 19,
             -- 12.1 M4 shares the owned Arcane priority with M5. Orb is no
             -- longer permanently excluded; both modes use the movement and
             -- stationary-resume rules below.
@@ -69,6 +69,11 @@ Registry.RegisterSpec("MAGE", 1, {
             -- silently turn additional ordinary Arcane actions into M4 holds.
             -- Explicit /jacb reserve overrides remain authoritative.
             useDetectedBurstTriggers = false,
+            -- Arcane M4 is literally the M5 action list minus Surge and Touch.
+            -- Use the player's real movement state instead of the generic
+            -- always-moving M4 filter. Protected Missiles still lock both
+            -- outputs until the real channel stop/interruption event.
+            preserveUsesCurrentSafety = true,
             -- These are exact, live-observable movement exceptions rather
             -- than an invented fallback. Slipstream makes a Clearcasting
             -- Missiles channel movable; Presence of Mind makes Arcane Blast

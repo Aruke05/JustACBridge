@@ -709,6 +709,16 @@ local function isPlayerAuraDefinitelyMissing(auraID)
     return ok and not isSecret(aura) and aura == nil
 end
 
+local function isPreserveSafeQueueValue(queueValue)
+    -- 12.1 Arcane explicitly defines M4 as M5 minus the two reserved cooldowns.
+    -- It therefore shares M5's real-time movement gate: stationary casts and
+    -- channels are allowed, while moving casts still require exact permission.
+    if currentPolicy and currentPolicy.preserveUsesCurrentSafety == true then
+        return isSafeQueueValue(queueValue)
+    end
+    return isHoldSafeQueueValue(queueValue)
+end
+
 local function isPlayerDefinitelyInCombat()
     if not UnitAffectingCombat then
         return false
@@ -784,7 +794,7 @@ local function findMaintenanceRecommendation(position)
             and (position == 1 and isSafeQueueValue(spellID)
                 or position == 2 and not isReservedQueueValue(spellID)
                     and not isReserveExcludedQueueValue(spellID)
-                    and isHoldSafeQueueValue(spellID)) then
+                    and isPreserveSafeQueueValue(spellID)) then
             local data = getSpellData(spellID, position)
             if data and data.plainHotkey ~= "" then
                 data.maintenanceBuff = true
@@ -987,7 +997,7 @@ local function findReserveRecommendation(queue, startIndex)
             and not isReservedQueueValue(queueValue)
             and not isReserveExcludedQueueValue(queueValue)
             and isUsableNow(queueValue)
-            and isHoldSafeQueueValue(queueValue) then
+            and isPreserveSafeQueueValue(queueValue) then
             local data = getSpellData(queueValue, 2)
             if data and data.plainHotkey ~= "" then
                 return data
@@ -1006,7 +1016,7 @@ local function findReserveRecommendation(queue, startIndex)
     if ok and type(spellID) == "number" and spellID > 0
         and spellID ~= queue[1] and not isReservedQueueValue(spellID)
         and not isReserveExcludedQueueValue(spellID)
-        and isUsableNow(spellID) and isHoldSafeQueueValue(spellID) then
+        and isUsableNow(spellID) and isPreserveSafeQueueValue(spellID) then
         local data = getSpellData(spellID, 2)
         if data and data.plainHotkey ~= "" then
             return data
@@ -1279,7 +1289,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.1", GetTime() - debugStartedAt,
+            reason, "2.12.2", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1748,7 +1758,7 @@ local function refresh()
         and lossless and lossless.plainHotkey ~= ""
         and not isReservedQueueValue(lossless.queueValue)
         and not isReserveExcludedQueueValue(lossless.queueValue)
-        and isHoldSafeQueueValue(lossless.queueValue) then
+        and isPreserveSafeQueueValue(lossless.queueValue) then
         preserve = copyTable(lossless)
         preserve.position = 2
     elseif not preserve then
@@ -2219,7 +2229,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.1", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.2", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
