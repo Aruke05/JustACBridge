@@ -4,7 +4,7 @@ if not Registry then return end
 Registry.RegisterSpec("DEATHKNIGHT", 2, {
     id = "frost",
     name = "冰霜",
-    revision = 3,
+    revision = 5,
     fallbackActions = {
         { spellID = 49184, requireProc = true, label = "白霜凛风冲击" },
         { spellID = 49184, label = "凛风冲击" },
@@ -21,5 +21,10 @@ Registry.RegisterSpec("DEATHKNIGHT", 2, {
         47568,   -- Empower Rune Weapon
         279302,  -- Frostwyrm's Fury
         439843,  -- Reaper's Mark
+    },
+    -- Directional frontal movement is left to M5/manual facing.
+    reserveExclusions = {
+        194913, -- Glacial Advance
+        207230, -- Frostscythe
     },
 })

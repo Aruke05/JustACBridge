@@ -7,7 +7,7 @@
   `IsBurstCue` 明确标记的爆发提示（JustAC Stage G 为保留 Blizzard 第一推荐可能将
   它放在第 2 位），随后才处理维护技能和普通第一推荐。精确提示只允许表达一个已验证
   的窄条件，不得冒充完整 APL；提示仍须通过安全、可用和快捷键检查。
-- **保留爆发版**：面向拉怪跑路和普通 Boss 机制持续按住。奥法自有源通过
+- **保留爆发版**：面向拉怪跑路和普通 Boss 机制持续按住。所有内置 12.1 自有源通过
   `GetPreserveQueue()` 始终从原始 JustAC 队列选择
   首个非保留、当前可用、已绑定且可移动安全的动作；即使当前一帧静止，也不启动
   不可移动读条、引导或蓄力。队列无安全动作时使用同一套专精兜底。
@@ -33,6 +33,9 @@
 - Midnight 12.1 职业改动：https://www.wowhead.com/news/new-prismatic-bolt-ability-and-improved-defensives-arcane-mage-class-changes-and-382132
 - 12.1 S2 当前 SimC APL：https://github.com/simulationcraft/simc/blob/midnight/ActionPriorityLists/default/mage_arcane.simc
 - 12.1 奥法循环（2026-08-14 更新）：https://www.wowhead.com/guide/classes/mage/arcane/rotation-cooldowns-pve-dps
+- 12.1 火法/冰法当前 SimC APL：https://github.com/simulationcraft/simc/blob/midnight/engine/class_modules/apl/mage.cpp
+- 12.1 冰法循环：https://bbs.nga.cn/read.php?tid=47313033
+- 12.1 火法循环：https://bbs.nga.cn/read.php?tid=47171968
 
 历史 11.2 兼容依据：
 
@@ -48,18 +51,14 @@
 | 专精 | 默认保留法术 |
 | --- | --- |
 | 奥术 | 奥术涌动 `365350`、大法师之触 `321507` |
-| 火焰 | 燃烧 `190319` |
+| 火焰 | 燃烧 `190319`、流星 `153561` |
 | 冰霜 | 冰冷血脉 `12472` |
 
 保留版额外排除：
 
-- **寒冰宝珠 `84714`**、**冰霜射线 `205021`**：只允许无损版释放，
-  保留爆发版始终跳过。
-
-有意不保留：
-
-- **流星 `153561`**：S3 火法结论是不强求放进燃烧，应尽量卡 CD，只有燃烧
-  剩余时间不足以等它落地时才延后。
+- 火法：烈焰风暴 `2120`（地面选点）。
+- 冰法：寒冰宝珠 `84714`、冰霜射线 `205021`、暴风雪 `190356`、冰锥术 `120`。
+  前两项只允许 M5 释放，后两项避免 M4 猜测地面位置或人物面向。
 
 两篇 NGA 奥法文章描述的是 **TWW S3 / 11.2**。其后置触结论依赖当时的四件套、
 共鸣、敏锐直觉、白炽耀焰和奥术之魂轴；11.2 策略仍保留完整的
@@ -126,6 +125,21 @@ Buff 明确不存在、法术已学习、当前充能数明确大于 `1` 且快�
 返回原始 JustAC 队列并在日志写出 `SOURCE_DECISION ... fallback=true`。这仍是可验证
 切片加精确回退，不宣称已经复刻完整 SimC APL。
 
+12.1 火法、冰法也分别由 `Sources/Fire121.lua`、`Sources/FrostMage121.lua` 独立决策：
+
+- 火法区分炎爆术瞬发 Hot Streak/Hyperthermia 与 Pyroclasm 读条形态，三目标且已学
+  Fuel the Fire 才切烈焰风暴；实现 Firestarter 保留、可观测燃烧窗、日怒燃烧内流星、
+  Heating Up 空闲帧火冲和 Heat Shimmer/Scald 灼烧。燃烧前置读条由成功施法事件确认，
+  随后在首个空闲帧发送燃烧，以保留仍在飞行的弹道；Bridge 在任意读条期间禁止持续
+  按键注入，因此仍不伪造“读条结束前约 150ms 燃烧/火冲”的双法术编织。
+- 冰法按服务器确认的施法事件推进霜火/疾咒师开场，覆盖冰川尖刺、彗星风暴、
+  脑部冻结、寒冰指、宝珠、暴风雪阈值、Freezing 层数与英雄天赋分支。冰霜射线总是
+  完整引导；SimC 的按射线跳数截断、不可可靠读取的冰刺数，以及秘密的套装时序均回退
+  JustAC，不用固定时间近似。
+
+两者都先保留原队列中的物品头部，让 JustAC 继续决定饰品/药水时序；M4 永远不用
+自有队列，移动时仍由策略层跳过所有不可移动读条、引导和蓄力。
+
 专精登记的最终兜底法术不参与失败熔断。它已经是没有更安全动作时的最后选择，
 即使游戏返回施法失败，也不会累计失败次数或将该兜底临时屏蔽。
 
@@ -156,20 +170,30 @@ Bridge 首先合并 JustAC 当前专精 `Burst Trigger` 配置，因此会自动
 - Method 天赋：https://www.method.gg/guides/frost-death-knight/talents
 - Method 手法与循环：https://www.method.gg/guides/frost-death-knight/playstyle-and-rotation
 - 湮灭削弱讨论：https://us.forums.blizzard.com/en/wow/t/121-frost-obliterate-25-nerf-what/2321138
+- 12.1 当前冰/邪 DK SimC APL：https://github.com/simulationcraft/simc/blob/midnight/engine/class_modules/apl/apl_death_knight.cpp
 
 | 专精 | 默认保留法术 |
 | --- | --- |
 | 鲜血 | 符文刃舞 `49028`、白骨风暴 `194844` |
 | 冰霜 | 冰霜之柱 `51271`、冰龙吐息基础/当前覆盖 `152279`/`1249658`、符文武器增效 `47568`、冰霜巨龙之怒 `279302`、死神印记 `439843` |
-| 邪恶 | 黑暗突变基础/当前覆盖 `63560`/`1233448`、亡者大军 `42650`、天启兼容 ID `275699`/`220143`、邪恶突袭 `207289`、召唤石像鬼 `49206`、培育憎恶 `288853`、邪恶蔓延 `390279`、腐化 `1247378` |
+| 邪恶 | 黑暗突变基础/当前覆盖 `63560`/`1233448`、亡者大军 `42650`、天启兼容 ID `275699`/`220143`、邪恶突袭 `207289`、召唤石像鬼 `49206`、培育憎恶 `288853`、邪恶蔓延 `390279`、腐化 `1247378`、灵魂收割 `343294` |
 
 保留版不会扣住普通符文/符能消耗技能；它从 JustAC 队列继续选择可用填充技能，
 避免把 Bridge 变成第二套、容易过期的 DK APL。
 
-12.1 天启骑士（Rider of the Apocalypse）的柱子、冰霜巨龙之怒、召回、印记爆炸、
-灭绝层数及杀戮机器穿插都依赖实时资源与增益时序。Bridge 没有实现第二套 APL，
-也不根据攻略推导去重排或扣留这些进阶动作；无损版继续执行 JustAC 的实时推荐，
-保留爆发版只使用上表中已有且含义明确的爆发保留集合。
+12.1 冰/邪 DK 分别由 `Sources/FrostDK121.lua`、`Sources/UnholyDK121.lua` 决策。
+冰 DK 已实现可证明的冰柱/吐息资源门槛、死神印记窗口、冰龙之怒增益门槛、白霜、
+杀戮机器双层/符文门槛、Razorice/Frostbane/Shattering Blade 与单体/AOE 消耗分支。
+吐息/死神使者的精确冷却剩余和资源池无法从布尔冷却证明时，立即回退 JustAC。
+
+邪 DK 已实现疾病高优先级兜底、成功施法确认真实 Festering Scythe 覆盖形态后才放大军、黑暗突变、
+腐化、AOE 灵魂收割、Sudden Doom、Lesser Ghoul，以及当前 SimC 的传染阈值（无
+Forbidden Knowledge 为 4+，有则 6+）。Cycle of Death 场地时序、Festering Scythe
+剩余战斗时间、Army 精确冷却剩余、宠物存活和隐藏增益计时无法完整证明时回退 JustAC。
+这些仍是“完整可观测切片 + 原队列兜底”，不宣称为脱离运行时信息的完整 APL。
+
+M4 另外排除冰 DK 冰川突进 `194913`、冰霜镰刀 `207230` 和邪 DK 枯萎凋零 `43265`，
+不猜测人物面向或绿色选点位置；这些技能仍可由 M5/玩家手动瞄准。
 
 死亡之握 `49576` 仅属于控场/位移工具，不属于伤害优先级；冰霜策略将其登记在
 `rotationExclusions`，即使推荐队列或突进模块误注入，也会在 M5/M4 两路同时跳过。

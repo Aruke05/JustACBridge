@@ -34,6 +34,7 @@ local SourceRegistry = _G.JustACBridgeRecommendationSources
 local GroundEffectTracker = _G.JustACBridgeGroundEffectTracker
 local activeSource
 local supportSource
+local activeSourceMode
 local bridgeFrame
 local rows = {}
 local exportBox
@@ -145,25 +146,47 @@ local function sourceCall(methodName, ...)
     return false, nil, "unsupported capability: " .. tostring(methodName)
 end
 
+local AUTOMATIC_SOURCE_BY_SPEC = {
+    MAGE_1 = "arcane121",
+    MAGE_2 = "fire121",
+    MAGE_3 = "frostmage121",
+    DEATHKNIGHT_2 = "frostdk121",
+    DEATHKNIGHT_3 = "unholydk121",
+}
+
+local function automaticRecommendationSourceID()
+    local _, classFile = UnitClass("player")
+    local spec = GetSpecialization and GetSpecialization()
+    local interface = GetBuildInfo and select(4, GetBuildInfo())
+    if type(interface) ~= "number" or interface < 120100 or interface > 120199 then
+        return "justac"
+    end
+    return AUTOMATIC_SOURCE_BY_SPEC[classFile .. "_" .. tostring(spec)] or "justac"
+end
+
 local function activateRecommendationSource(preferredID, strict)
     if not SourceRegistry or not SourceRegistry.Select then
-        activeSource, supportSource = nil, nil
+        activeSource, supportSource, activeSourceMode = nil, nil, nil
         return false, "recommendation-source registry unavailable"
     end
 
+    local requestedID = preferredID or "auto"
+    local resolvedID = requestedID == "auto"
+        and automaticRecommendationSourceID() or requestedID
     local source, reason
-    if strict and preferredID and SourceRegistry.Get then
-        source, reason = SourceRegistry.Get(preferredID)
+    if strict and requestedID ~= "auto" and SourceRegistry.Get then
+        source, reason = SourceRegistry.Get(resolvedID)
     else
-        source, reason = SourceRegistry.Select(preferredID)
+        source, reason = SourceRegistry.Select(resolvedID)
     end
     if not source then
-        activeSource, supportSource = nil, nil
+        activeSource, supportSource, activeSourceMode = nil, nil, nil
         return false, reason
     end
     activeSource = source
+    activeSourceMode = requestedID
     supportSource = SourceRegistry.Get and SourceRegistry.Get("justac") or nil
-    JustACBridgeDB.recommendationSource = source.id
+    JustACBridgeDB.recommendationSource = requestedID
     return true
 end
 
@@ -1240,7 +1263,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.11.3", GetTime() - debugStartedAt,
+            reason, "2.12.0", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1546,6 +1569,7 @@ local function updateSavedExport(dataRows)
     JustACBridgeExport.recommendationSource = activeSource and {
         id = activeSource.id,
         name = activeSource.name,
+        mode = activeSourceMode,
         justACFallback = supportSource ~= nil and supportSource ~= activeSource,
     } or nil
     JustACBridgeExport.groundEffects = GroundEffectTracker
@@ -2068,6 +2092,7 @@ function API.GetRecommendationSource()
     return activeSource and {
         id = activeSource.id,
         name = activeSource.name,
+        mode = activeSourceMode,
         justACFallback = supportSource ~= nil and supportSource ~= activeSource,
     } or nil
 end
@@ -2159,20 +2184,17 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         if JustACBridgeDB.groundVoice == nil then
             JustACBridgeDB.groundVoice = true
         end
-        -- 2.11 introduces the independent 12.1 Arcane M5 source. Migrate the
-        -- existing JustAC default once for Arcane characters; an explicit
-        -- source choice made after this marker is never overwritten.
-        if JustACBridgeDB.arcane121SourceMigration ~= "2.11.0" then
-            local _, loginClass = UnitClass("player")
-            local loginSpec = GetSpecialization and GetSpecialization()
-            local loginInterface = select(4, GetBuildInfo())
-            if loginClass == "MAGE" and loginSpec == 1
-                and loginInterface >= 120100 and loginInterface <= 120199
-                and (JustACBridgeDB.recommendationSource == nil
-                    or JustACBridgeDB.recommendationSource == "justac") then
-                JustACBridgeDB.recommendationSource = "arcane121"
+        -- 2.12 makes source selection specialization-aware. Existing built-in
+        -- defaults migrate once to auto; a genuinely custom/manual source ID
+        -- remains explicit and is never rewritten on later logins.
+        if JustACBridgeDB.optimized121SourceMigration ~= "2.12.0" then
+            local old = JustACBridgeDB.recommendationSource
+            if old == nil or old == "justac" or old == "arcane121"
+                or old == "fire121" or old == "frostmage121"
+                or old == "frostdk121" or old == "unholydk121" then
+                JustACBridgeDB.recommendationSource = "auto"
             end
-            JustACBridgeDB.arcane121SourceMigration = "2.11.0"
+            JustACBridgeDB.optimized121SourceMigration = "2.12.0"
         end
         local sourceOK, sourceError = activateRecommendationSource(
             JustACBridgeDB.recommendationSource
@@ -2181,7 +2203,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.11.3", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.0", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -2245,6 +2267,9 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
     elseif event == "PLAYER_SPECIALIZATION_CHANGED"
         or event == "PLAYER_TALENT_UPDATE"
         or event == "TRAIT_CONFIG_UPDATED" then
+        if JustACBridgeDB.recommendationSource == "auto" then
+            activateRecommendationSource("auto")
+        end
         if GroundEffectTracker and GroundEffectTracker.Reset then
             GroundEffectTracker.Reset()
         end
@@ -2446,7 +2471,8 @@ SlashCmdList.JUSTACBRIDGE = function(message)
                 #ids > 0 and table.concat(ids, ", ") or "无"))
     elseif command == "source list" then
         local entries = SourceRegistry and SourceRegistry.List and SourceRegistry.List() or {}
-        print("|cff40a9ffJustACBridge:|r 推荐源：")
+        print(("|cff40a9ffJustACBridge:|r 推荐源（模式：%s）：")
+            :format(activeSourceMode or "未知"))
         for _, entry in ipairs(entries) do
             local selected = activeSource and activeSource.id == entry.id and "（当前）" or ""
             print(("  %s · %s%s%s"):format(
@@ -2459,14 +2485,15 @@ SlashCmdList.JUSTACBRIDGE = function(message)
     elseif command:match("^source%s+[%w_-]+$") then
         local sourceID = command:match("^source%s+([%w_-]+)$")
         local ok, err = activateRecommendationSource(sourceID, true)
-        if ok and activeSource and activeSource.id == sourceID then
+        if ok and activeSource
+            and (sourceID == "auto" or activeSource.id == sourceID) then
             if GroundEffectTracker and GroundEffectTracker.Reset then
                 GroundEffectTracker.Reset()
             end
             refreshReservedSpells()
             lastSignature = nil
-            print(("|cff40a9ffJustACBridge:|r 推荐源已切换为 %s（%s）。")
-                :format(activeSource.name, activeSource.id))
+            print(("|cff40a9ffJustACBridge:|r 推荐源已切换为 %s（%s，模式 %s）。")
+                :format(activeSource.name, activeSource.id, activeSourceMode))
         else
             print("|cffff4040JustACBridge:|r 无法切换推荐源：" .. tostring(err or sourceID))
         end

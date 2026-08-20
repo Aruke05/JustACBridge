@@ -3,22 +3,27 @@
 JustACBridge 是一个由 **WoW 插件**和 **Windows/macOS M4/M5 映射器**组成的低延迟桥接工具。
 
 WoW 插件从可替换的推荐源读取队列并生成“无损版”和“保留爆发版”两个动作；
-12.1 奥法默认使用内置 `arcane121` 自有决策源，其他专精默认使用 JustAC，也可接入
-其他插件或自写循环模块。结果通过屏幕左上角的像素
+12.1 会按当前专精自动为奥法、火法、冰法、冰 DK、邪 DK 选择各自的内置自有决策源，
+其余专精使用 JustAC；也可接入其他插件或自写循环模块。结果通过屏幕左上角的像素
 矩阵实时导出。桌面客户端默认将 **M5** 映射为无损版、**M4** 映射为保留爆发版。
 
 ## 功能
 
 - 每个渲染帧读取一次当前推荐源的缓存队列，不额外增加轮询等待
 - 推荐源采用注册接口；自写模块在 JustAC 已安装时最少只需实现 `GetQueue()`
-- 12.1 奥法 M5 由 `Sources/Arcane121.lua` 自己按当前 SimC 顺序判断；已实现的动作必须
+- 12.1 五个优化专精的 M5 由各自 `Sources/*121.lua` 按当前 SimC 顺序判断；已实现的动作必须
   整条条件均可观测，遇到更高优先级的 secret/未知状态才原样回退 JustAC 队列
-- M4 可使用与 M5 完全不同的 `GetPreserveQueue()`；奥法自有源的 M4 始终读取原始
-  JustAC 队列，不让自有 M5 爆发或方向性动作渗入持续按住模式
+- M4 可使用与 M5 完全不同的 `GetPreserveQueue()`；五个自有源的 M4 始终读取原始
+  JustAC 队列，不让自有 M5 优先级、爆发或方向性动作渗入持续按住模式
 - M4 保留爆发版面向拉怪跑路和普通机制持续按住：跳过专精大爆发、药水、主动饰品
   及不可移动读条/引导/蓄力，无论当前一帧是否静止都只选择首个可移动安全动作
 - 内置法师/死亡骑士专精规则，并合并 JustAC 当前 Burst Trigger 配置与新版法术 ID
-- 冰霜 DK 不复刻攻略中的进阶 APL，只从两路伤害循环明确排除非伤害工具死亡之握
+- 火法不伪造读条末尾 150ms 的燃烧/火冲双法术编织；主循环只做空闲帧可证明决策，
+  读条期间继续严格保护不打断
+- 冰法按成功施法事件推进开场序列，冰霜射线始终完整引导；无法取得射线跳数、
+  冰刺数或 Rapid Refreezing 状态时回退 JustAC
+- 冰/邪 DK 自有源实现资源、Proc、目标数和可见增益均完整的优先级切片；精确冷却剩余、
+  宠物/战斗剩余时间及刷怪时序不可证明时回退 JustAC，不把部分规则宣称为完整 APL
 - 奥术宝珠依赖人物面向且无法在副本内可靠自动瞄准：M4 始终跳过；M5 移动时跳过，
   停止移动并连续静止满 2 秒后才恢复，期间再次移动会重新计时
 - 12.1 S2 奥法从 M5/M4 两路自动动作排除“实际仍为 `1449`”的魔爆术；当前 SimC
@@ -65,6 +70,12 @@ JustACBridge.core/       WoW 插件与像素协议文档
   Sources/
     Registry.lua
     JustAC.lua
+    Runtime121.lua
+    Arcane121.lua
+    Fire121.lua
+    FrostMage121.lua
+    FrostDK121.lua
+    UnholyDK121.lua
   Trackers/
     GroundEffects.lua
   Policies/
@@ -96,7 +107,7 @@ JustACBridge.macOS/      macOS 原生客户端（Swift + AppKit）
 
 ### 1. 安装 WoW 插件
 
-1. 当前内置奥法源仍复用 JustAC 的动作栏、冷却和 secret-safe 状态能力，因此请安装
+1. 当前内置 12.1 优化源仍复用 JustAC 的动作栏、冷却和 secret-safe 状态能力，因此请安装
    并启用 **JustAC**；完全独立的第三方推荐源可自行实现这些能力。
 2. 在 WoW 的 `Interface\AddOns` 目录中新建 `JustACBridge` 文件夹。
 3. 将 `JustACBridge.core` 中的以下内容复制进去：
@@ -116,7 +127,12 @@ World of Warcraft\_retail_\Interface\AddOns\JustACBridge\
   Sources\
     Registry.lua
     JustAC.lua
+    Runtime121.lua
     Arcane121.lua
+    Fire121.lua
+    FrostMage121.lua
+    FrostDK121.lua
+    UnholyDK121.lua
   Trackers\
     GroundEffects.lua
   Policies\
@@ -217,6 +233,7 @@ JustACBridge.M5\dist\JustACBridge.M5.exe
 | `/jacb reserve reset` | 恢复当前专精默认保留规则 |
 | `/jacb source list` | 查看可用推荐源 |
 | `/jacb source <ID>` | 切换推荐源 |
+| `/jacb source auto` | 按当前职业专精自动选择 12.1 自有源或 JustAC |
 | `/jacb ground on` | 开启场地技能到期过滤（默认） |
 | `/jacb ground off` | 保留倒计时但不抑制重复推荐 |
 | `/jacb ground status` | 查看场地技能剩余时间 |

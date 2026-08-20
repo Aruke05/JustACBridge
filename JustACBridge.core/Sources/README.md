@@ -24,8 +24,13 @@ JustACBridgeRecommendationSources.Register("my-rotation", {
 
 ```text
 /jacb source list
+/jacb source auto
 /jacb source my-rotation
 ```
+
+`auto` 是默认模式：Interface 12.1 下，奥法、火法、冰法、冰 DK、邪 DK 分别解析为
+`arcane121`、`fire121`、`frostmage121`、`frostdk121`、`unholydk121`；其他专精解析为
+`justac`。切换专精或天赋时会重新解析，但不会覆盖玩家显式选择的自定义源。
 
 未实现的快捷键、射程、可用性、Proc、引导识别等能力会回退给已安装的 JustAC
 适配器，因此替换推荐算法时无需复制动作栏扫描代码。
@@ -33,6 +38,11 @@ JustACBridgeRecommendationSources.Register("my-rotation", {
 源还可以实现 `GetPreserveQueue()`，为 M4 提供与 M5 `GetQueue()` 完全不同的原始
 队列；未实现时两种模式共享 `GetQueue()`。`GetDecisionTrace()` 可返回一行决策原因，
 Bridge 会以 `SOURCE_DECISION` 写入诊断日志。
+
+内置 12.1 自有源统一遵循：M5 先做本专精可完整证明的优先级，遇到不可观测的更高
+条件立即原样回退 JustAC；M4 始终返回原始 JustAC 队列，再由策略层过滤爆发、物品、
+不可移动读条/引导/蓄力和无法安全瞄准的方向/地面技能。各专精状态、法术 ID 与开场
+计数均在独立文件中，不通过共享运行时传播职业规则。
 
 ## 完全脱离 JustAC
 
