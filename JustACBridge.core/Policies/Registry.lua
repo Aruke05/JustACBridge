@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 12
+Registry.schemaVersion = 14
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -120,6 +120,40 @@ local function appendMaintenanceBuffs(target, source)
     end
 end
 
+-- Exact, policy-owned M5 cues are deliberately narrower than an APL.  A rule
+-- is accepted only when it carries a live aura condition that can fail closed;
+-- this prevents a typo or incomplete policy from turning into a blind
+-- cast-on-cooldown injector.
+local function copyPriorityCues(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        if type(rule) == "table" then
+            local spellID = tonumber(rule.spellID)
+            local auraID = tonumber(rule.auraID)
+            local minAuraStacks = tonumber(rule.minAuraStacks)
+            local allowAuraMissing = rule.allowAuraMissing == true
+            if spellID and spellID > 0 and auraID and auraID > 0
+                and (allowAuraMissing or minAuraStacks and minAuraStacks > 0) then
+                result[#result + 1] = {
+                    spellID = spellID,
+                    auraID = auraID,
+                    minAuraStacks = minAuraStacks and math.max(1, minAuraStacks) or nil,
+                    allowAuraMissing = allowAuraMissing,
+                    requiresCombat = rule.requiresCombat == true,
+                    label = rule.label,
+                }
+            end
+        end
+    end
+    return result
+end
+
+local function appendPriorityCues(target, source)
+    for _, rule in ipairs(copyPriorityCues(source)) do
+        target[#target + 1] = rule
+    end
+end
+
 local function copyMoveCastConditions(source)
     local result = {}
     for _, rule in ipairs(source or {}) do
@@ -146,6 +180,24 @@ end
 
 local function appendMoveCastConditions(target, source)
     for _, rule in ipairs(copyMoveCastConditions(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+local function copyMoveCastResumeDelays(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        local spellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local seconds = type(rule) == "table" and tonumber(rule.seconds) or nil
+        if spellID and spellID > 0 and seconds and seconds > 0 then
+            result[#result + 1] = { spellID = spellID, seconds = seconds }
+        end
+    end
+    return result
+end
+
+local function appendMoveCastResumeDelays(target, source)
+    for _, rule in ipairs(copyMoveCastResumeDelays(source)) do
         target[#target + 1] = rule
     end
 end
@@ -264,12 +316,14 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         moveCastNever = copyArray(classPolicy.moveCastNever),
         moveCastInstantOnly = copyArray(classPolicy.moveCastInstantOnly),
         moveCastConditions = copyMoveCastConditions(classPolicy.moveCastConditions),
+        moveCastResumeDelays = copyMoveCastResumeDelays(classPolicy.moveCastResumeDelays),
         clipChannels = copyArray(classPolicy.clipChannels),
         protectedChannels = copyArray(classPolicy.protectedChannels),
         rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
         groundEffects = copyGroundEffects(classPolicy.groundEffects),
         fallbackActions = copyFallbackActions(classPolicy.fallbackActions),
         maintenanceBuffs = copyMaintenanceBuffs(classPolicy.maintenanceBuffs),
+        priorityCues = copyPriorityCues(classPolicy.priorityCues),
     }
     addUniqueValues(result.reservePassthrough, specPolicy.reservePassthrough)
     addUniqueValues(result.reserveExclusions, specPolicy.reserveExclusions)
@@ -281,12 +335,14 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     addUniqueValues(result.moveCastNever, specPolicy.moveCastNever)
     addUniqueValues(result.moveCastInstantOnly, specPolicy.moveCastInstantOnly)
     appendMoveCastConditions(result.moveCastConditions, specPolicy.moveCastConditions)
+    appendMoveCastResumeDelays(result.moveCastResumeDelays, specPolicy.moveCastResumeDelays)
     addUniqueValues(result.clipChannels, specPolicy.clipChannels)
     addUniqueValues(result.protectedChannels, specPolicy.protectedChannels)
     appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
     appendGroundEffects(result.groundEffects, specPolicy.groundEffects)
     appendFallbackActions(result.fallbackActions, specPolicy.fallbackActions)
     appendMaintenanceBuffs(result.maintenanceBuffs, specPolicy.maintenanceBuffs)
+    appendPriorityCues(result.priorityCues, specPolicy.priorityCues)
 
     local patch = selectVersionPatch(specPolicy, interfaceVersion)
     if patch then
@@ -327,6 +383,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.moveCastConditions then
             result.moveCastConditions = copyMoveCastConditions(patch.moveCastConditions)
         end
+        if patch.moveCastResumeDelays then
+            result.moveCastResumeDelays = copyMoveCastResumeDelays(patch.moveCastResumeDelays)
+        end
         if patch.clipChannels then
             replaceArray(result.clipChannels, patch.clipChannels)
         end
@@ -344,6 +403,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         end
         if patch.maintenanceBuffs then
             result.maintenanceBuffs = copyMaintenanceBuffs(patch.maintenanceBuffs)
+        end
+        if patch.priorityCues then
+            result.priorityCues = copyPriorityCues(patch.priorityCues)
         end
         removeValues(result.reservePassthrough, patch.removeReservePassthrough)
         addUniqueValues(result.reservePassthrough, patch.addReservePassthrough)
@@ -364,6 +426,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         removeValues(result.moveCastInstantOnly, patch.removeMoveCastInstantOnly)
         addUniqueValues(result.moveCastInstantOnly, patch.addMoveCastInstantOnly)
         appendMoveCastConditions(result.moveCastConditions, patch.addMoveCastConditions)
+        appendMoveCastResumeDelays(result.moveCastResumeDelays, patch.addMoveCastResumeDelays)
         removeValues(result.clipChannels, patch.removeClipChannels)
         addUniqueValues(result.clipChannels, patch.addClipChannels)
         removeValues(result.protectedChannels, patch.removeProtectedChannels)
@@ -372,6 +435,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         appendGroundEffects(result.groundEffects, patch.addGroundEffects)
         appendFallbackActions(result.fallbackActions, patch.addFallbackActions)
         appendMaintenanceBuffs(result.maintenanceBuffs, patch.addMaintenanceBuffs)
+        appendPriorityCues(result.priorityCues, patch.addPriorityCues)
     end
 
     return result

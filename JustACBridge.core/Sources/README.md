@@ -30,6 +30,10 @@ JustACBridgeRecommendationSources.Register("my-rotation", {
 未实现的快捷键、射程、可用性、Proc、引导识别等能力会回退给已安装的 JustAC
 适配器，因此替换推荐算法时无需复制动作栏扫描代码。
 
+源还可以实现 `GetPreserveQueue()`，为 M4 提供与 M5 `GetQueue()` 完全不同的原始
+队列；未实现时两种模式共享 `GetQueue()`。`GetDecisionTrace()` 可返回一行决策原因，
+Bridge 会以 `SOURCE_DECISION` 写入诊断日志。
+
 ## 完全脱离 JustAC
 
 把 TOC 中 JustAC 设为可选依赖后，完整独立源至少应按需实现：
@@ -40,6 +44,7 @@ JustACBridgeRecommendationSources.Register("my-rotation", {
 - `GetDisplaySpellID(spellID)`
 - `GetEffectiveSpellID(spellID)`（推荐；先解析动态动作栏形态，再解析天赋替换）
 - `IsSpellUsable(spellID)`
+- `IsSpellOnCooldown(spellID)`（真实技能冷却，必须排除公共 GCD；未知返回 `nil`）
 - `IsSpellProcced(spellID)`
 - `IsChanneled(spellID)`
 - `IsConfirmedOutOfRange(spellID)`
@@ -47,6 +52,7 @@ JustACBridgeRecommendationSources.Register("my-rotation", {
 
 其余可选能力：
 
+- `IsBurstCue(spellID)`（仅标记当前源已明确判定应执行的爆发提示）
 - `GetHighlightCastSpell()`
 - `GetDetectedBurstTriggers()`
 - `GetEngagedEnemyCount()`

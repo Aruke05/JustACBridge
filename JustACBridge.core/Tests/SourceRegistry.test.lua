@@ -30,7 +30,10 @@ assert(list[1].available == false and list[2].available == true)
 -- APIs. The adapter must prefer the dynamic form, then fall back to the talent
 -- form so a base queue ID always resolves to the action actually being cast.
 local fakeLibraries = {
-    ["JustAC-SpellQueue"] = { GetCurrentSpellQueue = function() return { 1449 } end },
+    ["JustAC-SpellQueue"] = {
+        GetCurrentSpellQueue = function() return { 30451, 365350, 44425 } end,
+        IsBurstCue = function(id) return id == 365350 end,
+    },
     ["JustAC-ActionBarScanner"] = {},
     ["JustAC-BlizzardAPI"] = {
         GetDisplaySpellID = function(id)
@@ -39,6 +42,7 @@ local fakeLibraries = {
         ResolveSpellID = function(id)
             return id == 1449 and 1241462 or id
         end,
+        IsSpellOnCooldown = function(id) return id == 365350 end,
     },
     ["JustAC-BurstInjectionEngine"] = {},
     ["JustAC-SpellDB"] = {},
@@ -50,5 +54,9 @@ local justac = assert(registry.Get("justac"))
 assert(justac.GetEffectiveSpellID(30451) == 1295939)
 assert(justac.GetEffectiveSpellID(1449) == 1241462)
 assert(justac.GetEffectiveSpellID(44425) == 44425)
+assert(justac.IsBurstCue(365350) == true)
+assert(justac.IsBurstCue(30451) == false)
+assert(justac.IsSpellOnCooldown(365350) == true)
+assert(justac.IsSpellOnCooldown(30451) == false)
 
 print("source registry tests passed")

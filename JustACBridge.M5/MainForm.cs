@@ -7,6 +7,7 @@ internal sealed class MainForm : Form
 {
     private const int BlizzardSpellId = 190356;
     private const int FrostFallbackSpellId = 30455;
+    private const int ArcaneMissilesSpellId = 5143;
     private const int ArcaneExplosionSpellId = 1449;
     private const int ArcaneExplosionStabilityDelayMs = 100;
     private const long BlizzardCancelSuppressionMs = 3000;
@@ -68,7 +69,7 @@ internal sealed class MainForm : Form
         {
             AutoSize = true,
             ForeColor = Color.RoyalBlue,
-            Text = "按住功能键自动连发；施法期间保护，允许奥术飞弹在 GCD 末按循环截断。"
+            Text = "按住功能键自动连发；受保护引导、读条和蓄力期间暂停发送。"
         });
         panel.Controls.Add(_enabled);
         panel.Controls.Add(_extreme);
@@ -205,7 +206,7 @@ internal sealed class MainForm : Form
                 }
             }
             // Busy 状态下遇到撕裂帧时保持保护，直到读到明确的空闲包。
-            _hook.SetActions(null, null, _lastBusy, false);
+            _hook.SetActions(null, null, _lastBusy, false, observedBusy: null);
         }
 
         try { BeginInvoke(() => ApplyUpdate(update)); }
@@ -222,7 +223,7 @@ internal sealed class MainForm : Form
         RememberSpellBinding(packet.PreserveBurst);
         if (packet.IsBusy)
         {
-            _hook.SetActions(null, null, true, false);
+            _hook.SetActions(null, null, true, false, observedBusy: true);
             return;
         }
 
@@ -239,7 +240,7 @@ internal sealed class MainForm : Form
         bool movementBlocksPreserve = packet.ProtocolVersion >= 4 && packet.IsMoving && packet.MovementFilter
             && preserveBinding is null;
         bool delayArcaneExplosion = packet.Lossless is
-            { Exists: true, IsItem: false, Id: ArcaneExplosionSpellId };
+        { Exists: true, IsItem: false, Id: ArcaneExplosionSpellId };
         _hook.SetActions(
             losslessBinding,
             packet.ProtocolVersion >= 2 ? preserveBinding : null,
@@ -248,7 +249,10 @@ internal sealed class MainForm : Form
             (losslessSuppressed && losslessBinding is null) || movementBlocksLossless,
             (preserveSuppressed && preserveBinding is null) || movementBlocksPreserve,
             delayArcaneExplosion ? ArcaneExplosionSpellId : 0,
-            delayArcaneExplosion ? ArcaneExplosionStabilityDelayMs : 0);
+            delayArcaneExplosion ? ArcaneExplosionStabilityDelayMs : 0,
+            packet.Lossless is { Exists: true, IsItem: false, Id: ArcaneMissilesSpellId },
+            packet.PreserveBurst is { Exists: true, IsItem: false, Id: ArcaneMissilesSpellId },
+            observedBusy: false);
     }
 
     private void RememberSpellBinding(Recommendation recommendation)

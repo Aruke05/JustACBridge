@@ -9,10 +9,14 @@ local secretAuraValue = {}
 local eventFrame
 local soundCount = 0
 local voiceCount = 0
+local reloadCount = 0
+local inCombat = false
 local classFile = "DEATHKNIGHT"
 local specIndex = 3
 local testQueue = { 43265, 47541 }
+local testPreserveQueue
 local burstTriggers = {}
+local burstCues = {}
 local cooldownSpellID
 local cooldownEndsAt = 0
 local effectiveSpellOverrides = {}
@@ -103,6 +107,7 @@ function UnitClass() return classFile, classFile end
 function GetSpecialization() return specIndex end
 function GetBuildInfo() return "12.1.0", "", "", 120100 end
 function GetUnitSpeed() return speed end
+function UnitAffectingCombat() return inCombat end
 function GetTime() return now end
 function time() return 100000 end
 function IsPlayerSpell(id) return unlearnedSpells[id] ~= true end
@@ -111,6 +116,7 @@ function issecretvalue(value)
         or (auraSecret and value == secretAuraValue)
 end
 function PlaySound() soundCount = soundCount + 1 end
+function ReloadUI() reloadCount = reloadCount + 1 end
 
 dofile("JustACBridge.core/Sources/Registry.lua")
 dofile("JustACBridge.core/Sources/JustAC.lua")
@@ -118,13 +124,18 @@ dofile("JustACBridge.core/Sources/JustAC.lua")
 assert(JustACBridgeRecommendationSources.Register("test", {
     name = "Test Source",
     GetQueue = function() return testQueue end,
+    GetPreserveQueue = function() return testPreserveQueue or testQueue end,
     GetSpellHotkey = function(id) return id == 43265 and "1" or "2" end,
     GetDisplaySpellID = function(id) return id end,
     GetEffectiveSpellID = function(id) return effectiveSpellOverrides[id] or id end,
     IsSpellUsable = function() return true end,
+    IsSpellOnCooldown = function(id)
+        return id == cooldownSpellID and cooldownEndsAt > now
+    end,
     IsSpellProcced = function() return false end,
     IsChanneled = function(id) return channeledSpells[id] == true end,
     IsConfirmedOutOfRange = function() return false end,
+    IsBurstCue = function(id) return burstCues[id] == true end,
     GetDetectedBurstTriggers = function() return burstTriggers end,
 }))
 
@@ -143,6 +154,9 @@ dofile("JustACBridge.core/JustACBridge.lua")
 eventFrame.OnEvent(eventFrame, "PLAYER_LOGIN")
 assert(JustACBridge.GetRecommendationSource().id == "test")
 assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
+-- Opening the log before diagnostics have ever produced a line must display
+-- an empty state rather than taking the length of a nil SavedVariables field.
+SlashCmdList.JUSTACBRIDGE("debug")
 
 -- Midnight removed Evocation's Siphon Storm setup role.  Even if an old
 -- JustAC profile still detects it as a burst trigger, the 12.0 Arcane policy
@@ -162,28 +176,25 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 JustACBridgeDB.reserveOverrides.MAGE_1 = nil
 burstTriggers = {}
 
--- Mage barriers are policy-driven maintenance actions rather than guessed
--- encounter timing. Exact aura absence promotes the ready, bound barrier to
--- both M5 and M4; an active aura leaves the JustAC order untouched.
+-- Defensive maintenance must not steal damage GCDs from Arcane M5. Missing
+-- Prismatic Barrier now leaves the source order unchanged for both outputs.
 playerAuras[235450] = nil
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 235450)
-assert(JustACBridge.GetLosslessRecommendation().maintenanceBuff == true)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 235450)
+assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 playerAuras[235450] = {}
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 
--- Keep one charge for the player's manual defensive. If the absorb breaks
--- with only that reserved charge available, continue the ordinary queues.
-playerAuras[235450] = nil
-spellCharges[235450] = 1
+-- A custom M5 source may own a different queue, while M4 must consume its
+-- explicit untouched preserve queue. It must never copy the M5 action across.
+testQueue = { 365350, 30451 }
+testPreserveQueue = { 44425 }
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
+assert(JustACBridge.GetLosslessRecommendation().spellID == 365350)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
-spellCharges[235450] = 2
-playerAuras[235450] = {}
+testPreserveQueue = nil
 
 -- M4 must remain safe to hold through movement/mechanics even during a
 -- momentary stationary frame. It skips the reserved Touch, the Missiles
@@ -200,6 +211,27 @@ JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 
+-- While moving, neither held key may guess the facing-dependent Orb. M5
+-- restores it as soon as movement ends; M4 continues to preserve it.
+speed = 7
+eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+speed = 0
+eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+now = now + 1.99
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+now = now + 0.01
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+now = 100
+
 -- Midnight 12.1 movement exceptions are allowed only while their exact live
 -- requirements are observable. Slipstream plus Clearcasting permits the
 -- Missiles channel while moving; either missing condition fails closed.
@@ -209,7 +241,7 @@ testQueue = { 5143, 44425 }
 playerAuras[263725] = {}
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 5143)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 5143)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "moving-missiles", 5143)
 assert(JustACBridge.GetPlayerCastState().channelBlocksInput == true)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "moving-missiles", 5143)
@@ -241,6 +273,35 @@ auraSecret = false
 playerAuras[205025] = nil
 speed = 0
 eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
+
+-- JustAC Stage G keeps Blizzard's primary action at position 1 and surfaces an
+-- exact, called-for burst cue at position 2. M5 must honor that source-owned
+-- signal rather than losing it behind the primary forever. M4 still excludes
+-- the detected burst trigger and keeps the ordinary hold-safe action. During a
+-- protected Missiles channel the cue may remain exported, but the protocol's
+-- busy bit prevents the desktop from sending it; it remains selected after the
+-- channel ends and is then executable.
+burstTriggers = { 365350 }
+burstCues[365350] = true
+testQueue = { 30451, 365350, 44425 }
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+JustACBridge.Refresh()
+local surgeCue = JustACBridge.GetLosslessRecommendation()
+assert(surgeCue.spellID == 365350 and surgeCue.sourceBurstCue == true
+    and surgeCue.sourceQueueIndex == 2)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "missiles-2", 5143)
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 365350)
+assert(JustACBridge.GetPlayerCastState().channelBlocksInput == true)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "missiles-2", 5143)
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 365350)
+burstCues[365350] = nil
+burstTriggers = {}
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 
 -- The shortcut that normally copies a non-reserved M5 action into M4 must not
 -- leak a stationary hardcast into the hold-safe action.
@@ -324,6 +385,13 @@ JustACBridge.Refresh()
 -- Arcane Missiles cast instead of risking an incorrect early clip.
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "missiles-1", 5143)
 assert(JustACBridge.GetPlayerCastState().channelBlocksInput == true)
+-- Triggered START events must not reopen the bridge before the authoritative
+-- channel stop arrives. This used to permit a held key to clip Missiles.
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_START", "player", "triggered-during-missiles", 999001)
+local missilesAfterTriggeredStart = JustACBridge.GetPlayerCastState()
+assert(missilesAfterTriggeredStart.isChanneling == true
+    and missilesAfterTriggeredStart.channelSpellID == 5143
+    and missilesAfterTriggeredStart.channelBlocksInput == true)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "missiles-1", 5143)
 
 -- No normal recommendation must never leave either trigger empty.  This is a
@@ -471,5 +539,14 @@ assert(JustACBridge.IsPlayerMoving() == true)
 now = 121.5
 JustACBridge.Refresh()
 assert(JustACBridge.IsPlayerMoving() == false)
+
+-- /jacb flush must invoke ReloadUI synchronously from the slash-command
+-- hardware-event context. A timer-delayed call silently failed in game and
+-- left the diagnostic log only in memory.
+SlashCmdList.JUSTACBRIDGE("debug on")
+SlashCmdList.JUSTACBRIDGE("flush")
+assert(reloadCount == 1)
+assert(type(JustACBridgeExport.debugLog) == "string"
+    and JustACBridgeExport.debugLog:find("DEBUG enabled=true", 1, true))
 
 print("core integration tests passed")

@@ -71,6 +71,16 @@ function Source.IsSpellUsable(spellID)
         or BlizzardAPI.IsSpellUsable(spellID)
 end
 
+-- Midnight hides numeric cooldown start/duration values in combat. JustAC's
+-- cooldown tracker reads the engine DurationObject through a hidden Cooldown
+-- widget, yielding an exact real-cooldown boolean with the GCD excluded.
+function Source.IsSpellOnCooldown(spellID)
+    if not BlizzardAPI or not BlizzardAPI.IsSpellOnCooldown then
+        return nil
+    end
+    return BlizzardAPI.IsSpellOnCooldown(spellID) == true
+end
+
 function Source.IsSpellProcced(spellID)
     return BlizzardAPI and BlizzardAPI.IsSpellProcced
         and BlizzardAPI.IsSpellProcced(spellID) or false
@@ -84,6 +94,15 @@ end
 function Source.IsConfirmedOutOfRange(spellID)
     return SpellQueue and SpellQueue.IsConfirmedOutOfRange
         and SpellQueue.IsConfirmedOutOfRange(spellID) or false
+end
+
+-- Stage G can deliberately place a called-for burst trigger at queue position
+-- 2 while preserving Blizzard Assisted Combat's authoritative pick at position
+-- 1. Expose that exact, source-owned signal so M5 can execute the cue instead
+-- of treating it as an ordinary low-priority tail entry.
+function Source.IsBurstCue(spellID)
+    return SpellQueue and SpellQueue.IsBurstCue
+        and SpellQueue.IsBurstCue(spellID) == true or false
 end
 
 function Source.IsTargetWithin(yards)

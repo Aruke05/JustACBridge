@@ -4,19 +4,7 @@ if not Registry then return end
 Registry.RegisterSpec("MAGE", 1, {
     id = "arcane",
     name = "奥术",
-    revision = 13,
-    -- The aura's presence is directly observable. Recast only after the
-    -- existing absorb has actually ended; never guess from remaining time.
-    maintenanceBuffs = {
-        {
-            spellID = 235450, -- Prismatic Barrier
-            auraID = 235450,
-            lossless = true,
-            preserve = true,
-            reserveCharges = 1,
-            label = "棱彩屏障",
-        },
-    },
+    revision = 17,
 
     -- Midnight 12.0 rebuilt Arcane.  Evocation is mana recovery again rather
     -- than a Siphon Storm setup spell, so M4 must not hold it with the actual
@@ -66,7 +54,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 13,
+            revision = 17,
             -- These are exact, live-observable movement exceptions rather
             -- than an invented fallback. Slipstream makes a Clearcasting
             -- Missiles channel movable; Presence of Mind makes Arcane Blast
@@ -83,6 +71,18 @@ Registry.RegisterSpec("MAGE", 1, {
                     auraID = 205025,  -- Presence of Mind
                     label = "Presence of Mind",
                 },
+            },
+            -- Orb is instant but travels along the player's facing. While the
+            -- player is moving neither held key may guess that direction. M5
+            -- regains Orb immediately after movement stops; M4 already excludes
+            -- it at all times through reserveExclusions above.
+            moveCastNever = {
+                153626, -- Arcane Orb
+                153640, -- Arcane Orb override/compatibility form
+            },
+            moveCastResumeDelays = {
+                { spellID = 153626, seconds = 2.0 },
+                { spellID = 153640, seconds = 2.0 },
             },
             -- Current Midnight S2 SimC and guide priorities do not contain
             -- Arcane Explosion in either Spellslinger or Sunfury. JustAC's
