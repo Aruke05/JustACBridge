@@ -76,17 +76,29 @@ local source = assert(JustACBridgeRecommendationSources.Get("arcane121"))
 local queue = source.GetQueue()
 assert(queue[1] == 365350)
 assert(source.GetDecisionTrace():match("precombat.arcane_surge"))
+local preserve = source.GetPreserveQueue()
+assert(preserve[1] == rawQueue[1])
+assert(not source.GetDecisionTrace():match("precombat.arcane_surge"))
 
 -- Spellslinger owns one opening Orb; after its successful cast it advances to
 -- Surge without waiting for Assisted Combat to surface that cooldown.
 hero, combat = "spellslinger", true
 queue = source.GetQueue()
 assert(queue[1] == 153626)
+preserve = source.GetPreserveQueue()
+assert(preserve[1] == 153626)
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 153626)
 lustrousOne, lustrousTwo = nil, nil
 queue = source.GetQueue()
 assert(queue[1] == 365350)
 assert(source.GetDecisionTrace():match("lustrous%-missing%-observed"))
+-- M4 skips Surge but continues through the same owned normal priority instead
+-- of dropping back to the raw JustAC head.
+salvoStacks = 20
+preserve = source.GetPreserveQueue()
+assert(preserve[1] == 44425)
+assert(source.GetDecisionTrace():match("spellslinger.arcane_barrage"))
+salvoStacks = nil
 
 -- Exactly one Gleam stack holds; two stacks release Surge.
 lustrousOne, lustrousTwo = true, false
@@ -114,9 +126,12 @@ queue = source.GetQueue()
 assert(queue[1] == 321507)
 assert(source.GetDecisionTrace():match("cooldowns.touch_of_the_magi"))
 
--- M4 gets only the untouched JustAC queue, never the custom M5 head.
-local preserve = source.GetPreserveQueue()
-assert(preserve[1] == rawQueue[1] and preserve[2] == rawQueue[2])
+-- M4 holds Touch too, then continues through the same owned normal priority.
+salvoStacks = 20
+preserve = source.GetPreserveQueue()
+assert(preserve[1] == 44425)
+assert(source.GetDecisionTrace():match("spellslinger.arcane_barrage"))
+salvoStacks = nil
 
 -- Sunfury's first normal rule is also owned when both proc and Salvo threshold
 -- are exact; otherwise it delegates instead of treating unknown as false.
@@ -127,6 +142,8 @@ cooldowns[365350] = true
 missilesProcced, salvoStacks = true, 11
 queue = source.GetQueue()
 assert(queue[1] == 5143)
+preserve = source.GetPreserveQueue()
+assert(preserve[1] == 5143)
 salvoStacks = nil
 queue = source.GetQueue()
 assert(queue[1] == rawQueue[1])

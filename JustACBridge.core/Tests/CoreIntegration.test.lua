@@ -158,12 +158,12 @@ assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
 -- an empty state rather than taking the length of a nil SavedVariables field.
 SlashCmdList.JUSTACBRIDGE("debug")
 
--- Midnight removed Evocation's Siphon Storm setup role.  Even if an old
--- JustAC profile still detects it as a burst trigger, the 12.0 Arcane policy
--- must remove it from the burst set. M5 remains an exact first recommendation,
--- while the mechanics-safe M4 still rejects its stationary channel.
+-- 12.1 Arcane owns an exact two-spell preserve set. Stale/custom JustAC Burst
+-- Trigger entries (including ordinary Barrage) must not silently add more M4
+-- holds. M5 keeps Evocation first, while hold-safe M4 rejects its channel and
+-- may still execute Barrage.
 classFile, specIndex = "MAGE", 1
-burstTriggers = { 12051 }
+burstTriggers = { 12051, 44425 }
 testQueue = { 12051, 44425 }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 JustACBridge.Refresh()
@@ -198,21 +198,21 @@ testPreserveQueue = nil
 
 -- M4 must remain safe to hold through movement/mechanics even during a
 -- momentary stationary frame. It skips the reserved Touch, the Missiles
--- channel, the Arcane Blast hardcast, the facing-dependent Arcane Orb and
--- Arcane Explosion. Barrage is selected only because JustAC supplied it.
+-- channel and the Arcane Blast hardcast, then may use Orb once its stationary
+-- delay is satisfied. Arcane Explosion remains excluded.
 testQueue = { 321507, 5143, 30451, 153626, 1449, 44425 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 153626)
 
--- Orb remains available to M5 for manual aiming but never leaks into M4.
+-- Stationary Arcane M5 and M4 share Orb after the resume delay.
 testQueue = { 153626, 44425 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 153626)
 
--- While moving, neither held key may guess the facing-dependent Orb. M5
--- restores it as soon as movement ends; M4 continues to preserve it.
+-- While moving, neither held key may guess the facing-dependent Orb. Both
+-- restore it only after two continuous stationary seconds.
 speed = 7
 eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
 JustACBridge.Refresh()
@@ -229,7 +229,7 @@ assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
 now = now + 0.01
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 153626)
 now = 100
 
 -- Midnight 12.1 movement exceptions are allowed only while their exact live

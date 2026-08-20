@@ -4,7 +4,7 @@ if not Registry then return end
 Registry.RegisterSpec("MAGE", 1, {
     id = "arcane",
     name = "奥术",
-    revision = 17,
+    revision = 18,
 
     -- Midnight 12.0 rebuilt Arcane.  Evocation is mana recovery again rather
     -- than a Siphon Storm setup spell, so M4 must not hold it with the actual
@@ -46,6 +46,11 @@ Registry.RegisterSpec("MAGE", 1, {
                 321507, -- Touch of the Magi
             },
             reservePassthrough = {},
+            -- Preserve the historical facing-dependent hold rule on 11.2.
+            reserveExclusions = {
+                153626, -- Arcane Orb
+                153640, -- Arcane Orb override/compatibility form
+            },
             clipChannels = {
                 5143, -- Arcane Missiles (including its S3 override form)
             },
@@ -54,7 +59,16 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 17,
+            revision = 18,
+            -- 12.1 M4 shares the owned Arcane priority with M5. Orb is no
+            -- longer permanently excluded; both modes use the movement and
+            -- stationary-resume rules below.
+            reserveExclusions = {},
+            -- The Arcane M4 contract is exact: hold only Surge and Touch by
+            -- default. Do not let stale/custom JustAC Burst Trigger entries
+            -- silently turn additional ordinary Arcane actions into M4 holds.
+            -- Explicit /jacb reserve overrides remain authoritative.
+            useDetectedBurstTriggers = false,
             -- These are exact, live-observable movement exceptions rather
             -- than an invented fallback. Slipstream makes a Clearcasting
             -- Missiles channel movable; Presence of Mind makes Arcane Blast
@@ -73,9 +87,9 @@ Registry.RegisterSpec("MAGE", 1, {
                 },
             },
             -- Orb is instant but travels along the player's facing. While the
-            -- player is moving neither held key may guess that direction. M5
-            -- regains Orb immediately after movement stops; M4 already excludes
-            -- it at all times through reserveExclusions above.
+            -- player is moving neither held key may guess that direction. Both
+            -- modes regain Orb only after movement stops and the player remains
+            -- stationary for two seconds.
             moveCastNever = {
                 153626, -- Arcane Orb
                 153640, -- Arcane Orb override/compatibility form

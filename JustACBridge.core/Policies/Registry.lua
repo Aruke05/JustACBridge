@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 14
+Registry.schemaVersion = 15
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -305,6 +305,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         revision = tonumber(specPolicy.revision) or 1,
         interfaceVersion = interfaceVersion,
         ruleset = "base",
+        useDetectedBurstTriggers = specPolicy.useDetectedBurstTriggers ~= false,
         reserve = copyArray(specPolicy.reserve),
         reservePassthrough = copyArray(classPolicy.reservePassthrough),
         reserveExclusions = copyArray(classPolicy.reserveExclusions),
@@ -348,6 +349,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     if patch then
         result.ruleset = patch.id or ("interface-" .. tostring(patch.minInterface or interfaceVersion))
         result.revision = tonumber(patch.revision) or result.revision
+        if patch.useDetectedBurstTriggers ~= nil then
+            result.useDetectedBurstTriggers = patch.useDetectedBurstTriggers ~= false
+        end
         if patch.reserve then
             replaceArray(result.reserve, patch.reserve)
         end

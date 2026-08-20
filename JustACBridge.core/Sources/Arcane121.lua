@@ -3,8 +3,9 @@
 -- This source owns every recommendation it can prove from live, branchable
 -- state.  It deliberately returns the untouched JustAC queue as soon as a
 -- higher-priority SimC predicate becomes unknowable; unknown is never treated
--- as false.  GetPreserveQueue() is also the untouched queue so M4 keeps its
--- original hold-safe JustAC contract and never inherits this M5 APL.
+-- as false.  Arcane is the deliberate preserve-mode exception: M4 runs the
+-- same owned priority as M5, but never selects Arcane Surge or Touch of the
+-- Magi.  The policy layer still enforces hold-safe cast/channel rules.
 
 local Registry = _G.JustACBridgeRecommendationSources
 if not Registry then return end
@@ -173,7 +174,8 @@ local function surgeWindow()
     local duration = BlizzardAPI.GetAuraDurationObject("player", aura.auraInstanceID)
     if not duration then return true, nil end
     local below = BlizzardAPI.IsDurationBelowSeconds(duration, 12)
-    return true, type(below) == "boolean" and below or nil
+    if type(below) == "boolean" then return true, below end
+    return true, nil
 end
 
 local function lustrousGate()
@@ -233,7 +235,7 @@ local function fallback(reason, raw)
     return raw
 end
 
-local function selectQueue(raw)
+local function selectQueue(raw, preserve)
     if not isArcane121() then return fallback("outside-mage-arcane-12.1", raw) end
     local hero = heroTree()
     if not hero then return fallback("hero-tree-unknown", raw) end
@@ -242,7 +244,7 @@ local function selectQueue(raw)
 
     -- Current 12.1 SimC precombat: Sunfury opens with Surge; Spellslinger does
     -- not.  This is source-owned and does not depend on Assisted Combat.
-    if not combat and hero == "sunfury" and hasHostileTarget() then
+    if not preserve and not combat and hero == "sunfury" and hasHostileTarget() then
         local ready = spellReady(SPELL.ARCANE_SURGE)
         if ready == true then
             return choose(SPELL.ARCANE_SURGE, "precombat.arcane_surge", "sunfury", raw)
@@ -254,8 +256,9 @@ local function selectQueue(raw)
     if not combat then return fallback("precombat-delegated", raw) end
 
     -- Spellslinger cooldown list starts with one Arcane Orb per combat.  The
-    -- cast event, not a guessed timer, owns line_cd=999.  M5 may expose Orb;
-    -- M4 receives GetPreserveQueue() and therefore never auto-aims it.
+    -- cast event, not a guessed timer, owns line_cd=999. Both modes expose the
+    -- same owned Orb decision; the policy layer suppresses it while moving and
+    -- until the player has then remained stationary for two seconds.
     if hero == "spellslinger" then
         local orbUsed = state.orbCastAt and now() - state.orbCastAt < 900
         if not orbUsed then
@@ -272,9 +275,9 @@ local function selectQueue(raw)
     -- entire predicate is observable: previous GCD was Bolt/Barrage while the
     -- Surge aura is positively active.  Cooldown-remains>30 and other duration
     -- branches are not approximated.
-    if state.lastGCDSpellID == SPELL.PRISMATIC_BOLT
+    if not preserve and (state.lastGCDSpellID == SPELL.PRISMATIC_BOLT
         or state.lastGCDSpellID == 1295939
-        or state.lastGCDSpellID == SPELL.ARCANE_BARRAGE then
+        or state.lastGCDSpellID == SPELL.ARCANE_BARRAGE) then
         local surgeActive = surgeWindow()
         if surgeActive == true then
             local ready = spellReady(SPELL.TOUCH_OF_THE_MAGI)
@@ -289,19 +292,21 @@ local function selectQueue(raw)
         end
     end
 
-    local surgeReady = spellReady(SPELL.ARCANE_SURGE)
-    if surgeReady == nil then return fallback("surge-readiness-unknown", raw) end
-    if surgeReady then
-        local gate, detail = lustrousGate()
-        if gate == true then
-            return choose(SPELL.ARCANE_SURGE, "cooldowns.arcane_surge", detail, raw)
-        elseif gate == nil then
+    if not preserve then
+        local surgeReady = spellReady(SPELL.ARCANE_SURGE)
+        if surgeReady == nil then return fallback("surge-readiness-unknown", raw) end
+        if surgeReady then
+            local gate, detail = lustrousGate()
+            if gate == true then
+                return choose(SPELL.ARCANE_SURGE, "cooldowns.arcane_surge", detail, raw)
+            elseif gate == nil then
+                return fallback(detail, raw)
+            end
+            -- Exactly one Gleam stack: the APL intentionally holds Surge and
+            -- continues into the normal list. The remaining full APL has several
+            -- unreadable dynamic priorities, so delegation is the correct next step.
             return fallback(detail, raw)
         end
-        -- Exactly one Gleam stack: the APL intentionally holds Surge and
-        -- continues into the normal list. The remaining full APL has several
-        -- unreadable dynamic priorities, so delegation is the correct next step.
-        return fallback(detail, raw)
     end
 
     -- Sunfury's first normal-list line is fully observable when Missiles has
@@ -555,12 +560,13 @@ end
 function Source.GetQueue()
     local raw = SpellQueue.GetCurrentSpellQueue()
     if type(raw) ~= "table" then raw = {} end
-    return selectQueue(raw)
+    return selectQueue(raw, false)
 end
 
 function Source.GetPreserveQueue()
     local raw = SpellQueue.GetCurrentSpellQueue()
-    return type(raw) == "table" and raw or {}
+    if type(raw) ~= "table" then raw = {} end
+    return selectQueue(raw, true)
 end
 
 function Source.GetDecisionTrace()

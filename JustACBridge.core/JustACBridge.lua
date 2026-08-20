@@ -306,13 +306,15 @@ local function refreshReservedSpells()
         addReservedSpell(spellID)
     end
 
-    -- Follow JustAC's current per-spec trigger configuration for every class.
-    -- Registered policies add compatibility defaults; unregistered/new classes
+    -- Follow JustAC's current per-spec trigger configuration unless a versioned
+    -- policy owns an exact preserve set (12.1 Arcane). Unregistered/new classes
     -- still work in JustAC-only mode without changing this bridge core.
-    local ok, triggers = sourceCall("GetDetectedBurstTriggers")
-    if ok and type(triggers) == "table" then
-        for _, trigger in ipairs(triggers) do
-            addReservedSpell(type(trigger) == "table" and trigger.spellID or trigger)
+    if not currentPolicy or currentPolicy.useDetectedBurstTriggers ~= false then
+        local ok, triggers = sourceCall("GetDetectedBurstTriggers")
+        if ok and type(triggers) == "table" then
+            for _, trigger in ipairs(triggers) do
+                addReservedSpell(type(trigger) == "table" and trigger.spellID or trigger)
+            end
         end
     end
 
@@ -654,8 +656,22 @@ local function isHoldSafeQueueValue(queueValue)
         local effectiveOK, effectiveChanneled = sourceCall("IsChanneled", effectiveSpellID)
         if effectiveOK and effectiveChanneled == true then return false end
     end
+    -- A direction-dependent instant may be explicitly delayed after movement
+    -- for both outputs (Arcane Orb in 12.1).  Once the real stationary delay is
+    -- satisfied, allow only a positively observed zero-cast-time form; this
+    -- exception can never admit a hardcast, channel or empower into held M4.
+    local resumeDelay = getMoveResumeDelay(queueValue)
+    local stationaryResumeSafe = false
+    if resumeDelay and not playerIsMoving
+        and GetTime() - lastMovementStoppedAt >= resumeDelay then
+        local info = C_Spell and C_Spell.GetSpellInfo
+            and C_Spell.GetSpellInfo(effectiveSpellID)
+        local castTime = info and info.castTime
+        stationaryResumeSafe = type(castTime) == "number"
+            and not isSecret(castTime) and castTime == 0
+    end
     return not isRotationExcludedQueueValue(queueValue)
-        and isSpellMoveCastableNow(queueValue)
+        and (stationaryResumeSafe or isSpellMoveCastableNow(queueValue))
         and isRangeSafeQueueValue(queueValue)
         and isGroundEffectSafeQueueValue(queueValue)
         and not isFailureSuppressedQueueValue(queueValue)
@@ -1263,7 +1279,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.0", GetTime() - debugStartedAt,
+            reason, "2.12.1", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -2203,7 +2219,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.0", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.1", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
