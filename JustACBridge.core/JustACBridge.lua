@@ -59,6 +59,7 @@ local lastMovementStoppedAt = -math.huge
 local movementStopPendingUntil = 0
 local movementFlapCount = 0
 local movementLastDebugAt = -math.huge
+local successfulCastResumeTriggerAt = {}
 local MOVEMENT_FLAP_WINDOW_SECONDS = 0.12
 local MOVEMENT_STOP_DEBOUNCE_SECONDS = 0.25
 local queueReady = true
@@ -572,11 +573,19 @@ local function isSpellMoveCastableNow(spellID)
     return false
 end
 
-local function getMoveResumeDelay(spellID)
+local function isResumeRuleEnabled(rule, position)
+    if position == 2 then
+        return rule.preserve ~= false
+    end
+    return rule.lossless ~= false
+end
+
+local function getMoveResumeDelay(spellID, position)
     for _, rule in ipairs(currentPolicy and currentPolicy.moveCastResumeDelays or {}) do
         local configuredSpellID = type(rule) == "table" and tonumber(rule.spellID) or nil
         local seconds = type(rule) == "table" and tonumber(rule.seconds) or nil
         if configuredSpellID and seconds and seconds > 0
+            and isResumeRuleEnabled(rule, position)
             and spellListContains({ configuredSpellID }, spellID) then
             return seconds
         end
@@ -584,15 +593,52 @@ local function getMoveResumeDelay(spellID)
     return nil
 end
 
-local function isMovementSafeQueueValue(queueValue)
+local function isSuccessfulCastResumeDelayed(spellID, position)
+    local now = GetTime()
+    for _, rule in ipairs(currentPolicy and currentPolicy.successfulCastResumeDelays or {}) do
+        local configuredSpellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local seconds = type(rule) == "table" and tonumber(rule.seconds) or nil
+        if configuredSpellID and seconds and seconds > 0
+            and isResumeRuleEnabled(rule, position)
+            and spellListContains({ configuredSpellID }, spellID) then
+            for _, triggerSpellID in ipairs(rule.triggerSpells or {}) do
+                local castAt = successfulCastResumeTriggerAt[triggerSpellID]
+                local elapsed = castAt and now - castAt or nil
+                if elapsed and elapsed >= 0 and elapsed < seconds then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function recordSuccessfulCastResumeTrigger(spellID)
+    local matched = false
+    local now = GetTime()
+    for _, rule in ipairs(currentPolicy and currentPolicy.successfulCastResumeDelays or {}) do
+        for _, triggerSpellID in ipairs(rule.triggerSpells or {}) do
+            if spellListContains({ triggerSpellID }, spellID) then
+                successfulCastResumeTriggerAt[triggerSpellID] = now
+                matched = true
+            end
+        end
+    end
+    return matched
+end
+
+local function isMovementSafeQueueValue(queueValue, position)
     if type(queueValue) ~= "number" or queueValue == 0 then
+        return false
+    end
+    if queueValue > 0 and isSuccessfulCastResumeDelayed(queueValue, position) then
         return false
     end
     if playerIsMoving and queueValue > 0
         and policyContains("moveCastNever", queueValue) then
         return false
     end
-    local resumeDelay = queueValue > 0 and getMoveResumeDelay(queueValue) or nil
+    local resumeDelay = queueValue > 0 and getMoveResumeDelay(queueValue, position) or nil
     if resumeDelay and GetTime() - lastMovementStoppedAt < resumeDelay then
         return false
     end
@@ -634,9 +680,9 @@ local function isFailureSuppressedQueueValue(queueValue)
     return state and (tonumber(state.suppressUntil) or 0) > GetTime() or false
 end
 
-local function isSafeQueueValue(queueValue)
+local function isSafeQueueValue(queueValue, position)
     return not isRotationExcludedQueueValue(queueValue)
-        and isMovementSafeQueueValue(queueValue)
+        and isMovementSafeQueueValue(queueValue, position)
         and isRangeSafeQueueValue(queueValue)
         and isGroundEffectSafeQueueValue(queueValue)
         and not isFailureSuppressedQueueValue(queueValue)
@@ -649,6 +695,7 @@ local function isHoldSafeQueueValue(queueValue)
     if type(queueValue) ~= "number" or queueValue <= 0 then return false end
     -- Conditional movement permission (for example Slipstream Missiles) is
     -- valid for M5 but never makes a channel suitable for the always-held M4.
+    if isSuccessfulCastResumeDelayed(queueValue, 2) then return false end
     local channeledOK, channeled = sourceCall("IsChanneled", queueValue)
     if channeledOK and channeled == true then return false end
     local effectiveSpellID = getEffectiveSpellID(queueValue)
@@ -660,7 +707,7 @@ local function isHoldSafeQueueValue(queueValue)
     -- for both outputs (Arcane Orb in 12.1).  Once the real stationary delay is
     -- satisfied, allow only a positively observed zero-cast-time form; this
     -- exception can never admit a hardcast, channel or empower into held M4.
-    local resumeDelay = getMoveResumeDelay(queueValue)
+    local resumeDelay = getMoveResumeDelay(queueValue, 2)
     local stationaryResumeSafe = false
     if resumeDelay and not playerIsMoving
         and GetTime() - lastMovementStoppedAt >= resumeDelay then
@@ -714,7 +761,7 @@ local function isPreserveSafeQueueValue(queueValue)
     -- It therefore shares M5's real-time movement gate: stationary casts and
     -- channels are allowed, while moving casts still require exact permission.
     if currentPolicy and currentPolicy.preserveUsesCurrentSafety == true then
-        return isSafeQueueValue(queueValue)
+        return isSafeQueueValue(queueValue, 2)
     end
     return isHoldSafeQueueValue(queueValue)
 end
@@ -1289,7 +1336,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.2", GetTime() - debugStartedAt,
+            reason, "2.12.4", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -2229,7 +2276,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.2", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.4", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -2304,6 +2351,12 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         local succeededSpellID = tonumber(spellID)
         failedMovementRecommendations[succeededSpellID] = nil
+        if recordSuccessfulCastResumeTrigger(succeededSpellID) then
+            -- The action list changed even when the source queue did not: a
+            -- policy-configured directional spell has entered its post-cast
+            -- safety delay.
+            lastSignature = nil
+        end
         -- Queue entries may use the base button while spellcast events report
         -- the currently transformed spell. Clear the raw queue alias as well.
         for index = 1, ROW_COUNT do

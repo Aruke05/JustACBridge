@@ -59,7 +59,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 19,
+            revision = 21,
             -- 12.1 M4 shares the owned Arcane priority with M5. Orb is no
             -- longer permanently excluded; both modes use the movement and
             -- stationary-resume rules below.
@@ -74,6 +74,21 @@ Registry.RegisterSpec("MAGE", 1, {
             -- always-moving M4 filter. Protected Missiles still lock both
             -- outputs until the real channel stop/interruption event.
             preserveUsesCurrentSafety = true,
+            -- M4 is also the long-held mechanics key. Keep its defensive
+            -- shield maintained without spending an M5 damage GCD: inject
+            -- Prismatic Barrier only when the live aura is explicitly absent
+            -- and the spell is known, usable, ready and bound. Any unknown
+            -- runtime value fails closed in the generic maintenance gate.
+            maintenanceBuffs = {
+                {
+                    spellID = 235450, -- Prismatic Barrier
+                    auraID = 235450,
+                    lossless = false,
+                    preserve = true,
+                    reserveCharges = 0,
+                    label = "棱光护体",
+                },
+            },
             -- These are exact, live-observable movement exceptions rather
             -- than an invented fallback. Slipstream makes a Clearcasting
             -- Missiles channel movable; Presence of Mind makes Arcane Blast
@@ -92,16 +107,37 @@ Registry.RegisterSpec("MAGE", 1, {
                 },
             },
             -- Orb is instant but travels along the player's facing. While the
-            -- player is moving neither held key may guess that direction. Both
-            -- modes regain Orb only after movement stops and the player remains
-            -- stationary for two seconds.
+            -- player is moving neither held key may guess that direction. M4
+            -- also waits for two continuous stationary seconds after ordinary
+            -- movement stops; M5 may resume immediately after an ordinary stop.
             moveCastNever = {
                 153626, -- Arcane Orb
                 153640, -- Arcane Orb override/compatibility form
             },
             moveCastResumeDelays = {
-                { spellID = 153626, seconds = 2.0 },
-                { spellID = 153640, seconds = 2.0 },
+                { spellID = 153626, seconds = 2.0, lossless = false, preserve = true },
+                { spellID = 153640, seconds = 2.0, lossless = false, preserve = true },
+            },
+            -- A successful Blink/Shimmer changes facing without a trustworthy
+            -- target-direction signal. Both M5 and M4 therefore hold Orb for
+            -- two seconds from the authoritative successful-cast event. The
+            -- three trigger IDs cover Blink and both live Shimmer forms seen
+            -- in the current 12.1 spell data.
+            successfulCastResumeDelays = {
+                {
+                    spellID = 153626,
+                    seconds = 2.0,
+                    triggerSpells = { 1953, 212653, 1294067 },
+                    lossless = true,
+                    preserve = true,
+                },
+                {
+                    spellID = 153640,
+                    seconds = 2.0,
+                    triggerSpells = { 1953, 212653, 1294067 },
+                    lossless = true,
+                    preserve = true,
+                },
             },
             -- Current Midnight S2 SimC and guide priorities do not contain
             -- Arcane Explosion in either Spellslinger or Sunfury. JustAC's

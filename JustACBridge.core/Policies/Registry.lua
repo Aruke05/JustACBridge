@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 16
+Registry.schemaVersion = 17
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -190,7 +190,12 @@ local function copyMoveCastResumeDelays(source)
         local spellID = type(rule) == "table" and tonumber(rule.spellID) or nil
         local seconds = type(rule) == "table" and tonumber(rule.seconds) or nil
         if spellID and spellID > 0 and seconds and seconds > 0 then
-            result[#result + 1] = { spellID = spellID, seconds = seconds }
+            result[#result + 1] = {
+                spellID = spellID,
+                seconds = seconds,
+                lossless = rule.lossless ~= false,
+                preserve = rule.preserve ~= false,
+            }
         end
     end
     return result
@@ -198,6 +203,38 @@ end
 
 local function appendMoveCastResumeDelays(target, source)
     for _, rule in ipairs(copyMoveCastResumeDelays(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+local function copySuccessfulCastResumeDelays(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        local spellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local seconds = type(rule) == "table" and tonumber(rule.seconds) or nil
+        local triggerSpells = {}
+        for _, triggerSpellID in ipairs(type(rule) == "table" and rule.triggerSpells or {}) do
+            triggerSpellID = tonumber(triggerSpellID)
+            if triggerSpellID and triggerSpellID > 0 then
+                triggerSpells[#triggerSpells + 1] = triggerSpellID
+            end
+        end
+        if spellID and spellID > 0 and seconds and seconds > 0
+            and #triggerSpells > 0 then
+            result[#result + 1] = {
+                spellID = spellID,
+                seconds = seconds,
+                triggerSpells = triggerSpells,
+                lossless = rule.lossless ~= false,
+                preserve = rule.preserve ~= false,
+            }
+        end
+    end
+    return result
+end
+
+local function appendSuccessfulCastResumeDelays(target, source)
+    for _, rule in ipairs(copySuccessfulCastResumeDelays(source)) do
         target[#target + 1] = rule
     end
 end
@@ -319,6 +356,8 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         moveCastInstantOnly = copyArray(classPolicy.moveCastInstantOnly),
         moveCastConditions = copyMoveCastConditions(classPolicy.moveCastConditions),
         moveCastResumeDelays = copyMoveCastResumeDelays(classPolicy.moveCastResumeDelays),
+        successfulCastResumeDelays = copySuccessfulCastResumeDelays(
+            classPolicy.successfulCastResumeDelays),
         clipChannels = copyArray(classPolicy.clipChannels),
         protectedChannels = copyArray(classPolicy.protectedChannels),
         rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
@@ -338,6 +377,8 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     addUniqueValues(result.moveCastInstantOnly, specPolicy.moveCastInstantOnly)
     appendMoveCastConditions(result.moveCastConditions, specPolicy.moveCastConditions)
     appendMoveCastResumeDelays(result.moveCastResumeDelays, specPolicy.moveCastResumeDelays)
+    appendSuccessfulCastResumeDelays(result.successfulCastResumeDelays,
+        specPolicy.successfulCastResumeDelays)
     addUniqueValues(result.clipChannels, specPolicy.clipChannels)
     addUniqueValues(result.protectedChannels, specPolicy.protectedChannels)
     appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
@@ -394,6 +435,10 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.moveCastResumeDelays then
             result.moveCastResumeDelays = copyMoveCastResumeDelays(patch.moveCastResumeDelays)
         end
+        if patch.successfulCastResumeDelays then
+            result.successfulCastResumeDelays = copySuccessfulCastResumeDelays(
+                patch.successfulCastResumeDelays)
+        end
         if patch.clipChannels then
             replaceArray(result.clipChannels, patch.clipChannels)
         end
@@ -435,6 +480,8 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         addUniqueValues(result.moveCastInstantOnly, patch.addMoveCastInstantOnly)
         appendMoveCastConditions(result.moveCastConditions, patch.addMoveCastConditions)
         appendMoveCastResumeDelays(result.moveCastResumeDelays, patch.addMoveCastResumeDelays)
+        appendSuccessfulCastResumeDelays(result.successfulCastResumeDelays,
+            patch.addSuccessfulCastResumeDelays)
         removeValues(result.clipChannels, patch.removeClipChannels)
         addUniqueValues(result.clipChannels, patch.addClipChannels)
         removeValues(result.protectedChannels, patch.removeProtectedChannels)

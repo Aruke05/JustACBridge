@@ -21,6 +21,7 @@ local cooldownSpellID
 local cooldownEndsAt = 0
 local effectiveSpellOverrides = {}
 local unlearnedSpells = {}
+local unusableSpells = {}
 local playerAuras = {
     [11426] = {},  -- Ice Barrier
     [235450] = {}, -- Prismatic Barrier
@@ -128,7 +129,7 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     GetSpellHotkey = function(id) return id == 43265 and "1" or "2" end,
     GetDisplaySpellID = function(id) return id end,
     GetEffectiveSpellID = function(id) return effectiveSpellOverrides[id] or id end,
-    IsSpellUsable = function() return true end,
+    IsSpellUsable = function(id) return unusableSpells[id] ~= true end,
     IsSpellOnCooldown = function(id)
         return id == cooldownSpellID and cooldownEndsAt > now
     end,
@@ -177,16 +178,24 @@ JustACBridgeDB.reserveOverrides.MAGE_1 = nil
 burstTriggers = {}
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 
--- Defensive maintenance must not steal damage GCDs from Arcane M5. Missing
--- Prismatic Barrier now leaves the source order unchanged for both outputs.
+-- Prismatic Barrier is a deliberate M4-only defensive insertion. It may not
+-- steal M5's damage GCD, and it is injected only while its live aura is
+-- explicitly missing and the spell is currently usable.
 playerAuras[235450] = nil
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 12051)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 235450)
 playerAuras[235450] = {}
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 12051)
+playerAuras[235450] = nil
+unusableSpells[235450] = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 12051)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 12051)
+unusableSpells[235450] = nil
+playerAuras[235450] = {}
 
 -- A custom M5 source may own a different queue, while M4 must consume its
 -- explicit untouched preserve queue. It must never copy the M5 action across.
@@ -205,14 +214,16 @@ JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 5143)
 
--- Stationary Arcane M5 and M4 share Orb after the resume delay.
+-- Stationary Arcane M5 and M4 both allow Orb when no directional delay is
+-- active.
 testQueue = { 153626, 44425 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 153626)
 
 -- While moving, neither held key may guess the facing-dependent Orb. Both
--- restore it only after two continuous stationary seconds.
+-- skip it. After an ordinary stop M5 resumes immediately, while M4 requires
+-- two continuous stationary seconds.
 speed = 7
 eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
 JustACBridge.Refresh()
@@ -221,12 +232,37 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 speed = 0
 eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
 JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+now = now + 1.99
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+now = now + 0.01
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 153626)
+
+-- A server-confirmed Blink or either Shimmer form starts an independent
+-- two-second Orb delay for both keys. This remains exact even if no ordinary
+-- movement-stop transition is emitted by the teleport.
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "blink", 1953)
+JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 now = now + 1.99
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 now = now + 0.01
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 153626)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "shimmer", 1294067)
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+now = now + 2.0
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 153626)
