@@ -144,6 +144,17 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     GetDetectedBurstTriggers = function() return burstTriggers end,
 }))
 
+-- DK-owned sources remain available only as explicit experimental choices.
+-- Auto mode must resolve every DK specialization through JustAC; because this
+-- harness intentionally has no usable JustAC runtime, selection then falls
+-- through to the first available test source rather than either DK mock.
+for _, sourceID in ipairs({ "frostdk121", "unholydk121" }) do
+    assert(JustACBridgeRecommendationSources.Register(sourceID, {
+        name = sourceID,
+        GetQueue = function() return { 999999 } end,
+    }))
+end
+
 dofile("JustACBridge.core/Policies/Registry.lua")
 dofile("JustACBridge.core/Policies/Mage.lua")
 dofile("JustACBridge.core/Policies/Mage/Arcane.lua")
@@ -157,6 +168,12 @@ dofile("JustACBridge.core/Trackers/GroundEffects.lua")
 dofile("JustACBridge.core/JustACBridge.lua")
 
 eventFrame.OnEvent(eventFrame, "PLAYER_LOGIN")
+assert(JustACBridge.GetRecommendationSource().id == "test")
+classFile, specIndex = "DEATHKNIGHT", 2
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+assert(JustACBridge.GetRecommendationSource().id == "test")
+classFile, specIndex = "DEATHKNIGHT", 3
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 assert(JustACBridge.GetRecommendationSource().id == "test")
 assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
 -- Opening the log before diagnostics have ever produced a line must display
@@ -429,6 +446,25 @@ local frostLossless = JustACBridge.GetLosslessRecommendation()
 local frostPreserve = JustACBridge.GetPreserveBurstRecommendation()
 assert(frostLossless.spellID == 49184 and frostLossless.rotationFallback == true)
 assert(frostPreserve.spellID == 49184)
+
+-- Holding Frost DK M4 is an explicit "mechanics/pack-tail" signal. Keep
+-- JustAC's ordering, but reserve even the short pack cooldown (Remorseless
+-- Winter) and Raise Dead instead of wasting either just before the next pull.
+-- M5 remains untouched and may immediately execute the original first action.
+testQueue = { 196770, 46585, 49184 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 196770)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
+
+-- Unholy already reserves its major cooldown suite and excludes the aimed
+-- Death and Decay reticle. M4 must advance through all of them to a cheap,
+-- instant runic-power filler rather than becoming empty during movement.
+classFile, specIndex = "DEATHKNIGHT", 3
+testQueue = { 42650, 1233448, 1247378, 43265, 47541 }
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 42650)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 47541)
 
 classFile, specIndex = "MAGE", 1
 testQueue = { 12051, 44425 }

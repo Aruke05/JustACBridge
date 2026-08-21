@@ -123,8 +123,10 @@ assert(frostDK.fallbackActions[1].spellID == 49184 and frostDK.fallbackActions[1
 assert(#frostDK.rotationExclusions == 1 and frostDK.rotationExclusions[1] == 49576)
 
 local frostDK121 = assert(registry.Resolve("DEATHKNIGHT", 2, 120100))
-assert(frostDK121.ruleset == "base" and frostDK121.revision == 5)
-assert(#frostDK121.reserve == 6)
+assert(frostDK121.ruleset == "base" and frostDK121.revision == 6)
+assert(#frostDK121.reserve == 8)
+assert(frostDK121.reserve[1] == 196770)
+assert(frostDK121.reserve[7] == 439843 and frostDK121.reserve[8] == 46585)
 assert(#frostDK121.rotationExclusions == 1 and frostDK121.rotationExclusions[1] == 49576)
 assert(#frostDK121.reserveExclusions == 2)
 assert(frostDK121.reserveExclusions[1] == 194913

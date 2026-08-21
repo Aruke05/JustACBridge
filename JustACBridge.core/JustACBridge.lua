@@ -151,8 +151,6 @@ local AUTOMATIC_SOURCE_BY_SPEC = {
     MAGE_1 = "arcane121",
     MAGE_2 = "fire121",
     MAGE_3 = "frostmage121",
-    DEATHKNIGHT_2 = "frostdk121",
-    DEATHKNIGHT_3 = "unholydk121",
 }
 
 local function automaticRecommendationSourceID()
@@ -1340,7 +1338,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.9", GetTime() - debugStartedAt,
+            reason, "2.12.11", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -2263,7 +2261,10 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         -- 2.12 makes source selection specialization-aware. Existing built-in
         -- defaults migrate once to auto; a genuinely custom/manual source ID
-        -- remains explicit and is never rewritten on later logins.
+        -- remains explicit and is never rewritten on later logins. Auto uses
+        -- owned sources only for the three Mage specs; every Death Knight spec
+        -- deliberately resolves to JustAC unless the player explicitly opts
+        -- into an experimental DK source with /jacb source.
         if JustACBridgeDB.optimized121SourceMigration ~= "2.12.0" then
             local old = JustACBridgeDB.recommendationSource
             if old == nil or old == "justac" or old == "arcane121"
@@ -2280,7 +2281,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.9", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.11", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 

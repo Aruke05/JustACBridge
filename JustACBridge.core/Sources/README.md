@@ -28,9 +28,10 @@ JustACBridgeRecommendationSources.Register("my-rotation", {
 /jacb source my-rotation
 ```
 
-`auto` 是默认模式：Interface 12.1 下，奥法、火法、冰法、冰 DK、邪 DK 分别解析为
-`arcane121`、`fire121`、`frostmage121`、`frostdk121`、`unholydk121`；其他专精解析为
-`justac`。切换专精或天赋时会重新解析，但不会覆盖玩家显式选择的自定义源。
+`auto` 是默认模式：Interface 12.1 下，奥法、火法、冰法分别解析为 `arcane121`、
+`fire121`、`frostmage121`；死亡骑士与其他专精解析为 `justac`。`frostdk121` 与
+`unholydk121` 仅保留为显式 `/jacb source` 可选的实验源。切换专精或天赋时会重新
+解析，但不会覆盖玩家显式选择的自定义源。
 
 未实现的快捷键、射程、可用性、Proc、引导识别等能力会回退给已安装的 JustAC
 适配器，因此替换推荐算法时无需复制动作栏扫描代码。
@@ -40,7 +41,7 @@ JustACBridgeRecommendationSources.Register("my-rotation", {
 Bridge 会以 `SOURCE_DECISION` 写入诊断日志。
 
 内置 12.1 自有源统一遵循：M5 先做本专精可完整证明的优先级，遇到不可观测的更高
-条件立即原样回退 JustAC。火法、冰法、冰 DK、邪 DK 的 M4 返回原始 JustAC 队列；
+条件立即原样回退 JustAC。火法、冰法及手动启用的冰/邪 DK 实验源，其 M4 返回原始 JustAC 队列；
 奥法 M4 是专属例外，继续运行同一个 `arcane121` 优先级，但不选择奥术涌动和
 大法师之触。策略层仍会过滤爆发、物品、不可移动读条/引导/蓄力和无法安全瞄准的
 方向/地面技能；12.1 奥法例外与 M5 共用真实移动安全判断，所以静止时不会再次过滤
