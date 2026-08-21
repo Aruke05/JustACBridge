@@ -130,6 +130,13 @@ function Runtime.New(owner, classFile, specializationIndex, gcdSpells)
     end
 
     function context:Ready(spellID)
+        -- Usable/cooldown wrappers are not proof that the player owns an
+        -- action: in live 12.1 they can report a plain usable value for a
+        -- talent spell which is absent from the current build.  Requiring an
+        -- authoritative spellbook/talent result prevents a source from
+        -- inventing actions such as Comet Storm for a Frost build that does
+        -- not have it.
+        if not self:Known(spellID) then return false end
         local usable = self:CallBoolean("IsSpellUsable", spellID)
         local cooldown = self:CallBoolean("IsSpellOnCooldown", spellID)
         if usable == nil or cooldown == nil then return nil end

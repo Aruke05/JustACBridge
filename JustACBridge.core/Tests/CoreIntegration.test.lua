@@ -22,6 +22,7 @@ local cooldownEndsAt = 0
 local effectiveSpellOverrides = {}
 local unlearnedSpells = {}
 local unusableSpells = {}
+local unboundSpells = {}
 local playerAuras = {
     [11426] = {},  -- Ice Barrier
     [235450] = {}, -- Prismatic Barrier
@@ -126,7 +127,10 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     name = "Test Source",
     GetQueue = function() return testQueue end,
     GetPreserveQueue = function() return testPreserveQueue or testQueue end,
-    GetSpellHotkey = function(id) return id == 43265 and "1" or "2" end,
+    GetSpellHotkey = function(id)
+        if unboundSpells[id] then return nil end
+        return id == 43265 and "1" or "2"
+    end,
     GetDisplaySpellID = function(id) return id end,
     GetEffectiveSpellID = function(id) return effectiveSpellOverrides[id] or id end,
     IsSpellUsable = function(id) return unusableSpells[id] ~= true end,
@@ -158,6 +162,20 @@ assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
 -- Opening the log before diagnostics have ever produced a line must display
 -- an empty state rather than taking the length of a nil SavedVariables field.
 SlashCmdList.JUSTACBRIDGE("debug")
+
+-- A self-owned source may prepend a proven action which is not present on the
+-- player's action bars. The desktop cannot execute an unbound primary, so it
+-- must never consume M5; advance to a bound raw-queue action instead. This is
+-- the exact failure mode seen when Frost selected Comet Storm (153595) while
+-- the spell was not bound.
+classFile, specIndex = "MAGE", 3
+testQueue = { 153595, 30455 }
+unboundSpells[153595] = true
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30455)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 30455)
+unboundSpells[153595] = nil
 
 -- 12.1 Arcane owns an exact two-spell preserve set. Stale/custom JustAC Burst
 -- Trigger entries (including ordinary Barrage) must not silently add more M4

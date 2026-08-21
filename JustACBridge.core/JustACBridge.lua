@@ -998,9 +998,13 @@ local function findSafeRecommendation(queue)
             and isSafeQueueValue(queueValue)
             and (queueValue < 0 or isUsableNow(queueValue)) then
             local data = getSpellData(queueValue, 1)
-            -- Preserve the historical behavior for the primary entry, but do
-            -- not replace a blocked hardcast with an unusable unbound fallback.
-            if data and (index == 1 or data.plainHotkey ~= "") then
+            -- A source-owned action can be prepended even when that spell is
+            -- absent from the player's action bars. Exporting such an entry
+            -- makes the desktop hook consume M5 while having no key to send.
+            -- Every exported action, including position 1, must therefore be
+            -- executable; otherwise continue to the next bound queue entry
+            -- and finally the specialization's bound fallback.
+            if data and data.plainHotkey ~= "" then
                 data.movementFallback = index ~= 1 and primaryMovementBlocked
                 data.rangeFallback = index ~= 1 and primaryRangeBlocked
                 data.groundFallback = index ~= 1 and primaryGroundBlocked
@@ -1336,7 +1340,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.4", GetTime() - debugStartedAt,
+            reason, "2.12.9", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -2276,7 +2280,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshReservedSpells()
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.4", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.9", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 

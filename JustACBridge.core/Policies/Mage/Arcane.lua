@@ -59,7 +59,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 21,
+            revision = 24,
             -- 12.1 M4 shares the owned Arcane priority with M5. Orb is no
             -- longer permanently excluded; both modes use the movement and
             -- stationary-resume rules below.
@@ -69,10 +69,14 @@ Registry.RegisterSpec("MAGE", 1, {
             -- silently turn additional ordinary Arcane actions into M4 holds.
             -- Explicit /jacb reserve overrides remain authoritative.
             useDetectedBurstTriggers = false,
-            -- Arcane M4 is literally the M5 action list minus Surge and Touch.
-            -- Use the player's real movement state instead of the generic
-            -- always-moving M4 filter. Protected Missiles still lock both
-            -- outputs until the real channel stop/interruption event.
+            -- Arcane M4 shares M5's proven owned actions minus Surge and Touch.
+            -- On a JustAC fallback, both routes put baseline Blast before an
+            -- unproven Barrage, inserting Blast when the capped raw queue omitted
+            -- it, so secret aura state cannot cause stationary charge dumping;
+            -- moving safety still skips Blast back to Barrage. Use the
+            -- player's real movement state instead of the generic always-moving
+            -- M4 filter. Protected Missiles still lock both outputs until the
+            -- real channel stop/interruption event.
             preserveUsesCurrentSafety = true,
             -- M4 is also the long-held mechanics key. Keep its defensive
             -- shield maintained without spending an M5 damage GCD: inject

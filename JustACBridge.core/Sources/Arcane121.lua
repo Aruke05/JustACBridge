@@ -235,6 +235,43 @@ local function fallback(reason, raw)
     return raw
 end
 
+-- A delegated JustAC queue can place Barrage ahead of Blast as a generic
+-- instant fallback even when Barrage was not selected by a proven Arcane APL
+-- branch. Under secret aura state that can make either held key dump charges
+-- forever. Put the known baseline filler Blast before that unproven Barrage for
+-- both routes, inserting it when JustAC's four-entry fallback omitted it. The
+-- core will then use Blast while stationary and
+-- naturally skip its hardcast back to Barrage while moving. This deliberately
+-- sacrifices unknown optimal Barrage windows rather than pretending we can
+-- read them; source-owned proven Barrage decisions never pass through here.
+local function buildConservativeFallback(raw)
+    local barrageIndex, blastIndex
+    for index, spellID in ipairs(raw) do
+        if spellID == SPELL.ARCANE_BARRAGE and not barrageIndex then
+            barrageIndex = index
+        elseif spellID == SPELL.ARCANE_BLAST and not blastIndex then
+            blastIndex = index
+        end
+    end
+    if not barrageIndex or (blastIndex and blastIndex < barrageIndex) then
+        return raw
+    end
+
+    local result = {}
+    for index, spellID in ipairs(raw) do
+        if not blastIndex and index == barrageIndex then
+            result[#result + 1] = SPELL.ARCANE_BLAST
+            result[#result + 1] = SPELL.ARCANE_BARRAGE
+        elseif index ~= barrageIndex then
+            result[#result + 1] = spellID
+            if blastIndex and index == blastIndex then
+                result[#result + 1] = SPELL.ARCANE_BARRAGE
+            end
+        end
+    end
+    return result
+end
+
 local function selectQueue(raw, preserve)
     if not isArcane121() then return fallback("outside-mage-arcane-12.1", raw) end
     local hero = heroTree()
@@ -257,8 +294,8 @@ local function selectQueue(raw, preserve)
 
     -- Spellslinger cooldown list starts with one Arcane Orb per combat.  The
     -- cast event, not a guessed timer, owns line_cd=999. Both modes expose the
-    -- same owned Orb decision; the policy layer suppresses it while moving and
-    -- until the player has then remained stationary for two seconds.
+    -- same owned Orb decision; the policy layer suppresses it while moving,
+    -- applies M4's stationary delay and applies both routes' Blink delay.
     if hero == "spellslinger" then
         local orbUsed = state.orbCastAt and now() - state.orbCastAt < 900
         if not orbUsed then
@@ -560,13 +597,31 @@ end
 function Source.GetQueue()
     local raw = SpellQueue.GetCurrentSpellQueue()
     if type(raw) ~= "table" then raw = {} end
-    return selectQueue(raw, false)
+    local selected = selectQueue(raw, false)
+    if selected == raw then
+        local adjusted = buildConservativeFallback(raw)
+        if adjusted ~= raw then
+            state.decision = state.decision
+                .. " conservativeFallback=blast-before-unproven-barrage"
+        end
+        return adjusted
+    end
+    return selected
 end
 
 function Source.GetPreserveQueue()
     local raw = SpellQueue.GetCurrentSpellQueue()
     if type(raw) ~= "table" then raw = {} end
-    return selectQueue(raw, true)
+    local selected = selectQueue(raw, true)
+    if selected == raw then
+        local adjusted = buildConservativeFallback(raw)
+        if adjusted ~= raw then
+            state.decision = state.decision
+                .. " conservativeFallback=blast-before-unproven-barrage"
+        end
+        return adjusted
+    end
+    return selected
 end
 
 function Source.GetDecisionTrace()
@@ -578,6 +633,7 @@ Source._Test = {
     spell = SPELL,
     state = state,
     selectQueue = selectQueue,
+    buildConservativeFallback = buildConservativeFallback,
 }
 
 Registry.Register("arcane121", Source)

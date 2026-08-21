@@ -82,7 +82,10 @@ local function reset(classFile, spec)
     combat = true
 end
 
-local function ready(id) cooldowns[id] = false end
+local function ready(id)
+    known[id] = true
+    cooldowns[id] = false
+end
 local function cast(frame, id)
     frame.OnEvent(frame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", id)
     now = now + 1.5
@@ -147,6 +150,16 @@ cast(frostMageFrame, 205021)
 queue = frostMage.GetQueue()
 assert(queue[1] == 84714 and frostMage.GetDecisionTrace():match("opening_orb"))
 cast(frostMageFrame, 84714)
+
+-- Cooldown/usable data alone must not invent an unlearned talent action.
+-- The live 12.1 wrapper exposed Comet Storm as usable even when the current
+-- Frost build did not own it, which left M5 pointing at a nonexistent spell.
+cooldowns[205021] = true
+cooldowns[84714] = true
+cooldowns[153595] = false
+queue = frostMage.GetQueue()
+assert(queue[1] == rawQueue[1]
+    and not frostMage.GetDecisionTrace():match("frostfire.comet_storm"))
 ready(153595)
 queue = frostMage.GetQueue()
 assert(queue[1] == 153595 and frostMage.GetDecisionTrace():match("frostfire.comet_storm"))
@@ -179,6 +192,10 @@ cooldowns[51271] = true
 enemies = 3
 procs[49020] = true
 auras[51124] = 2
+ready(49020)
+cooldowns[207230] = false
+queue = frostDK.GetQueue()
+assert(queue[1] == 49020 and frostDK.GetDecisionTrace():match("obliterate"))
 ready(207230)
 queue = frostDK.GetQueue()
 assert(queue[1] == 207230 and frostDK.GetDecisionTrace():match("killing%-machine=2"))
@@ -219,6 +236,9 @@ cast(unholyFrame, 1233448)
 known[458128] = nil
 cooldowns[1233448] = true
 enemies = 4
+cooldowns[1247378] = false
+queue = unholy.GetQueue()
+assert(queue[1] == 85948 and not unholy.GetDecisionTrace():match("putrefy"))
 ready(1247378)
 queue = unholy.GetQueue()
 assert(queue[1] == 1247378 and unholy.GetDecisionTrace():match("aoe.putrefy"))

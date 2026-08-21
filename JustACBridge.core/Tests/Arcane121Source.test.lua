@@ -149,6 +149,38 @@ queue = source.GetQueue()
 assert(queue[1] == rawQueue[1])
 assert(source.GetDecisionTrace():match("arcane%-salvo<12%-unknown"))
 
+-- When an unknown predicate delegates to JustAC, neither route may treat JustAC's
+-- generic instant Barrage fallback as a proven stationary charge dump. Keep
+-- every intervening action in order, but move an existing Blast before that
+-- unproven Barrage for both routes; the core movement gate remains responsible
+-- for skipping the hardcast back to Barrage while moving.
+rawQueue = { 153626, 44425, 321507, 30451 }
+queue = source.GetQueue()
+assert(queue ~= rawQueue)
+assert(queue[1] == 153626 and queue[2] == 321507)
+assert(queue[3] == 30451 and queue[4] == 44425)
+assert(source.GetDecisionTrace():match("fallback=true"))
+assert(source.GetDecisionTrace():match("conservativeFallback=blast%-before%-unproven%-barrage"))
+preserve = source.GetPreserveQueue()
+assert(preserve ~= rawQueue)
+assert(preserve[1] == 153626 and preserve[2] == 321507)
+assert(preserve[3] == 30451 and preserve[4] == 44425)
+assert(source.GetDecisionTrace():match("fallback=true"))
+assert(source.GetDecisionTrace():match("conservativeFallback=blast%-before%-unproven%-barrage"))
+
+-- The live JustAC queue is capped and frequently omits Blast entirely while
+-- still exposing generic Barrage. In that exact degraded shape, add only the
+-- known baseline filler immediately before Barrage; do not invent any proc,
+-- cooldown or aura-dependent action.
+rawQueue = { 5143, 44425, 1449, 153626 }
+queue = source.GetQueue()
+assert(queue[1] == 5143 and queue[2] == 30451 and queue[3] == 44425)
+assert(queue[4] == 1449 and queue[5] == 153626)
+preserve = source.GetPreserveQueue()
+assert(preserve[1] == 5143 and preserve[2] == 30451 and preserve[3] == 44425)
+assert(source.GetDecisionTrace():match("blast%-before%-unproven%-barrage"))
+rawQueue = { 30451, 44425 }
+
 -- Normal-list branches are source-owned whenever every higher predicate is
 -- false or a target-count-independent OR branch is true.
 hero = "spellslinger"
