@@ -9,6 +9,7 @@ local secretAuraValue = {}
 local eventFrame
 local soundCount = 0
 local voiceCount = 0
+local spokenVoiceID
 local reloadCount = 0
 local inCombat = false
 local classFile = "DEATHKNIGHT"
@@ -94,10 +95,14 @@ C_UnitAuras = {
     GetPlayerAuraBySpellID = function(id) return playerAuras[id] end,
 }
 C_TTSSettings = {
-    GetVoiceOptionID = function() return 1 end,
+    GetVoiceOptionID = function() return 999 end,
 }
 C_VoiceChat = {
-    SpeakText = function() voiceCount = voiceCount + 1 end,
+    GetTtsVoices = function() return { { voiceID = 7, name = "Test Voice" } } end,
+    SpeakText = function(voiceID)
+        spokenVoiceID = voiceID
+        voiceCount = voiceCount + 1
+    end,
 }
 
 function CreateFrame()
@@ -570,6 +575,7 @@ dndCooldownRecord.frame.OnCooldownDone()
 eventFrame.OnUpdate(eventFrame, 0.01)
 assert(soundCount == 1)
 assert(voiceCount == 1)
+assert(spokenVoiceID == 7)
 
 -- A movement-safe recommendation can still be rejected by the game at cast
 -- time.  Three rapid failures must temporarily advance both selectors instead

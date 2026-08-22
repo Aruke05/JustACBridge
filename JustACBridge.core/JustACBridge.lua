@@ -1347,7 +1347,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.13", GetTime() - debugStartedAt,
+            reason, "2.12.14", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1871,6 +1871,35 @@ local function getGroundEffectName(effect)
     return info and info.name or "场地技能"
 end
 
+local function getUsableTtsVoiceID()
+    local configuredVoiceID
+    local voiceType = Enum and Enum.TtsVoiceType and Enum.TtsVoiceType.Standard or 0
+    if C_TTSSettings and C_TTSSettings.GetVoiceOptionID then
+        local ok, result = pcall(C_TTSSettings.GetVoiceOptionID, voiceType)
+        if ok and type(result) == "number" then configuredVoiceID = result end
+    end
+
+    -- A configured option can disappear after a client or Windows voice
+    -- update. SpeakText accepts that stale ID without raising an error but
+    -- produces no audio. Validate against the live engine voices and fall
+    -- back to the first voice that actually exists.
+    if C_VoiceChat and C_VoiceChat.GetTtsVoices then
+        local ok, voices = pcall(C_VoiceChat.GetTtsVoices)
+        if ok and type(voices) == "table" then
+            for _, voice in ipairs(voices) do
+                if type(voice) == "table" and voice.voiceID == configuredVoiceID then
+                    return configuredVoiceID
+                end
+            end
+            local first = voices[1]
+            if type(first) == "table" and type(first.voiceID) == "number" then
+                return first.voiceID
+            end
+        end
+    end
+    return configuredVoiceID
+end
+
 local function showCooldownReadyAlert(effect)
     local name = getGroundEffectName(effect)
     if JustACBridgeDB.groundAlert ~= false and groundAlertFrame and groundAlertText then
@@ -1881,16 +1910,15 @@ local function showCooldownReadyAlert(effect)
     end
     if JustACBridgeDB.groundVoice ~= false
         and C_VoiceChat and C_VoiceChat.SpeakText then
-        local voiceType = Enum and Enum.TtsVoiceType and Enum.TtsVoiceType.Standard or 0
-        local voiceID = 0
-        if C_TTSSettings and C_TTSSettings.GetVoiceOptionID then
-            local ok, configuredVoiceID = pcall(C_TTSSettings.GetVoiceOptionID, voiceType)
-            if ok and type(configuredVoiceID) == "number" then
-                voiceID = configuredVoiceID
-            end
+        local voiceID = getUsableTtsVoiceID()
+        local spoken = false
+        if voiceID then
+            -- Patch 12.0 signature: voiceID, text, rate, volume, overlap.
+            spoken = pcall(C_VoiceChat.SpeakText,
+                voiceID, name .. "冷却就绪", 0, 100, false)
         end
-        -- Patch 12.0 signature: voiceID, text, rate, volume, overlap.
-        pcall(C_VoiceChat.SpeakText, voiceID, name .. "冷却就绪", 0, 100, false)
+        appendDebug(("ALERT cooldown-ready name=%s voiceID=%s spoken=%s")
+            :format(debugSafe(name), debugSafe(voiceID), tostring(spoken)))
     end
     if JustACBridgeDB.groundSound ~= false and PlaySound then
         local soundID = SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959
@@ -2295,7 +2323,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.13", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.14", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
