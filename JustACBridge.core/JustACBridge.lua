@@ -61,6 +61,8 @@ local movementStopPendingUntil = 0
 local movementFlapCount = 0
 local movementLastDebugAt = -math.huge
 local successfulCastResumeTriggerAt = {}
+local successfulCastSequenceSerial = 0
+local successfulCastSequenceStep = {}
 local MOVEMENT_FLAP_WINDOW_SECONDS = 0.12
 local MOVEMENT_STOP_DEBOUNCE_SECONDS = 0.25
 local queueReady = true
@@ -580,6 +582,51 @@ local function isSpellMoveCastableNow(spellID)
     return false
 end
 
+local function resetSuccessfulCastSequences()
+    successfulCastSequenceSerial = 0
+    successfulCastSequenceStep = {}
+end
+
+local function isCastSequenceSafeQueueValue(queueValue)
+    if type(queueValue) ~= "number" or queueValue <= 0 then
+        return true
+    end
+    for _, rule in ipairs(currentPolicy and currentPolicy.castSequenceRules or {}) do
+        local spellID = tonumber(rule.spellID)
+        local afterSpellID = tonumber(rule.afterSpellID)
+        if spellID and afterSpellID
+            and spellListContains({ spellID }, queueValue) then
+            local actionStep = successfulCastSequenceStep[spellID] or 0
+            local prerequisiteStep = successfulCastSequenceStep[afterSpellID] or 0
+            local auraProvesOrder = rule.afterAuraID
+                and hasObservablePlayerAura(tonumber(rule.afterAuraID)) or false
+            if prerequisiteStep <= actionStep and not auraProvesOrder then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+local function recordSuccessfulCastSequence(spellID)
+    spellID = tonumber(spellID)
+    if not spellID then return false end
+    local matched = false
+    for _, rule in ipairs(currentPolicy and currentPolicy.castSequenceRules or {}) do
+        for _, configuredID in ipairs({
+            tonumber(rule.spellID),
+            tonumber(rule.afterSpellID),
+        }) do
+            if configuredID and spellListContains({ configuredID }, spellID) then
+                successfulCastSequenceSerial = successfulCastSequenceSerial + 1
+                successfulCastSequenceStep[configuredID] = successfulCastSequenceSerial
+                matched = true
+            end
+        end
+    end
+    return matched
+end
+
 local function isResumeRuleEnabled(rule, position)
     if position == 2 then
         return rule.preserve ~= false
@@ -689,6 +736,7 @@ end
 
 local function isSafeQueueValue(queueValue, position)
     return not isRotationExcludedQueueValue(queueValue)
+        and isCastSequenceSafeQueueValue(queueValue)
         and isMovementSafeQueueValue(queueValue, position)
         and isRangeSafeQueueValue(queueValue)
         and isGroundEffectSafeQueueValue(queueValue)
@@ -725,6 +773,7 @@ local function isHoldSafeQueueValue(queueValue)
             and not isSecret(castTime) and castTime == 0
     end
     return not isRotationExcludedQueueValue(queueValue)
+        and isCastSequenceSafeQueueValue(queueValue)
         and (stationaryResumeSafe or isSpellMoveCastableNow(queueValue))
         and isRangeSafeQueueValue(queueValue)
         and isGroundEffectSafeQueueValue(queueValue)
@@ -999,6 +1048,7 @@ local function findSafeRecommendation(queue)
     local primaryGroundBlocked = not isGroundEffectSafeQueueValue(queue[1])
     local primaryFailureBlocked = isFailureSuppressedQueueValue(queue[1])
     local primaryRotationBlocked = isRotationExcludedQueueValue(queue[1])
+    local primarySequenceBlocked = not isCastSequenceSafeQueueValue(queue[1])
     for index = 1, count do
         local queueValue = queue[index]
         if type(queueValue) == "number" and queueValue ~= 0
@@ -1017,6 +1067,7 @@ local function findSafeRecommendation(queue)
                 data.groundFallback = index ~= 1 and primaryGroundBlocked
                 data.failureFallback = index ~= 1 and primaryFailureBlocked
                 data.rotationFallback = index ~= 1 and primaryRotationBlocked
+                data.sequenceFallback = index ~= 1 and primarySequenceBlocked
                 return data
             end
         end
@@ -1311,6 +1362,7 @@ local function movementDecision(spellID)
         "chan=" .. (chOk and debugSafe(channeled) or "call-error"),
         "proc=" .. (procOk and debugSafe(procced) or "call-error"),
         "safe=" .. tostring(isMovementSafeQueueValue(spellID)),
+        "sequence=" .. tostring(isCastSequenceSafeQueueValue(spellID)),
         "usable=" .. tostring(isUsableNow(spellID)),
         "hotkey=" .. (hotkeyOk and debugSafe(toPlainHotkey(hotkey)) or "call-error"),
     }, " ")
@@ -1347,7 +1399,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.19", GetTime() - debugStartedAt,
+            reason, "2.12.20", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1734,8 +1786,9 @@ local function updateUI(dataRows)
                     and ("：" .. data.emergencyFallbackLabel) or ""))
                 or (data.movementFallback and " · 移动替代"
                 or (data.failureFallback and " · 失败后替代"
+                or (data.sequenceFallback and " · 顺序替代"
                 or (data.rangeFallback and " · 射程替代"
-                    or (data.groundFallback and " · 场地仍存在" or "")))))
+                    or (data.groundFallback and " · 场地仍存在" or ""))))))
             row.id:SetText((data.kind == "item"
                 and ("物品 " .. tostring(data.itemID))
                 or ("法术 " .. tostring(data.spellID)))
@@ -2261,6 +2314,7 @@ eventFrame:RegisterEvent("PLAYER_LOGOUT")
 eventFrame:RegisterEvent("UI_SCALE_CHANGED")
 eventFrame:RegisterEvent("DISPLAY_SIZE_CHANGED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 eventFrame:RegisterEvent("PLAYER_TALENT_UPDATE")
 eventFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
@@ -2341,7 +2395,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.19", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.20", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -2363,6 +2417,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         playerIsChanneling = false
         playerChannelSpellID = nil
         playerIsCasting = false
+        resetSuccessfulCastSequences()
         if GroundEffectTracker and GroundEffectTracker.Reset then
             GroundEffectTracker.Reset()
         end
@@ -2375,6 +2430,9 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         refreshPlayerMoving()
         lastSignature = nil
         refreshReservedSpells()
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        resetSuccessfulCastSequences()
+        lastSignature = nil
     elseif event == "PLAYER_STARTED_MOVING" then
         local now = GetTime()
         local changed = not playerIsMoving
@@ -2421,11 +2479,17 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         if GroundEffectTracker and GroundEffectTracker.Reset then
             GroundEffectTracker.Reset()
         end
+        resetSuccessfulCastSequences()
         refreshReservedSpells()
         lastSignature = nil
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         local succeededSpellID = tonumber(spellID)
         failedMovementRecommendations[succeededSpellID] = nil
+        if recordSuccessfulCastSequence(succeededSpellID) then
+            -- A strict policy-owned action order changed even when JustAC's
+            -- cached queue did not.
+            lastSignature = nil
+        end
         if recordSuccessfulCastResumeTrigger(succeededSpellID) then
             -- The action list changed even when the source queue did not: a
             -- policy-configured directional spell has entered its post-cast

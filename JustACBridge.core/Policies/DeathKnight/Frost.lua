@@ -4,7 +4,7 @@ if not Registry then return end
 Registry.RegisterSpec("DEATHKNIGHT", 2, {
     id = "frost",
     name = "冰霜",
-    revision = 8,
+    revision = 9,
     fallbackActions = {
         { spellID = 49184, requireProc = true, label = "白霜凛风冲击" },
         { spellID = 49184, label = "凛风冲击" },
@@ -22,5 +22,13 @@ Registry.RegisterSpec("DEATHKNIGHT", 2, {
     reserveExclusions = {
         194913, -- Glacial Advance
         207230, -- Frostscythe
+    },
+    castSequenceRules = {
+        {
+            spellID = 279302,      -- Frostwyrm's Fury
+            afterSpellID = 51271,  -- Pillar of Frost
+            afterAuraID = 51271,
+            label = "冰霜巨龙之怒必须在冰霜之柱之后",
+        },
     },
 })

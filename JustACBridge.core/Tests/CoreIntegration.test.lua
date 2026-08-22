@@ -481,6 +481,44 @@ end
 classFile, specIndex = "DEATHKNIGHT", 2
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 
+-- Frostwyrm's Fury is never allowed to precede Pillar of Frost. The strict
+-- sequence gate uses successful player casts, not cooldown guesses. It also
+-- consumes the proof after Fury and clears it when combat ends.
+testQueue = { 279302, 51271, 49184 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 51271)
+assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
+
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "pillar-1", 51271)
+testQueue = { 279302, 49184 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 279302)
+
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "wyrm-1", 279302)
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
+assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)
+
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "pillar-2", 51271)
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 279302)
+eventFrame.OnEvent(eventFrame, "PLAYER_REGEN_ENABLED")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
+
+-- An explicitly observable live Pillar aura recovers the ordering proof after
+-- reload/zone transitions; secret or missing aura data still fails closed.
+playerAuras[51271] = secretAuraValue
+auraSecret = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
+auraSecret = false
+playerAuras[51271] = {}
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 279302)
+playerAuras[51271] = nil
+
 -- Raise Dead remains reserved, but Remorseless Winter is an ordinary rotational
 -- cooldown rather than a blanket M4 blacklist. After skipping Raise Dead, M4
 -- must keep JustAC's Remorseless Winter recommendation instead of advancing.

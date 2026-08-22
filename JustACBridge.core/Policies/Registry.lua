@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 17
+Registry.schemaVersion = 18
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -239,6 +239,34 @@ local function appendSuccessfulCastResumeDelays(target, source)
     end
 end
 
+-- Exact action ordering rules. The core records authoritative
+-- UNIT_SPELLCAST_SUCCEEDED events and permits the action only after a newer
+-- prerequisite success. An observable prerequisite aura may recover the
+-- sequence after /reload without guessing from cooldown state.
+local function copyCastSequenceRules(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        local spellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local afterSpellID = type(rule) == "table" and tonumber(rule.afterSpellID) or nil
+        local afterAuraID = type(rule) == "table" and tonumber(rule.afterAuraID) or nil
+        if spellID and spellID > 0 and afterSpellID and afterSpellID > 0 then
+            result[#result + 1] = {
+                spellID = spellID,
+                afterSpellID = afterSpellID,
+                afterAuraID = afterAuraID and afterAuraID > 0 and afterAuraID or nil,
+                label = rule.label,
+            }
+        end
+    end
+    return result
+end
+
+local function appendCastSequenceRules(target, source)
+    for _, rule in ipairs(copyCastSequenceRules(source)) do
+        target[#target + 1] = rule
+    end
+end
+
 local function removeValues(target, values)
     local removed = {}
     for _, value in ipairs(values or {}) do
@@ -358,6 +386,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         moveCastResumeDelays = copyMoveCastResumeDelays(classPolicy.moveCastResumeDelays),
         successfulCastResumeDelays = copySuccessfulCastResumeDelays(
             classPolicy.successfulCastResumeDelays),
+        castSequenceRules = copyCastSequenceRules(classPolicy.castSequenceRules),
         clipChannels = copyArray(classPolicy.clipChannels),
         protectedChannels = copyArray(classPolicy.protectedChannels),
         rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
@@ -379,6 +408,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     appendMoveCastResumeDelays(result.moveCastResumeDelays, specPolicy.moveCastResumeDelays)
     appendSuccessfulCastResumeDelays(result.successfulCastResumeDelays,
         specPolicy.successfulCastResumeDelays)
+    appendCastSequenceRules(result.castSequenceRules, specPolicy.castSequenceRules)
     addUniqueValues(result.clipChannels, specPolicy.clipChannels)
     addUniqueValues(result.protectedChannels, specPolicy.protectedChannels)
     appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
@@ -439,6 +469,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
             result.successfulCastResumeDelays = copySuccessfulCastResumeDelays(
                 patch.successfulCastResumeDelays)
         end
+        if patch.castSequenceRules then
+            result.castSequenceRules = copyCastSequenceRules(patch.castSequenceRules)
+        end
         if patch.clipChannels then
             replaceArray(result.clipChannels, patch.clipChannels)
         end
@@ -482,6 +515,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         appendMoveCastResumeDelays(result.moveCastResumeDelays, patch.addMoveCastResumeDelays)
         appendSuccessfulCastResumeDelays(result.successfulCastResumeDelays,
             patch.addSuccessfulCastResumeDelays)
+        appendCastSequenceRules(result.castSequenceRules, patch.addCastSequenceRules)
         removeValues(result.clipChannels, patch.removeClipChannels)
         addUniqueValues(result.clipChannels, patch.addClipChannels)
         removeValues(result.protectedChannels, patch.removeProtectedChannels)
