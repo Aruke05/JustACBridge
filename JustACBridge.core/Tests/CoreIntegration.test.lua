@@ -10,6 +10,7 @@ local eventFrame
 local soundCount = 0
 local voiceCount = 0
 local spokenVoiceID
+local spokenText
 local reloadCount = 0
 local inCombat = false
 local classFile = "DEATHKNIGHT"
@@ -99,8 +100,9 @@ C_TTSSettings = {
 }
 C_VoiceChat = {
     GetTtsVoices = function() return { { voiceID = 7, name = "Test Voice" } } end,
-    SpeakText = function(voiceID)
+    SpeakText = function(voiceID, text)
         spokenVoiceID = voiceID
+        spokenText = text
         voiceCount = voiceCount + 1
     end,
 }
@@ -571,11 +573,15 @@ assert(voiceCount == 0)
 -- The old ten-second ground expiry is silent. The authoritative cooldown
 -- widget completion owns the alert instead.
 now = 130
+spellCharges[43265] = 1
 dndCooldownRecord.frame.OnCooldownDone()
+eventFrame.OnUpdate(eventFrame, 0.01)
 eventFrame.OnUpdate(eventFrame, 0.01)
 assert(soundCount == 1)
 assert(voiceCount == 1)
 assert(spokenVoiceID == 7)
+assert(spokenText == "枯萎凋零1")
+spellCharges[43265] = nil
 
 -- A movement-safe recommendation can still be rejected by the game at cast
 -- time.  Three rapid failures must temporarily advance both selectors instead

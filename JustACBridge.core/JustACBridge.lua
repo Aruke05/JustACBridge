@@ -1347,7 +1347,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.15", GetTime() - debugStartedAt,
+            reason, "2.12.16", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1914,8 +1914,14 @@ local function showCooldownReadyAlert(effect)
         local spoken = false
         if voiceID then
             -- Patch 12.0 signature: voiceID, text, rate, volume, overlap.
+            local voiceText = name .. "冷却就绪"
+            if effect and effect.kind == "spell"
+                and type(effect.charges) == "number" and effect.charges > 0
+                and (effect.spellID == 43265 or effect.spellID == 152280) then
+                voiceText = "枯萎凋零" .. tostring(effect.charges)
+            end
             spoken = pcall(C_VoiceChat.SpeakText,
-                voiceID, name .. "冷却就绪", 0, 100, false)
+                voiceID, voiceText, 0, 100, false)
         end
         appendDebug(("ALERT cooldown-ready name=%s voiceID=%s spoken=%s")
             :format(debugSafe(name), debugSafe(voiceID), tostring(spoken)))
@@ -2326,7 +2332,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.15", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.16", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 

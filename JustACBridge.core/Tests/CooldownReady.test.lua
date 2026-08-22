@@ -78,19 +78,22 @@ now = 110
 charges[43265].currentCharges = 1
 charges[43265].cooldownStartTime = 110
 spellRecord.frame.OnCooldownDone()
+assert(#tracker.DrainReady() == 0) -- charge count is resolved on a later frame
+tracker.Update()
+tracker.Update()
 local firstReady = tracker.DrainReady()
-assert(#firstReady == 1 and firstReady[1].spellID == 43265)
-tracker.Update()
-tracker.Update()
+assert(#firstReady == 1 and firstReady[1].spellID == 43265
+    and firstReady[1].charges == 1 and firstReady[1].maxCharges == 2)
 assert(spellRecord.monitoring and spellRecord.frame.cooldown[1] == 110)
 
 now = 120
 charges[43265].currentCharges = 2
 spellRecord.frame.OnCooldownDone()
+tracker.Update()
+tracker.Update()
 local secondReady = tracker.DrainReady()
-assert(#secondReady == 1 and secondReady[1].spellID == 43265)
-tracker.Update()
-tracker.Update()
+assert(#secondReady == 1 and secondReady[1].spellID == 43265
+    and secondReady[1].charges == 2 and secondReady[1].maxCharges == 2)
 assert(not spellRecord.monitoring) -- full 2/2 has no third timer
 
 -- Only a trinket with GetItemSpell is considered active. An already-running
@@ -105,9 +108,10 @@ assert(tracker._Test.GetTrinketRecord(14) == nil)
 
 now = 190
 active.frame.OnCooldownDone()
+tracker.Update()
+tracker.Update()
 local trinketReady = tracker.DrainReady()
 assert(#trinketReady == 1 and trinketReady[1].slot == 13
     and trinketReady[1].itemID == 1001)
 
 print("cooldown-ready tracker tests passed")
-

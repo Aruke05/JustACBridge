@@ -49,13 +49,17 @@ local function makeCooldownFrame(record)
         log(("done kind=%s name=%s spell=%s item=%s slot=%s")
             :format(tostring(record.kind), tostring(record.name),
                 tostring(record.spellID), tostring(record.itemID), tostring(record.slot)))
-        ready[#ready + 1] = {
+        record.readyPending = {
             kind = record.kind,
             name = record.name,
             spellID = record.spellID,
             itemID = record.itemID,
             slot = record.slot,
         }
+        -- Resolve the new charge count on a later frame. This avoids reading
+        -- the old 0/2 or 1/2 value at the exact boundary where the Cooldown
+        -- widget finishes but C_Spell has not published the increment yet.
+        record.readyDelayUpdates = 1
 
         -- A charge spell can immediately begin recharging its next charge.
         -- Defer one update so the charge count/start time has advanced, then
@@ -247,6 +251,24 @@ end
 
 function Tracker.Update()
     for record in pairs(records) do
+        if record.readyPending then
+            if (record.readyDelayUpdates or 0) > 0 then
+                record.readyDelayUpdates = record.readyDelayUpdates - 1
+            else
+                local event = record.readyPending
+                if record.kind == "spell" and C_Spell and C_Spell.GetSpellCharges then
+                    local ok, charges = pcall(C_Spell.GetSpellCharges, record.spellID)
+                    if ok and type(charges) == "table"
+                        and visibleNumber(charges.currentCharges)
+                        and visibleNumber(charges.maxCharges) then
+                        event.charges = math.max(0, math.floor(charges.currentCharges))
+                        event.maxCharges = math.max(0, math.floor(charges.maxCharges))
+                    end
+                end
+                ready[#ready + 1] = event
+                record.readyPending = nil
+            end
+        end
         if record.pending and not record.monitoring then
             if (record.deferUpdates or 0) > 0 then
                 record.deferUpdates = record.deferUpdates - 1
@@ -306,6 +328,8 @@ function Tracker.Reset()
         record.monitoring = false
         record.pending = false
         record.deferUpdates = 0
+        record.readyPending = nil
+        record.readyDelayUpdates = 0
     end
 end
 
