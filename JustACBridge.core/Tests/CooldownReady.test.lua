@@ -4,6 +4,7 @@ local now = 100
 local charges = {}
 local itemCooldowns = {}
 local equipped = { [13] = 1001, [14] = 1002 }
+local timers = {}
 
 function GetTime() return now end
 UIParent = {}
@@ -34,6 +35,14 @@ function GetInventoryItemCooldown(_, slot)
     local cooldown = itemCooldowns[slot] or { 0, 0, 1 }
     return cooldown[1], cooldown[2], cooldown[3]
 end
+C_Timer = {
+    NewTimer = function(delay, callback)
+        local timer = { delay = delay, callback = callback, cancelled = false }
+        function timer:Cancel() self.cancelled = true end
+        timers[#timers + 1] = timer
+        return timer
+    end,
+}
 
 C_Spell = {
     GetSpellCharges = function(spellID) return charges[spellID] end,
@@ -59,8 +68,9 @@ charges[43265] = {
 }
 tracker.Configure({ { name = "Death and Decay", spells = { 43265 } } })
 
--- One cast spends both available charges in this synthetic sequence. The
--- widget must announce 0/2 -> 1/2, re-arm, then also announce 1/2 -> 2/2.
+-- DnD deliberately uses a fixed 30-second recharge queue. Two casts during
+-- the first recharge produce one alert at 30 seconds and the second at 60,
+-- matching sequential WoW charge recovery without reading secret times.
 charges[43265] = {
     currentCharges = 0,
     maxCharges = 2,
@@ -69,28 +79,20 @@ charges[43265] = {
     chargeModRate = 1,
 }
 assert(tracker.OnSpellcastSucceeded(43265))
-tracker.Update() -- one-frame API synchronization delay
-tracker.Update() -- arms the first recharge
+assert(tracker.OnSpellcastSucceeded(43265))
 local spellRecord = tracker._Test.GetSpellRecord(43265)
-assert(spellRecord.monitoring and spellRecord.frame.cooldown[2] == 10)
+assert(spellRecord.monitoring and #timers == 1 and timers[1].delay == 30)
 
-now = 110
-charges[43265].currentCharges = 1
-charges[43265].cooldownStartTime = 110
-spellRecord.frame.OnCooldownDone()
-assert(#tracker.DrainReady() == 0) -- charge count is resolved on a later frame
-tracker.Update()
-tracker.Update()
+now = 130
+timers[1].callback()
 local firstReady = tracker.DrainReady()
 assert(#firstReady == 1 and firstReady[1].spellID == 43265
-    and firstReady[1].charges == 1 and firstReady[1].maxCharges == 2)
-assert(spellRecord.monitoring and spellRecord.frame.cooldown[1] == 110)
+    and firstReady[1].charges == 1 and firstReady[1].maxCharges == 2
+    and firstReady[1].fixedTimer == true)
+assert(spellRecord.monitoring and #timers == 2 and timers[2].delay == 30)
 
-now = 120
-charges[43265].currentCharges = 2
-spellRecord.frame.OnCooldownDone()
-tracker.Update()
-tracker.Update()
+now = 160
+timers[2].callback()
 local secondReady = tracker.DrainReady()
 assert(#secondReady == 1 and secondReady[1].spellID == 43265
     and secondReady[1].charges == 2 and secondReady[1].maxCharges == 2)

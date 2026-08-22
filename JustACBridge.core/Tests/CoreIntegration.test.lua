@@ -12,6 +12,7 @@ local soundCount = 0
 local voiceCount = 0
 local spokenVoiceID
 local spokenText
+local scheduledTimers = {}
 local reloadCount = 0
 local inCombat = false
 local classFile = "DEATHKNIGHT"
@@ -110,6 +111,15 @@ C_VoiceChat = {
         spokenText = text
         voiceCount = voiceCount + 1
     end,
+}
+C_Timer = {
+    NewTimer = function(delay, callback)
+        local timer = { delay = delay, callback = callback, cancelled = false }
+        function timer:Cancel() self.cancelled = true end
+        scheduledTimers[#scheduledTimers + 1] = timer
+        return timer
+    end,
+    After = function(_, callback) callback() end,
 }
 
 function CreateFrame(_, name)
@@ -555,14 +565,11 @@ cooldownSpellID = nil
 JustACBridge.Refresh()
 assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
 
-cooldownSpellID = 43265
-cooldownEndsAt = now + 30
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast-1", 43265)
-eventFrame.OnUpdate(eventFrame, 0.01)
-eventFrame.OnUpdate(eventFrame, 0.01)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast-2", 43265)
 local dndCooldownRecord = JustACBridgeCooldownReadyTracker._Test.GetSpellRecord(43265)
-assert(dndCooldownRecord and dndCooldownRecord.monitoring)
-cooldownSpellID = nil
+assert(dndCooldownRecord and dndCooldownRecord.monitoring
+    and #scheduledTimers == 1 and scheduledTimers[1].delay == 30)
 JustACBridge.Refresh()
 local active = JustACBridge.GetGroundEffects()
 assert(#active == 1 and active[1].expiresAt == 110)
@@ -576,19 +583,16 @@ assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
 assert(soundCount == 0)
 assert(voiceCount == 0)
 
--- The old ten-second ground expiry is silent. The authoritative cooldown
--- widget completion owns the alert instead.
+-- The old ten-second ground expiry is silent. The explicit 30-second recharge
+-- timer owns the alert and does not depend on secret cooldown widget updates.
 now = 130
-spellCharges[43265] = 1
-dndCooldownRecord.frame.OnCooldownDone()
-eventFrame.OnUpdate(eventFrame, 0.01)
+scheduledTimers[1].callback()
 eventFrame.OnUpdate(eventFrame, 0.01)
 assert(soundCount == 1)
 assert(voiceCount == 1)
 assert(spokenVoiceID == 7)
 assert(spokenText == "枯萎凋零1")
 assert(namedFrames.JustACBridgeGroundAlertFrame.lastFontString.text == "枯萎凋零1")
-spellCharges[43265] = nil
 
 -- A movement-safe recommendation can still be rejected by the game at cast
 -- time.  Three rapid failures must temporarily advance both selectors instead

@@ -1,8 +1,9 @@
--- Announces authoritative cooldown completions through hidden Cooldown widgets.
+-- Announces DnD's explicit fixed recharge and equipped-item cooldown completions.
 --
 -- Patch 12.x may mark numeric cooldown values as secret in combat. Addons may
--- still pass those values to a Cooldown widget, whose OnCooldownDone event is
--- the reliable boundary we need. Never perform arithmetic on those values.
+-- still pass item values to a Cooldown widget, whose OnCooldownDone event is
+-- the reliable boundary we need. DnD uses the player's requested 30-second
+-- sequential recharge timer and never reads those hidden times.
 
 local Tracker = _G.JustACBridgeCooldownReadyTracker or {}
 _G.JustACBridgeCooldownReadyTracker = Tracker
@@ -14,7 +15,12 @@ local ready = {}
 local resolveSpellID
 local debugLogger
 local UPDATE_RETRY_COUNT = 30
+local DEATH_AND_DECAY_RECHARGE_SECONDS = 30
 local TRINKET_SLOTS = { 13, 14 }
+
+local function isDeathAndDecaySpell(spellID)
+    return spellID == 43265 or spellID == 152280
+end
 
 local function isSecret(value)
     return issecretvalue and issecretvalue(value) or false
@@ -134,6 +140,66 @@ local function queueArm(record)
     record.retries = UPDATE_RETRY_COUNT
 end
 
+local function cancelFixedRecharge(record)
+    record.fixedRechargeGeneration = (record.fixedRechargeGeneration or 0) + 1
+    if record.fixedRechargeTimer and record.fixedRechargeTimer.Cancel then
+        pcall(record.fixedRechargeTimer.Cancel, record.fixedRechargeTimer)
+    end
+    record.fixedRechargeTimer = nil
+    record.fixedRechargeMissing = 0
+end
+
+local function scheduleFixedRecharge(record)
+    if record.fixedRechargeTimer or not C_Timer then return end
+    local generation = record.fixedRechargeGeneration or 0
+    local function completed()
+        if not records[record] or generation ~= (record.fixedRechargeGeneration or 0) then
+            return
+        end
+        record.fixedRechargeTimer = nil
+        record.fixedRechargeMissing = math.max(0, (record.fixedRechargeMissing or 1) - 1)
+        local chargeCount = math.max(1, 2 - record.fixedRechargeMissing)
+        ready[#ready + 1] = {
+            kind = "spell",
+            name = record.name,
+            spellID = record.spellID,
+            charges = chargeCount,
+            maxCharges = 2,
+            fixedTimer = true,
+        }
+        log(("fixed-dnd-done charges=%s missing=%s")
+            :format(tostring(chargeCount), tostring(record.fixedRechargeMissing)))
+        if record.fixedRechargeMissing > 0 then
+            scheduleFixedRecharge(record)
+        else
+            record.monitoring = false
+        end
+    end
+    if C_Timer.NewTimer then
+        record.fixedRechargeTimer = C_Timer.NewTimer(DEATH_AND_DECAY_RECHARGE_SECONDS, completed)
+    elseif C_Timer.After then
+        -- After has no cancellation handle; the generation check still makes
+        -- resets/spec changes harmless.
+        record.fixedRechargeTimer = true
+        C_Timer.After(DEATH_AND_DECAY_RECHARGE_SECONDS, completed)
+    end
+    record.monitoring = record.fixedRechargeTimer ~= nil
+    log(("fixed-dnd-arm seconds=%s missing=%s")
+        :format(tostring(DEATH_AND_DECAY_RECHARGE_SECONDS),
+            tostring(record.fixedRechargeMissing)))
+end
+
+local function recordFixedDeathAndDecayCast(record)
+    record.monitoring = false
+    record.pending = false
+    record.fixedRechargeMissing = math.min(2, (record.fixedRechargeMissing or 0) + 1)
+    if record.fixedRechargeTimer then
+        record.monitoring = true
+    else
+        scheduleFixedRecharge(record)
+    end
+end
+
 local function resolvedSpellID(spellID)
     spellID = tonumber(spellID)
     if not spellID or type(resolveSpellID) ~= "function" then return spellID end
@@ -175,12 +241,15 @@ function Tracker.Configure(spellRules, resolver)
                 record.name = rule.name or record.name or ("法术 " .. spellID)
                 nextSpellRecords[spellID] = record
                 records[record] = true
-                queueArm(record) -- Also catches a recharge already running at login/reload.
+                if not isDeathAndDecaySpell(spellID) then
+                    queueArm(record) -- Resume observable non-DnD cooldowns after reload.
+                end
             end
         end
     end
     for spellID, record in pairs(spellRecords) do
         if not nextSpellRecords[spellID] then
+            cancelFixedRecharge(record)
             record.monitoring = false
             record.pending = false
             records[record] = nil
@@ -233,8 +302,12 @@ function Tracker.OnSpellcastSucceeded(spellID)
     local resolved = resolvedSpellID(spellID)
     for configuredID, record in pairs(spellRecords) do
         if configuredID == spellID or configuredID == resolved then
-            record.monitoring = false
-            queueArm(record)
+            if isDeathAndDecaySpell(spellID) or isDeathAndDecaySpell(configuredID) then
+                recordFixedDeathAndDecayCast(record)
+            else
+                record.monitoring = false
+                queueArm(record)
+            end
             matched = true
         end
     end
@@ -325,6 +398,7 @@ end
 function Tracker.Reset()
     ready = {}
     for record in pairs(records) do
+        cancelFixedRecharge(record)
         record.monitoring = false
         record.pending = false
         record.deferUpdates = 0
