@@ -29,6 +29,7 @@ WoW 插件从可替换的推荐源读取队列并生成“无损版”和“保�
   均完整的优先级切片，不可证明的状态回退 JustAC，且只在玩家显式选择时启用
 - DK 按住 M4 即表示正在跑机制或清理尾怪：仍按 JustAC 原队列使用安全普通填充，
   同时保留爆发、饰品/药水；冰 DK 额外保留冷酷严冬与亡者复生，避免浪费在尾怪
+- DK 三系的 M4/M5 都跳过死亡之握；抓怪和敌人位移完全保留给玩家手动操作
 - 奥术宝珠依赖人物面向且无法在副本内可靠自动瞄准：12.1 奥法的 M4/M5 移动时
   都跳过；普通停止移动后 M5 立即恢复，M4 连续静止满 2 秒才恢复。成功施放闪现或
   闪光术后，两路都从服务器确认事件起等待 2 秒再恢复宝珠
@@ -66,8 +67,10 @@ WoW 插件从可替换的推荐源读取队列并生成“无损版”和“保�
 - Windows/macOS 映射器在右键取消暴风雪选区后，3 秒内跳过暴风雪且不影响其他技能
 - 默认跳过 `C_Spell.IsSpellInRange` 明确确认超出目标射程的动作，并选择队列中首个可用替代
 - 霜火冰明确超过 20 码且当前顺序是“冰川尖刺→冰风暴”时，优先冰风暴以保住碎冰收益
-- 枯萎凋零/亵渎真正放置成功后启动 10 秒计时；到期显示中央红字、播放警报音并
-  尝试使用 WoW TTS 播报“枯萎凋零结束”
+- 枯萎凋零/亵渎真正放置成功后仍按 10 秒场地时间抑制重复推荐，但提醒改为真实
+  冷却/充能完成；`0/2→1/2` 和 `1/2→2/2` 都会分别提示“枯萎凋零冷却就绪”
+- 自动识别饰品槽 1/2 中具有主动 `Use` 法术的饰品；实际物品冷却结束时显示中央
+  红字、播放警报音并调用 WoW TTS，纯被动/触发型饰品不会纳入监控
 - 点击“设置功能键”后，下一次 M4/M5 或键盘按键即成为新功能键；冲突时自动交换
 - Windows 客户端为自包含单文件程序，无需单独安装 .NET Runtime
 - macOS 客户端为原生 AppKit 应用，支持系统权限检查、M4/M5 与键盘全局映射
@@ -89,6 +92,7 @@ JustACBridge.core/       WoW 插件与像素协议文档
     UnholyDK121.lua
   Trackers/
     GroundEffects.lua
+    CooldownReady.lua
   Policies/
     Registry.lua
     Mage.lua
@@ -249,10 +253,10 @@ JustACBridge.M5\dist\JustACBridge.M5.exe
 | `/jacb ground off` | 保留倒计时但不抑制重复推荐 |
 | `/jacb ground status` | 查看场地技能剩余时间 |
 | `/jacb ground reset` | 手动清除场地技能计时 |
-| `/jacb ground alert on/off` | 开关中央文字提醒 |
-| `/jacb ground sound on/off` | 开关到期警报音 |
-| `/jacb ground voice on/off` | 开关 WoW TTS 语音 |
-| `/jacb ground test` | 立即测试文字、声音和语音提醒 |
+| `/jacb cooldown alert on/off` | 开关冷却就绪中央文字提醒 |
+| `/jacb cooldown sound on/off` | 开关冷却就绪警报音 |
+| `/jacb cooldown voice on/off` | 开关冷却就绪 WoW TTS 语音 |
+| `/jacb cooldown test` | 立即测试文字、声音和语音提醒 |
 | `/jacb movement on` | 开启移动过滤（默认） |
 | `/jacb movement off` | 关闭移动过滤，恢复严格第一推荐 |
 | `/jacb range on` | 开启目标射程过滤（默认） |

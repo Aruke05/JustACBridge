@@ -165,6 +165,7 @@ dofile("JustACBridge.core/Policies/DeathKnight/Blood.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
 dofile("JustACBridge.core/Trackers/GroundEffects.lua")
+dofile("JustACBridge.core/Trackers/CooldownReady.lua")
 dofile("JustACBridge.core/JustACBridge.lua")
 
 eventFrame.OnEvent(eventFrame, "PLAYER_LOGIN")
@@ -436,16 +437,26 @@ JustACBridge.Refresh()
 effectiveSpellOverrides[30451] = nil
 now = 100
 
--- Death Grip is encounter utility rather than a Frost damage action. A stale
--- queue/gap-closer injection must be skipped by both exported actions.
+-- Death Grip is encounter utility rather than a damage action. A stale queue
+-- or gap-closer injection must be skipped by both outputs on every DK spec;
+-- pulling and enemy positioning always remain manual player decisions.
+for _, case in ipairs({
+    { spec = 1, fallback = 50842 },
+    { spec = 2, fallback = 49184 },
+    { spec = 3, fallback = 47541 },
+}) do
+    classFile, specIndex = "DEATHKNIGHT", case.spec
+    testQueue = { 49576, case.fallback }
+    eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+    JustACBridge.Refresh()
+    local lossless = JustACBridge.GetLosslessRecommendation()
+    local preserve = JustACBridge.GetPreserveBurstRecommendation()
+    assert(lossless.spellID == case.fallback and lossless.rotationFallback == true)
+    assert(preserve.spellID == case.fallback)
+end
+
 classFile, specIndex = "DEATHKNIGHT", 2
-testQueue = { 49576, 49184 }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
-JustACBridge.Refresh()
-local frostLossless = JustACBridge.GetLosslessRecommendation()
-local frostPreserve = JustACBridge.GetPreserveBurstRecommendation()
-assert(frostLossless.spellID == 49184 and frostLossless.rotationFallback == true)
-assert(frostPreserve.spellID == 49184)
 
 -- Holding Frost DK M4 is an explicit "mechanics/pack-tail" signal. Keep
 -- JustAC's ordering, but reserve even the short pack cooldown (Remorseless
@@ -531,7 +542,14 @@ cooldownSpellID = nil
 JustACBridge.Refresh()
 assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
 
+cooldownSpellID = 43265
+cooldownEndsAt = now + 30
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast-1", 43265)
+eventFrame.OnUpdate(eventFrame, 0.01)
+eventFrame.OnUpdate(eventFrame, 0.01)
+local dndCooldownRecord = JustACBridgeCooldownReadyTracker._Test.GetSpellRecord(43265)
+assert(dndCooldownRecord and dndCooldownRecord.monitoring)
+cooldownSpellID = nil
 JustACBridge.Refresh()
 local active = JustACBridge.GetGroundEffects()
 assert(#active == 1 and active[1].expiresAt == 110)
@@ -542,6 +560,14 @@ now = 110
 eventFrame.OnUpdate(eventFrame, 0.1)
 assert(#JustACBridge.GetGroundEffects() == 0)
 assert(JustACBridge.GetCurrentRecommendation().spellID == 43265)
+assert(soundCount == 0)
+assert(voiceCount == 0)
+
+-- The old ten-second ground expiry is silent. The authoritative cooldown
+-- widget completion owns the alert instead.
+now = 130
+dndCooldownRecord.frame.OnCooldownDone()
+eventFrame.OnUpdate(eventFrame, 0.01)
 assert(soundCount == 1)
 assert(voiceCount == 1)
 

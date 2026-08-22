@@ -32,6 +32,7 @@ JustACBridgeExport = JustACBridgeExport or {}
 local PolicyRegistry = _G.JustACBridgePolicyRegistry
 local SourceRegistry = _G.JustACBridgeRecommendationSources
 local GroundEffectTracker = _G.JustACBridgeGroundEffectTracker
+local CooldownReadyTracker = _G.JustACBridgeCooldownReadyTracker
 local activeSource
 local supportSource
 local activeSourceMode
@@ -291,6 +292,14 @@ local function refreshReservedSpells()
     refreshRotationEffectiveExclusions(currentPolicy and currentPolicy.rotationEffectiveExclusions)
     if GroundEffectTracker and GroundEffectTracker.Configure then
         GroundEffectTracker.Configure(
+            currentPolicy and currentPolicy.groundEffects or {},
+            function(spellID)
+                return getEffectiveSpellID(spellID)
+            end
+        )
+    end
+    if CooldownReadyTracker and CooldownReadyTracker.Configure then
+        CooldownReadyTracker.Configure(
             currentPolicy and currentPolicy.groundEffects or {},
             function(spellID)
                 return getEffectiveSpellID(spellID)
@@ -1338,7 +1347,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.11", GetTime() - debugStartedAt,
+            reason, "2.12.13", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1862,10 +1871,10 @@ local function getGroundEffectName(effect)
     return info and info.name or "场地技能"
 end
 
-local function showGroundEffectExpiredAlert(effect)
+local function showCooldownReadyAlert(effect)
     local name = getGroundEffectName(effect)
     if JustACBridgeDB.groundAlert ~= false and groundAlertFrame and groundAlertText then
-        groundAlertText:SetText(name .. " 已结束")
+        groundAlertText:SetText(name .. " 冷却就绪")
         groundAlertFrame:SetAlpha(1)
         groundAlertFrame:Show()
         groundAlertExpiresAt = GetTime() + 2
@@ -1881,7 +1890,7 @@ local function showGroundEffectExpiredAlert(effect)
             end
         end
         -- Patch 12.0 signature: voiceID, text, rate, volume, overlap.
-        pcall(C_VoiceChat.SpeakText, voiceID, name .. "结束", 0, 100, false)
+        pcall(C_VoiceChat.SpeakText, voiceID, name .. "冷却就绪", 0, 100, false)
     end
     if JustACBridgeDB.groundSound ~= false and PlaySound then
         local soundID = SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959
@@ -2214,6 +2223,8 @@ eventFrame:RegisterEvent("PLAYER_TALENT_UPDATE")
 eventFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
 eventFrame:RegisterEvent("PLAYER_STARTED_MOVING")
 eventFrame:RegisterEvent("PLAYER_STOPPED_MOVING")
+eventFrame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+eventFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
@@ -2279,9 +2290,12 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         )
         refreshPlayerMoving()
         refreshReservedSpells()
+        if CooldownReadyTracker and CooldownReadyTracker.RefreshEquipment then
+            CooldownReadyTracker.RefreshEquipment()
+        end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.11", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.13", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -2305,6 +2319,12 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         playerIsCasting = false
         if GroundEffectTracker and GroundEffectTracker.Reset then
             GroundEffectTracker.Reset()
+        end
+        if CooldownReadyTracker and CooldownReadyTracker.Reset then
+            CooldownReadyTracker.Reset()
+        end
+        if CooldownReadyTracker and CooldownReadyTracker.RefreshEquipment then
+            CooldownReadyTracker.RefreshEquipment()
         end
         refreshPlayerMoving()
         lastSignature = nil
@@ -2342,6 +2362,10 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
                 :format(debugSafe(ok and speed or "call-error"), tostring(deferred), movementFlapCount))
             if not deferred then movementFlapCount = 0 end
         end
+    elseif event == "PLAYER_EQUIPMENT_CHANGED" or event == "GET_ITEM_INFO_RECEIVED" then
+        if CooldownReadyTracker and CooldownReadyTracker.RefreshEquipment then
+            CooldownReadyTracker.RefreshEquipment()
+        end
     elseif event == "PLAYER_SPECIALIZATION_CHANGED"
         or event == "PLAYER_TALENT_UPDATE"
         or event == "TRAIT_CONFIG_UPDATED" then
@@ -2377,6 +2401,9 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
             and GroundEffectTracker.OnSpellcastSucceeded(spellID) then
             lastSignature = nil
             refreshStatusText()
+        end
+        if CooldownReadyTracker and CooldownReadyTracker.OnSpellcastSucceeded then
+            CooldownReadyTracker.OnSpellcastSucceeded(spellID)
         end
     elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
         playerIsChanneling = true
@@ -2468,15 +2495,22 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
 end)
 
 eventFrame:SetScript("OnUpdate", function(_, delta)
+    if CooldownReadyTracker and CooldownReadyTracker.Update then
+        CooldownReadyTracker.Update()
+    end
+    if CooldownReadyTracker and CooldownReadyTracker.DrainReady then
+        for _, readyEffect in ipairs(CooldownReadyTracker.DrainReady()) do
+            showCooldownReadyAlert(readyEffect)
+        end
+    end
     if GroundEffectTracker and GroundEffectTracker.Update
         and GroundEffectTracker.Update() then
         lastSignature = nil
     end
     if GroundEffectTracker and GroundEffectTracker.DrainExpired then
-        local expired = GroundEffectTracker.DrainExpired()
-        for _, effect in ipairs(expired) do
-            showGroundEffectExpiredAlert(effect)
-        end
+        -- Expiry still controls duplicate-ground filtering, but the user-facing
+        -- cue now belongs to the authoritative cooldown/charge completion.
+        GroundEffectTracker.DrainExpired()
     end
     if groundAlertFrame and groundAlertExpiresAt then
         local remaining = groundAlertExpiresAt - GetTime()
@@ -2587,24 +2621,27 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         print(JustACBridgeDB.groundEffectFilter
             and "|cff40a9ffJustACBridge:|r 场地技能到期过滤已开启。"
             or "|cff40a9ffJustACBridge:|r 场地技能仍会计时，但不再抑制重复推荐。")
-    elseif command == "ground alert on" or command == "ground alert off" then
-        JustACBridgeDB.groundAlert = command == "ground alert on"
+    elseif command == "ground alert on" or command == "ground alert off"
+        or command == "cooldown alert on" or command == "cooldown alert off" then
+        JustACBridgeDB.groundAlert = command:match(" on$") ~= nil
         print(JustACBridgeDB.groundAlert
-            and "|cff40a9ffJustACBridge:|r 场地技能中央文字提醒已开启。"
-            or "|cff40a9ffJustACBridge:|r 场地技能中央文字提醒已关闭。")
-    elseif command == "ground sound on" or command == "ground sound off" then
-        JustACBridgeDB.groundSound = command == "ground sound on"
+            and "|cff40a9ffJustACBridge:|r 冷却就绪中央文字提醒已开启。"
+            or "|cff40a9ffJustACBridge:|r 冷却就绪中央文字提醒已关闭。")
+    elseif command == "ground sound on" or command == "ground sound off"
+        or command == "cooldown sound on" or command == "cooldown sound off" then
+        JustACBridgeDB.groundSound = command:match(" on$") ~= nil
         print(JustACBridgeDB.groundSound
-            and "|cff40a9ffJustACBridge:|r 场地技能到期声音已开启。"
-            or "|cff40a9ffJustACBridge:|r 场地技能到期声音已关闭。")
-    elseif command == "ground voice on" or command == "ground voice off" then
-        JustACBridgeDB.groundVoice = command == "ground voice on"
+            and "|cff40a9ffJustACBridge:|r 冷却就绪声音已开启。"
+            or "|cff40a9ffJustACBridge:|r 冷却就绪声音已关闭。")
+    elseif command == "ground voice on" or command == "ground voice off"
+        or command == "cooldown voice on" or command == "cooldown voice off" then
+        JustACBridgeDB.groundVoice = command:match(" on$") ~= nil
         print(JustACBridgeDB.groundVoice
-            and "|cff40a9ffJustACBridge:|r 场地技能到期语音已开启。"
-            or "|cff40a9ffJustACBridge:|r 场地技能到期语音已关闭。")
-    elseif command == "ground test" then
-        showGroundEffectExpiredAlert({ name = "枯萎凋零", spellID = 43265 })
-        print("|cff40a9ffJustACBridge:|r 已触发场地技能到期测试提醒。")
+            and "|cff40a9ffJustACBridge:|r 冷却就绪语音已开启。"
+            or "|cff40a9ffJustACBridge:|r 冷却就绪语音已关闭。")
+    elseif command == "ground test" or command == "cooldown test" then
+        showCooldownReadyAlert({ name = "枯萎凋零", spellID = 43265 })
+        print("|cff40a9ffJustACBridge:|r 已触发冷却就绪测试提醒。")
     elseif command == "ground reset" then
         if GroundEffectTracker and GroundEffectTracker.Reset then
             GroundEffectTracker.Reset()
@@ -2704,8 +2741,8 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         print("/jacb reserve list - 查看当前专精保留法术")
         print("/jacb reserve add <法术ID> | remove <法术ID> | reset")
         print("/jacb source list | <ID> - 查看或切换推荐源")
-        print("/jacb ground on | off | status | reset - 场地技能到期监控")
-        print("/jacb ground alert/sound/voice on|off / test - 到期提醒")
+        print("/jacb ground on | off | status | reset - 场地持续时间与重复过滤")
+        print("/jacb cooldown alert/sound/voice on|off / test - 冷却就绪提醒")
         print("/jacb movement on | off - 移动时跳过不可移动读条/蓄力/引导")
         print("/jacb range on | off - 跳过明确超出目标射程的动作")
         print("/jacb debug [show|on|off|clear] - 打开并复制完整诊断日志")

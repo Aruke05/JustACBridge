@@ -5,7 +5,13 @@ end
 
 -- Death Knight class-wide rules only.  Spec policy lives in one file per spec.
 Registry.RegisterClass("DEATHKNIGHT", {
-    revision = 4,
+    revision = 5,
+    -- Pulling and repositioning enemies is encounter control, never a
+    -- rotational damage decision. Leave Death Grip to the player on every
+    -- specialization even if a source or gap-closer module injects it.
+    rotationExclusions = {
+        49576, -- Death Grip
+    },
     groundEffects = {
         {
             id = "death-and-decay",
