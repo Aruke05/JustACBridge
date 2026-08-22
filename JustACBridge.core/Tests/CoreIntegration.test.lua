@@ -481,21 +481,25 @@ end
 classFile, specIndex = "DEATHKNIGHT", 2
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 
--- Holding Frost DK M4 is an explicit "mechanics/pack-tail" signal. Keep
--- JustAC's ordering, but reserve even the short pack cooldown (Remorseless
--- Winter) and Raise Dead instead of wasting either just before the next pull.
--- M5 remains untouched and may immediately execute the original first action.
-testQueue = { 196770, 46585, 49184 }
+-- Raise Dead remains reserved, but Remorseless Winter is an ordinary rotational
+-- cooldown rather than a blanket M4 blacklist. After skipping Raise Dead, M4
+-- must keep JustAC's Remorseless Winter recommendation instead of advancing.
+testQueue = { 46585, 196770, 49184 }
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 196770)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
+assert(JustACBridge.GetLosslessRecommendation().spellID == 46585)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 196770)
 
 -- Unholy already reserves its major cooldown suite and excludes the aimed
 -- Death and Decay reticle. M4 must advance through all of them to a cheap,
 -- instant runic-power filler rather than becoming empty during movement.
 classFile, specIndex = "DEATHKNIGHT", 3
-testQueue = { 42650, 1233448, 1247378, 43265, 47541 }
+testQueue = { 343294, 42650, 47541 }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 343294)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 343294)
+
+testQueue = { 42650, 1233448, 1247378, 43265, 47541 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 42650)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 47541)

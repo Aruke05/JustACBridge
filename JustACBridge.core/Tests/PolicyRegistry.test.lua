@@ -124,20 +124,19 @@ assert(frostDK.fallbackActions[1].spellID == 49184 and frostDK.fallbackActions[1
 assert(#frostDK.rotationExclusions == 1 and frostDK.rotationExclusions[1] == 49576)
 
 local frostDK121 = assert(registry.Resolve("DEATHKNIGHT", 2, 120100))
-assert(frostDK121.ruleset == "base" and frostDK121.revision == 7)
-assert(#frostDK121.reserve == 8)
-assert(frostDK121.reserve[1] == 196770)
-assert(frostDK121.reserve[7] == 439843 and frostDK121.reserve[8] == 46585)
+assert(frostDK121.ruleset == "base" and frostDK121.revision == 8)
+assert(#frostDK121.reserve == 7)
+assert(frostDK121.reserve[1] == 51271)
+assert(frostDK121.reserve[6] == 439843 and frostDK121.reserve[7] == 46585)
 assert(#frostDK121.rotationExclusions == 1 and frostDK121.rotationExclusions[1] == 49576)
 assert(#frostDK121.reserveExclusions == 2)
 assert(frostDK121.reserveExclusions[1] == 194913
     and frostDK121.reserveExclusions[2] == 207230)
 
 local unholy = assert(registry.Resolve("DEATHKNIGHT", 3, 120007))
-assert(unholy.revision == 3)
-assert(#unholy.reserve == 11 and unholy.reserve[3] == 42650)
-assert(unholy.reserve[8] == 288853 and unholy.reserve[10] == 1247378
-    and unholy.reserve[11] == 343294)
+assert(unholy.revision == 4)
+assert(#unholy.reserve == 10 and unholy.reserve[3] == 42650)
+assert(unholy.reserve[8] == 288853 and unholy.reserve[10] == 1247378)
 assert(#unholy.reserveExclusions == 1 and unholy.reserveExclusions[1] == 43265)
 assert(#unholy.rotationExclusions == 1 and unholy.rotationExclusions[1] == 49576)
 assert(#unholy.groundEffects == 1)
