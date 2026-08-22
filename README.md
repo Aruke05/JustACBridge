@@ -257,6 +257,7 @@ JustACBridge.M5\dist\JustACBridge.M5.exe
 | `/jacb cooldown sound on/off` | 开关冷却就绪警报音 |
 | `/jacb cooldown voice on/off` | 开关冷却就绪 WoW TTS 语音 |
 | `/jacb cooldown test` | 立即测试文字、声音和语音提醒 |
+| `/jacb cooldown status` | 查看枯萎凋零及两个主动饰品的检测和计时状态 |
 | `/jacb movement on` | 开启移动过滤（默认） |
 | `/jacb movement off` | 关闭移动过滤，恢复严格第一推荐 |
 | `/jacb range on` | 开启目标射程过滤（默认） |

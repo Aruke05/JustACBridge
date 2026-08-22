@@ -12,6 +12,7 @@ local spellRecords = {}
 local trinketRecords = {}
 local ready = {}
 local resolveSpellID
+local debugLogger
 local UPDATE_RETRY_COUNT = 30
 local TRINKET_SLOTS = { 13, 14 }
 
@@ -23,21 +24,31 @@ local function visibleNumber(value)
     return type(value) == "number" and not isSecret(value)
 end
 
+local function log(message)
+    if type(debugLogger) == "function" then
+        pcall(debugLogger, "COOLDOWN " .. tostring(message))
+    end
+end
+
 local function makeCooldownFrame(record)
     if record.frame or not CreateFrame then
         return record.frame
     end
     local frame = CreateFrame("Cooldown", nil, UIParent, "CooldownFrameTemplate")
-    frame:SetSize(1, 1)
-    frame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", -4, -4)
-    frame:SetAlpha(0)
+    -- Keep the Cooldown genuinely shown and drawable. A fully transparent
+    -- widget with swipe/edge/countdown all disabled can be culled by the UI
+    -- renderer, which also prevents its OnCooldownDone script from running.
+    -- Put a normal 2px widget completely outside the viewport instead.
+    frame:SetSize(2, 2)
+    frame:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", -32, -32)
     frame:EnableMouse(false)
-    if frame.SetDrawEdge then frame:SetDrawEdge(false) end
-    if frame.SetDrawSwipe then frame:SetDrawSwipe(false) end
     if frame.SetHideCountdownNumbers then frame:SetHideCountdownNumbers(true) end
     frame:SetScript("OnCooldownDone", function()
         if not record.monitoring then return end
         record.monitoring = false
+        log(("done kind=%s name=%s spell=%s item=%s slot=%s")
+            :format(tostring(record.kind), tostring(record.name),
+                tostring(record.spellID), tostring(record.itemID), tostring(record.slot)))
         ready[#ready + 1] = {
             kind = record.kind,
             name = record.name,
@@ -73,6 +84,9 @@ local function setCooldown(record, startTime, duration, modRate)
     record.monitoring = true
     local ok = pcall(frame.SetCooldown, frame, startTime, duration, modRate)
     if not ok then record.monitoring = false end
+    log(("arm kind=%s name=%s spell=%s item=%s slot=%s ok=%s")
+        :format(tostring(record.kind), tostring(record.name), tostring(record.spellID),
+            tostring(record.itemID), tostring(record.slot), tostring(ok)))
     return ok
 end
 
@@ -169,6 +183,7 @@ function Tracker.Configure(spellRules, resolver)
         end
     end
     spellRecords = nextSpellRecords
+    log(("configured spells=%d"):format(#(spellRules or {})))
 end
 
 function Tracker.RefreshEquipment()
@@ -192,6 +207,8 @@ function Tracker.RefreshEquipment()
                 next[slot] = record
                 records[record] = true
                 queueArm(record) -- Resume a real equipped-item cooldown after reload/swap.
+                log(("trinket-detected slot=%s item=%s spell=%s name=%s")
+                    :format(tostring(slot), tostring(itemID), tostring(spellID), tostring(record.name)))
             end
         end
     end
@@ -224,6 +241,7 @@ function Tracker.OnSpellcastSucceeded(spellID)
             matched = true
         end
     end
+    if matched then log("cast-matched spell=" .. tostring(spellID)) end
     return matched
 end
 
@@ -238,10 +256,42 @@ function Tracker.Update()
                     record.pending = false
                 elseif record.retries <= 0 then
                     record.pending = false
+                    log(("idle kind=%s name=%s spell=%s item=%s slot=%s")
+                        :format(tostring(record.kind), tostring(record.name),
+                            tostring(record.spellID), tostring(record.itemID), tostring(record.slot)))
                 end
             end
         end
     end
+end
+
+function Tracker.SetDebugLogger(logger)
+    debugLogger = type(logger) == "function" and logger or nil
+end
+
+function Tracker.GetStatus()
+    local result = { spells = {}, trinkets = {} }
+    for spellID, record in pairs(spellRecords) do
+        result.spells[#result.spells + 1] = {
+            spellID = spellID,
+            name = record.name,
+            monitoring = record.monitoring == true,
+            pending = record.pending == true,
+        }
+    end
+    for slot, record in pairs(trinketRecords) do
+        result.trinkets[#result.trinkets + 1] = {
+            slot = slot,
+            itemID = record.itemID,
+            spellID = record.spellID,
+            name = record.name,
+            monitoring = record.monitoring == true,
+            pending = record.pending == true,
+        }
+    end
+    table.sort(result.spells, function(left, right) return left.spellID < right.spellID end)
+    table.sort(result.trinkets, function(left, right) return left.slot < right.slot end)
+    return result
 end
 
 function Tracker.DrainReady()

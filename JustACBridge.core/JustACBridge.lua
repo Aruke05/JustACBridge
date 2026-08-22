@@ -1347,7 +1347,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.14", GetTime() - debugStartedAt,
+            reason, "2.12.15", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -2317,13 +2317,16 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
             JustACBridgeDB.recommendationSource
         )
         refreshPlayerMoving()
+        if CooldownReadyTracker and CooldownReadyTracker.SetDebugLogger then
+            CooldownReadyTracker.SetDebugLogger(appendDebug)
+        end
         refreshReservedSpells()
         if CooldownReadyTracker and CooldownReadyTracker.RefreshEquipment then
             CooldownReadyTracker.RefreshEquipment()
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.14", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.15", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -2688,6 +2691,27 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         else
             print("|cff40a9ffJustACBridge:|r 当前没有活动的已跟踪场地技能。")
         end
+    elseif command == "cooldown status" then
+        local status = CooldownReadyTracker and CooldownReadyTracker.GetStatus
+            and CooldownReadyTracker.GetStatus() or { spells = {}, trinkets = {} }
+        print("|cff40a9ffJustACBridge:|r 冷却就绪监控：")
+        for _, entry in ipairs(status.spells or {}) do
+            local state = entry.monitoring and "冷却计时中"
+                or (entry.pending and "等待冷却数据" or "当前就绪")
+            print(("  %s（法术 %s）：%s")
+                :format(entry.name or "法术", tostring(entry.spellID), state))
+        end
+        if #(status.trinkets or {}) == 0 then
+            print("  未检测到带主动 Use 效果的已装备饰品。")
+        else
+            for _, entry in ipairs(status.trinkets) do
+                local state = entry.monitoring and "冷却计时中"
+                    or (entry.pending and "等待冷却数据" or "当前就绪")
+                print(("  %s（物品 %s，主动法术 %s）：%s")
+                    :format(entry.name or ("饰品槽 " .. tostring(entry.slot)),
+                        tostring(entry.itemID), tostring(entry.spellID), state))
+            end
+        end
     elseif command == "debug" or command == "debug show" then
         showDebugWindow()
         print("|cff40a9ffJustACBridge:|r 已打开诊断日志；点击选中全部后按 Ctrl+C。")
@@ -2771,6 +2795,7 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         print("/jacb source list | <ID> - 查看或切换推荐源")
         print("/jacb ground on | off | status | reset - 场地持续时间与重复过滤")
         print("/jacb cooldown alert/sound/voice on|off / test - 冷却就绪提醒")
+        print("/jacb cooldown status - 查看枯萎凋零与主动饰品监控状态")
         print("/jacb movement on | off - 移动时跳过不可移动读条/蓄力/引导")
         print("/jacb range on | off - 跳过明确超出目标射程的动作")
         print("/jacb debug [show|on|off|clear] - 打开并复制完整诊断日志")
