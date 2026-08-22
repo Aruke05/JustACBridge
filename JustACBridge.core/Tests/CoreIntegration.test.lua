@@ -7,6 +7,7 @@ local speedSecret = false
 local auraSecret = false
 local secretAuraValue = {}
 local eventFrame
+local namedFrames = {}
 local soundCount = 0
 local voiceCount = 0
 local spokenVoiceID
@@ -46,7 +47,11 @@ local function makeWidget()
     local widget = {}
     local methods = {
         CreateTexture = function() return makeWidget() end,
-        CreateFontString = function() return makeWidget() end,
+        CreateFontString = function(self)
+            local child = makeWidget()
+            self.lastFontString = child
+            return child
+        end,
         SetScript = function(self, name, callback) self[name] = callback end,
         GetEffectiveScale = function() return 1 end,
         GetPoint = function() return "CENTER", nil, "CENTER", 0, 0 end,
@@ -107,9 +112,10 @@ C_VoiceChat = {
     end,
 }
 
-function CreateFrame()
+function CreateFrame(_, name)
     local frame = makeWidget()
     if not eventFrame then eventFrame = frame end
+    if name then namedFrames[name] = frame end
     return frame
 end
 function UnitClass() return classFile, classFile end
@@ -581,6 +587,7 @@ assert(soundCount == 1)
 assert(voiceCount == 1)
 assert(spokenVoiceID == 7)
 assert(spokenText == "枯萎凋零1")
+assert(namedFrames.JustACBridgeGroundAlertFrame.lastFontString.text == "枯萎凋零1")
 spellCharges[43265] = nil
 
 -- A movement-safe recommendation can still be rejected by the game at cast

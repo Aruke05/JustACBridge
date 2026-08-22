@@ -1347,7 +1347,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.16", GetTime() - debugStartedAt,
+            reason, "2.12.17", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1900,10 +1900,24 @@ local function getUsableTtsVoiceID()
     return configuredVoiceID
 end
 
+local function getCooldownAlertText(effect, name)
+    if effect and effect.kind == "spell"
+        and type(effect.charges) == "number" and effect.charges > 0
+        and (effect.spellID == 43265 or effect.spellID == 152280) then
+        return "枯萎凋零" .. tostring(effect.charges)
+    end
+    if effect and effect.kind == "trinket" then
+        if effect.slot == 13 then return "饰品1" end
+        if effect.slot == 14 then return "饰品2" end
+    end
+    return name .. "冷却就绪"
+end
+
 local function showCooldownReadyAlert(effect)
     local name = getGroundEffectName(effect)
+    local alertText = getCooldownAlertText(effect, name)
     if JustACBridgeDB.groundAlert ~= false and groundAlertFrame and groundAlertText then
-        groundAlertText:SetText(name .. " 冷却就绪")
+        groundAlertText:SetText(alertText)
         groundAlertFrame:SetAlpha(1)
         groundAlertFrame:Show()
         groundAlertExpiresAt = GetTime() + 2
@@ -1914,17 +1928,12 @@ local function showCooldownReadyAlert(effect)
         local spoken = false
         if voiceID then
             -- Patch 12.0 signature: voiceID, text, rate, volume, overlap.
-            local voiceText = name .. "冷却就绪"
-            if effect and effect.kind == "spell"
-                and type(effect.charges) == "number" and effect.charges > 0
-                and (effect.spellID == 43265 or effect.spellID == 152280) then
-                voiceText = "枯萎凋零" .. tostring(effect.charges)
-            end
             spoken = pcall(C_VoiceChat.SpeakText,
-                voiceID, voiceText, 0, 100, false)
+                voiceID, alertText, 0, 100, false)
         end
-        appendDebug(("ALERT cooldown-ready name=%s voiceID=%s spoken=%s")
-            :format(debugSafe(name), debugSafe(voiceID), tostring(spoken)))
+        appendDebug(("ALERT cooldown-ready name=%s text=%s voiceID=%s spoken=%s")
+            :format(debugSafe(name), debugSafe(alertText),
+                debugSafe(voiceID), tostring(spoken)))
     end
     if JustACBridgeDB.groundSound ~= false and PlaySound then
         local soundID = SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959
@@ -2332,7 +2341,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.16", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.17", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -2677,7 +2686,10 @@ SlashCmdList.JUSTACBRIDGE = function(message)
             and "|cff40a9ffJustACBridge:|r 冷却就绪语音已开启。"
             or "|cff40a9ffJustACBridge:|r 冷却就绪语音已关闭。")
     elseif command == "ground test" or command == "cooldown test" then
-        showCooldownReadyAlert({ name = "枯萎凋零", spellID = 43265 })
+        showCooldownReadyAlert({
+            kind = "spell", name = "枯萎凋零", spellID = 43265,
+            charges = 2, maxCharges = 2,
+        })
         print("|cff40a9ffJustACBridge:|r 已触发冷却就绪测试提醒。")
     elseif command == "ground reset" then
         if GroundEffectTracker and GroundEffectTracker.Reset then
