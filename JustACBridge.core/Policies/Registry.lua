@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 18
+Registry.schemaVersion = 19
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -254,6 +254,8 @@ local function copyCastSequenceRules(source)
                 spellID = spellID,
                 afterSpellID = afterSpellID,
                 afterAuraID = afterAuraID and afterAuraID > 0 and afterAuraID or nil,
+                passthroughEffectiveSpellIDs = copyArray(
+                    rule.passthroughEffectiveSpellIDs),
                 label = rule.label,
             }
         end

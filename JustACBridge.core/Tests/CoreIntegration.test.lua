@@ -496,6 +496,15 @@ JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 279302)
 
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "wyrm-1", 279302)
+-- Chosen of Frostbrood changes the live button to the exact recall override.
+-- That second release belongs wholly to JustAC and must bypass the first-cast
+-- Pillar gate without using a guessed timer or inferred talent state.
+effectiveSpellOverrides[279302] = 1265384
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 1265384)
+assert(JustACBridge.GetLosslessRecommendation().sourceSpellID == 279302)
+
+effectiveSpellOverrides[279302] = nil
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
 assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)

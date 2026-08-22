@@ -4,7 +4,7 @@ if not Registry then return end
 Registry.RegisterSpec("DEATHKNIGHT", 2, {
     id = "frost",
     name = "冰霜",
-    revision = 9,
+    revision = 10,
     fallbackActions = {
         { spellID = 49184, requireProc = true, label = "白霜凛风冲击" },
         { spellID = 49184, label = "凛风冲击" },
@@ -28,6 +28,9 @@ Registry.RegisterSpec("DEATHKNIGHT", 2, {
             spellID = 279302,      -- Frostwyrm's Fury
             afterSpellID = 51271,  -- Pillar of Frost
             afterAuraID = 51271,
+            -- Chosen of Frostbrood's recall is a live action-bar override.
+            -- Its timing stays entirely owned by JustAC.
+            passthroughEffectiveSpellIDs = { 1265384 },
             label = "冰霜巨龙之怒必须在冰霜之柱之后",
         },
     },
