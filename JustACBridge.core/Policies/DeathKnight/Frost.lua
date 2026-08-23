@@ -4,10 +4,20 @@ if not Registry then return end
 Registry.RegisterSpec("DEATHKNIGHT", 2, {
     id = "frost",
     name = "冰霜",
-    revision = 11,
+    revision = 12,
     -- M4 may consume Howling Blast when it is present in JustAC's real queue,
     -- but never invents a ranged filler from proc/highlight/final-fallback data.
     preserveSourceQueueOnly = true,
+    -- At confirmed range, M5 accepts only a real JustAC Howling Blast entry;
+    -- every other action waits while the player handles movement.
+    losslessSourceQueueOnlyBeyond = {
+        beyond = 5,
+        allow = { 49184 },
+    },
+    preserveSourceQueueOnlyBeyond = {
+        beyond = 5,
+        allow = { 49184 },
+    },
     fallbackActions = {
         { spellID = 49184, requireProc = true, label = "白霜凛风冲击" },
         { spellID = 49184, label = "凛风冲击" },

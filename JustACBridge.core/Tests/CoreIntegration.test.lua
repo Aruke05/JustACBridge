@@ -22,6 +22,7 @@ local testPreserveQueue
 local burstTriggers = {}
 local burstCues = {}
 local highlightSpellID
+local targetWithin5
 local cooldownSpellID
 local cooldownEndsAt = 0
 local effectiveSpellOverrides = {}
@@ -166,6 +167,10 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     IsConfirmedOutOfRange = function() return false end,
     IsBurstCue = function(id) return burstCues[id] == true end,
     GetHighlightCastSpell = function() return highlightSpellID end,
+    IsTargetWithin = function(yards)
+        if yards == 5 then return targetWithin5 end
+        return nil
+    end,
     GetDetectedBurstTriggers = function() return burstTriggers end,
 }))
 
@@ -554,6 +559,40 @@ JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
 assert(JustACBridge.GetLosslessRecommendation().finalFallback == true)
 assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+
+-- M5 uses the same "no JustAC Howling Blast, keep running" rule only after
+-- JustAC's range probes positively prove that the target is beyond melee.
+targetWithin5 = false
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation() == nil)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+
+testQueue = { 51271, 49184 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
+
+testQueue = { 196770 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation() == nil)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+
+testQueue = { 49184 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
+
+testQueue = {}
+targetWithin5 = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
+assert(JustACBridge.GetLosslessRecommendation().finalFallback == true)
+
+testQueue = { 196770 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 196770)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 196770)
+targetWithin5 = nil
 highlightSpellID = nil
 
 -- Raise Dead remains reserved, but Remorseless Winter is an ordinary rotational

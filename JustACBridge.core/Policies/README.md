@@ -62,6 +62,11 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
 - `preserveSourceQueueOnly`：M4 只允许选择推荐源当前队列中真实存在的动作；禁用 M4
   的维护技能注入、M5 结果复用、高亮兜底和专精最终兜底。用于不能把 Proc/高亮近似
   当作推荐源已选择动作的专精；M5 不受影响。
+- `losslessSourceQueueOnlyBeyond`：用 `beyond` 指定距离、`allow` 指定允许法术；当
+  推荐源能明确证明目标超过该距离时，M5 只从当前原队列选择允许法术，禁用其他队列
+  动作和所有注入/兜底；距离未知时不改变原行为。
+- `preserveSourceQueueOnlyBeyond`：与上一项相同，但作用于 M4，并继续执行 M4 的爆发
+  保留与按住安全过滤。
 - `maintenanceBuffs`：自身 Buff 明确不存在时插入的维护技能。每项登记
   `spellID`、`auraID`，并用 `lossless`/`preserve` 指定作用于哪一路；只有光环缺失、
   法术已学习、冷却明确就绪且快捷键已绑定时才会加入；`reserveCharges` 可要求自动
@@ -75,6 +80,14 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
     name = "示例",
     revision = 2,
     preserveSourceQueueOnly = true,
+    losslessSourceQueueOnlyBeyond = {
+        beyond = 5,
+        allow = { 8001 },
+    },
+    preserveSourceQueueOnlyBeyond = {
+        beyond = 5,
+        allow = { 8001 },
+    },
     reserve = { 1001, 1002 },
     reservePassthrough = { 1000 },
     reserveExclusions = { 1003 },

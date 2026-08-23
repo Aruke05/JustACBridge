@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 20
+Registry.schemaVersion = 21
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -46,6 +46,14 @@ local function appendRangeSequenceRules(target, source)
     for _, rule in ipairs(copyRangeSequenceRules(source)) do
         target[#target + 1] = rule
     end
+end
+
+local function copySourceQueueOnlyBeyond(rule)
+    if type(rule) ~= "table" then return nil end
+    local beyond = tonumber(rule.beyond)
+    local allow = copyArray(rule.allow)
+    if not beyond or beyond <= 0 or #allow == 0 then return nil end
+    return { beyond = beyond, allow = allow }
 end
 
 local function copyGroundEffects(source)
@@ -375,6 +383,12 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         useDetectedBurstTriggers = specPolicy.useDetectedBurstTriggers ~= false,
         preserveUsesCurrentSafety = specPolicy.preserveUsesCurrentSafety == true,
         preserveSourceQueueOnly = specPolicy.preserveSourceQueueOnly == true,
+        losslessSourceQueueOnlyBeyond = copySourceQueueOnlyBeyond(
+            specPolicy.losslessSourceQueueOnlyBeyond
+                or classPolicy.losslessSourceQueueOnlyBeyond),
+        preserveSourceQueueOnlyBeyond = copySourceQueueOnlyBeyond(
+            specPolicy.preserveSourceQueueOnlyBeyond
+                or classPolicy.preserveSourceQueueOnlyBeyond),
         reserve = copyArray(specPolicy.reserve),
         reservePassthrough = copyArray(classPolicy.reservePassthrough),
         reserveExclusions = copyArray(classPolicy.reserveExclusions),
@@ -432,6 +446,14 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         end
         if patch.preserveSourceQueueOnly ~= nil then
             result.preserveSourceQueueOnly = patch.preserveSourceQueueOnly == true
+        end
+        if patch.losslessSourceQueueOnlyBeyond ~= nil then
+            result.losslessSourceQueueOnlyBeyond = copySourceQueueOnlyBeyond(
+                patch.losslessSourceQueueOnlyBeyond)
+        end
+        if patch.preserveSourceQueueOnlyBeyond ~= nil then
+            result.preserveSourceQueueOnlyBeyond = copySourceQueueOnlyBeyond(
+                patch.preserveSourceQueueOnlyBeyond)
         end
         if patch.reserve then
             replaceArray(result.reserve, patch.reserve)

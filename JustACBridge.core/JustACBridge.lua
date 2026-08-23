@@ -1085,6 +1085,45 @@ local function findSafeRecommendation(queue)
     return nil
 end
 
+local function getActiveSourceQueueOnlyBeyondRule(field)
+    local rule = currentPolicy and currentPolicy[field]
+    local beyond = type(rule) == "table" and tonumber(rule.beyond) or nil
+    if not beyond or beyond <= 0 or not rule.allow or #rule.allow == 0 then
+        return nil
+    end
+    local ok, within = sourceCall("IsTargetWithin", beyond)
+    -- Range uncertainty must not be turned into a guessed mechanics state.
+    return ok and not isSecret(within) and within == false and rule or nil
+end
+
+local function findAllowedSourceQueueRecommendation(queue, allow, position)
+    local count = math.min(#queue, QUEUE_SCAN_COUNT)
+    for index = 1, count do
+        local queueValue = queue[index]
+        local positionEligible = position == 1
+            or not isReservedQueueValue(queueValue)
+                and not isReserveExcludedQueueValue(queueValue)
+        local safe
+        if position == 2 then
+            safe = isPreserveSafeQueueValue(queueValue)
+        else
+            safe = isSafeQueueValue(queueValue, position)
+        end
+        if type(queueValue) == "number" and queueValue > 0
+            and spellListContains(allow, queueValue)
+            and positionEligible and safe
+            and isUsableNow(queueValue) then
+            local data = getSpellData(queueValue, position)
+            if data and data.plainHotkey ~= "" then
+                data.sourceQueueOnly = true
+                data.sourceQueueOnlyBeyond = true
+                return data
+            end
+        end
+    end
+    return nil
+end
+
 local function refreshPlayerMoving()
     if not GetUnitSpeed then
         return
@@ -1416,7 +1455,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.22", GetTime() - debugStartedAt,
+            reason, "2.12.23", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1874,24 +1913,41 @@ local function refresh()
 
     policyFallbackTraces = {}
     policyPriorityCueTraces = {}
-    local lossless = findPolicyPriorityCueRecommendation()
-        or findSourceBurstCueRecommendation(queue)
-        or findMaintenanceRecommendation(1)
-        or findSafeRecommendation(queue)
-    if not lossless then
+    local losslessQueueOnlyRule = getActiveSourceQueueOnlyBeyondRule(
+        "losslessSourceQueueOnlyBeyond")
+    local lossless
+    if losslessQueueOnlyRule then
+        lossless = findAllowedSourceQueueRecommendation(
+            queue, losslessQueueOnlyRule.allow, 1)
+    else
+        lossless = findPolicyPriorityCueRecommendation()
+            or findSourceBurstCueRecommendation(queue)
+            or findMaintenanceRecommendation(1)
+            or findSafeRecommendation(queue)
+    end
+    if not lossless and not losslessQueueOnlyRule then
         lossless = findPolicyFinalFallback(1)
     end
     local preserveQueueOnly = currentPolicy
         and currentPolicy.preserveSourceQueueOnly == true
-    local preserve = not preserveQueueOnly and findMaintenanceRecommendation(2) or nil
-    if not preserve and not preserveQueueOnly and not separatePreserveQueue
+    local preserveQueueOnlyRule = getActiveSourceQueueOnlyBeyondRule(
+        "preserveSourceQueueOnlyBeyond")
+    local preserve
+    if preserveQueueOnlyRule then
+        preserve = findAllowedSourceQueueRecommendation(
+            preserveQueue, preserveQueueOnlyRule.allow, 2)
+    elseif not preserveQueueOnly then
+        preserve = findMaintenanceRecommendation(2)
+    end
+    if not preserve and not preserveQueueOnlyRule
+        and not preserveQueueOnly and not separatePreserveQueue
         and lossless and lossless.plainHotkey ~= ""
         and not isReservedQueueValue(lossless.queueValue)
         and not isReserveExcludedQueueValue(lossless.queueValue)
         and isPreserveSafeQueueValue(lossless.queueValue) then
         preserve = copyTable(lossless)
         preserve.position = 2
-    elseif not preserve then
+    elseif not preserve and not preserveQueueOnlyRule then
         -- A movement fallback may originate from any queue position.  Rescan
         -- from the front so reserve mode still gets the best safe non-burst
         -- action rather than accidentally skipping an earlier candidate.
@@ -2415,7 +2471,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.22", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.23", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
