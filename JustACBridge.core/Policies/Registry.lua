@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 19
+Registry.schemaVersion = 20
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -374,6 +374,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         ruleset = "base",
         useDetectedBurstTriggers = specPolicy.useDetectedBurstTriggers ~= false,
         preserveUsesCurrentSafety = specPolicy.preserveUsesCurrentSafety == true,
+        preserveSourceQueueOnly = specPolicy.preserveSourceQueueOnly == true,
         reserve = copyArray(specPolicy.reserve),
         reservePassthrough = copyArray(classPolicy.reservePassthrough),
         reserveExclusions = copyArray(classPolicy.reserveExclusions),
@@ -428,6 +429,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         end
         if patch.preserveUsesCurrentSafety ~= nil then
             result.preserveUsesCurrentSafety = patch.preserveUsesCurrentSafety == true
+        end
+        if patch.preserveSourceQueueOnly ~= nil then
+            result.preserveSourceQueueOnly = patch.preserveSourceQueueOnly == true
         end
         if patch.reserve then
             replaceArray(result.reserve, patch.reserve)

@@ -59,6 +59,9 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
 - `fallbackActions`：仅在玩家移动且 JustAC 的前 8 项没有安全可执行动作时使用的
   有序兜底。支持 `spellID`、`minEnemies`、`maxEnemies`、`requireProc` 和显示用
   `label`；仍必须通过已学习、可用、射程、移动安全和快捷键检查。
+- `preserveSourceQueueOnly`：M4 只允许选择推荐源当前队列中真实存在的动作；禁用 M4
+  的维护技能注入、M5 结果复用、高亮兜底和专精最终兜底。用于不能把 Proc/高亮近似
+  当作推荐源已选择动作的专精；M5 不受影响。
 - `maintenanceBuffs`：自身 Buff 明确不存在时插入的维护技能。每项登记
   `spellID`、`auraID`，并用 `lossless`/`preserve` 指定作用于哪一路；只有光环缺失、
   法术已学习、冷却明确就绪且快捷键已绑定时才会加入；`reserveCharges` 可要求自动
@@ -71,6 +74,7 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
     id = "example",
     name = "示例",
     revision = 2,
+    preserveSourceQueueOnly = true,
     reserve = { 1001, 1002 },
     reservePassthrough = { 1000 },
     reserveExclusions = { 1003 },

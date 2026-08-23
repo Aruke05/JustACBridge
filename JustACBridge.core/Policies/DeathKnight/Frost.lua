@@ -4,7 +4,10 @@ if not Registry then return end
 Registry.RegisterSpec("DEATHKNIGHT", 2, {
     id = "frost",
     name = "冰霜",
-    revision = 10,
+    revision = 11,
+    -- M4 may consume Howling Blast when it is present in JustAC's real queue,
+    -- but never invents a ranged filler from proc/highlight/final-fallback data.
+    preserveSourceQueueOnly = true,
     fallbackActions = {
         { spellID = 49184, requireProc = true, label = "白霜凛风冲击" },
         { spellID = 49184, label = "凛风冲击" },

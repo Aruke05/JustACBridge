@@ -21,6 +21,7 @@ local testQueue = { 43265, 47541 }
 local testPreserveQueue
 local burstTriggers = {}
 local burstCues = {}
+local highlightSpellID
 local cooldownSpellID
 local cooldownEndsAt = 0
 local effectiveSpellOverrides = {}
@@ -164,6 +165,7 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     IsChanneled = function(id) return channeledSpells[id] == true end,
     IsConfirmedOutOfRange = function() return false end,
     IsBurstCue = function(id) return burstCues[id] == true end,
+    GetHighlightCastSpell = function() return highlightSpellID end,
     GetDetectedBurstTriggers = function() return burstTriggers end,
 }))
 
@@ -528,6 +530,32 @@ JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 279302)
 playerAuras[51271] = nil
 
+-- Frost M4 treats JustAC's actual queue as the only authority for ranged
+-- movement filler. A queued Howling Blast passes through, but highlight/proc
+-- data and the specialization fallback cannot invent one when it is absent.
+testQueue = { 49184 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
+
+testQueue = { 51271, 49184 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 51271)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
+
+highlightSpellID = 49184
+testQueue = { 51271 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 51271)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+
+testQueue = {}
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
+assert(JustACBridge.GetLosslessRecommendation().finalFallback == true)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+highlightSpellID = nil
+
 -- Raise Dead remains reserved, but Remorseless Winter is an ordinary rotational
 -- cooldown rather than a blanket M4 blacklist. After skipping Raise Dead, M4
 -- must keep JustAC's Remorseless Winter recommendation instead of advancing.
@@ -570,9 +598,9 @@ assert(missilesAfterTriggeredStart.isChanneling == true
     and missilesAfterTriggeredStart.channelBlocksInput == true)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "missiles-1", 5143)
 
--- No normal recommendation must never leave either trigger empty.  This is a
--- core rule, not a Frost Mage exception: every independently maintained
--- class/spec policy must reach its own final fallback through the same path.
+-- M5 keeps a bound specialization fallback when no normal recommendation
+-- exists. Frost DK M4 deliberately opts out above because it is a literal
+-- filtered JustAC queue and must not invent a ranged filler.
 local fallbackCases = {
     { class = "MAGE", spec = 2, spell = 2948 },
     { class = "MAGE", spec = 3, spell = 30455 },

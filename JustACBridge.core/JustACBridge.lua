@@ -1128,6 +1128,13 @@ local function findReserveRecommendation(queue, startIndex)
         return nil
     end
 
+    -- Some policies require M4 to remain a literal filtered view of the
+    -- source queue. Do not manufacture an action from Blizzard highlight data
+    -- when no matching entry exists in that queue.
+    if currentPolicy and currentPolicy.preserveSourceQueueOnly == true then
+        return nil
+    end
+
     -- Highlight mode can expose the next valid Blizzard recommendation when
     -- the primary button is hidden/blacklisted. Use it only as a bounded
     -- fallback; the normal hot path above remains a table scan.
@@ -1409,7 +1416,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.21", GetTime() - debugStartedAt,
+            reason, "2.12.22", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1874,8 +1881,10 @@ local function refresh()
     if not lossless then
         lossless = findPolicyFinalFallback(1)
     end
-    local preserve = findMaintenanceRecommendation(2)
-    if not preserve and not separatePreserveQueue
+    local preserveQueueOnly = currentPolicy
+        and currentPolicy.preserveSourceQueueOnly == true
+    local preserve = not preserveQueueOnly and findMaintenanceRecommendation(2) or nil
+    if not preserve and not preserveQueueOnly and not separatePreserveQueue
         and lossless and lossless.plainHotkey ~= ""
         and not isReservedQueueValue(lossless.queueValue)
         and not isReserveExcludedQueueValue(lossless.queueValue)
@@ -1888,10 +1897,11 @@ local function refresh()
         -- action rather than accidentally skipping an earlier candidate.
         preserve = findReserveRecommendation(
             preserveQueue,
-            playerIsMoving and JustACBridgeDB.movementFilter ~= false
+            preserveQueueOnly and 1
+                or playerIsMoving and JustACBridgeDB.movementFilter ~= false
                 and 1 or (separatePreserveQueue and 1 or (lossless and 2 or 1))
         )
-        if not preserve then
+        if not preserve and not preserveQueueOnly then
             preserve = findPolicyFinalFallback(2)
         end
     end
@@ -2405,7 +2415,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.21", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.22", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
