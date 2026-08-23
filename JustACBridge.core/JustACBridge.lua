@@ -63,6 +63,7 @@ local movementLastDebugAt = -math.huge
 local successfulCastResumeTriggerAt = {}
 local successfulCastSequenceSerial = 0
 local successfulCastSequenceStep = {}
+local successfulCastSequenceAt = {}
 local MOVEMENT_FLAP_WINDOW_SECONDS = 0.12
 local MOVEMENT_STOP_DEBOUNCE_SECONDS = 0.25
 local queueReady = true
@@ -585,6 +586,7 @@ end
 local function resetSuccessfulCastSequences()
     successfulCastSequenceSerial = 0
     successfulCastSequenceStep = {}
+    successfulCastSequenceAt = {}
 end
 
 local function isCastSequenceSafeQueueValue(queueValue)
@@ -607,9 +609,17 @@ local function isCastSequenceSafeQueueValue(queueValue)
             if not effectivePassthrough then
                 local actionStep = successfulCastSequenceStep[spellID] or 0
                 local prerequisiteStep = successfulCastSequenceStep[afterSpellID] or 0
+                local recentPrerequisite = prerequisiteStep > actionStep
+                local withinSeconds = tonumber(rule.withinSeconds)
+                if recentPrerequisite and withinSeconds and withinSeconds > 0 then
+                    local castAt = successfulCastSequenceAt[afterSpellID]
+                    local elapsed = castAt and GetTime() - castAt or nil
+                    recentPrerequisite = elapsed ~= nil and elapsed >= 0
+                        and elapsed < withinSeconds
+                end
                 local auraProvesOrder = rule.afterAuraID
                     and hasObservablePlayerAura(tonumber(rule.afterAuraID)) or false
-                if prerequisiteStep <= actionStep and not auraProvesOrder then
+                if not recentPrerequisite and not auraProvesOrder then
                     return false
                 end
             end
@@ -630,6 +640,7 @@ local function recordSuccessfulCastSequence(spellID)
             if configuredID and spellListContains({ configuredID }, spellID) then
                 successfulCastSequenceSerial = successfulCastSequenceSerial + 1
                 successfulCastSequenceStep[configuredID] = successfulCastSequenceSerial
+                successfulCastSequenceAt[configuredID] = GetTime()
                 matched = true
             end
         end
@@ -1455,7 +1466,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.23", GetTime() - debugStartedAt,
+            reason, "2.12.24", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -2471,7 +2482,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.23", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.24", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 

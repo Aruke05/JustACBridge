@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 21
+Registry.schemaVersion = 22
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -257,11 +257,14 @@ local function copyCastSequenceRules(source)
         local spellID = type(rule) == "table" and tonumber(rule.spellID) or nil
         local afterSpellID = type(rule) == "table" and tonumber(rule.afterSpellID) or nil
         local afterAuraID = type(rule) == "table" and tonumber(rule.afterAuraID) or nil
+        local withinSeconds = type(rule) == "table" and tonumber(rule.withinSeconds) or nil
         if spellID and spellID > 0 and afterSpellID and afterSpellID > 0 then
             result[#result + 1] = {
                 spellID = spellID,
                 afterSpellID = afterSpellID,
                 afterAuraID = afterAuraID and afterAuraID > 0 and afterAuraID or nil,
+                withinSeconds = withinSeconds and withinSeconds > 0
+                    and withinSeconds or nil,
                 passthroughEffectiveSpellIDs = copyArray(
                     rule.passthroughEffectiveSpellIDs),
                 label = rule.label,

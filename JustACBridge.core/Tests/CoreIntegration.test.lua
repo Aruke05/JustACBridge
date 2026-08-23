@@ -502,6 +502,17 @@ testQueue = { 279302, 49184 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 279302)
 
+-- A successful Pillar must not become a permanent token. Once the conservative
+-- 10-second event window expires and no live aura is observable, Fury waits
+-- for the next Pillar instead of firing later in its cooldown cycle.
+now = 110.1
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
+assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "pillar-1b", 51271)
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 279302)
+
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "wyrm-1", 279302)
 -- Chosen of Frostbrood changes the live button to the exact recall override.
 -- That second release belongs wholly to JustAC and must bypass the first-cast
@@ -522,6 +533,7 @@ assert(JustACBridge.GetLosslessRecommendation().spellID == 279302)
 eventFrame.OnEvent(eventFrame, "PLAYER_REGEN_ENABLED")
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
+now = 100
 
 -- An explicitly observable live Pillar aura recovers the ordering proof after
 -- reload/zone transitions; secret or missing aura data still fails closed.

@@ -4,7 +4,7 @@ if not Registry then return end
 Registry.RegisterSpec("DEATHKNIGHT", 2, {
     id = "frost",
     name = "冰霜",
-    revision = 12,
+    revision = 13,
     -- M4 may consume Howling Blast when it is present in JustAC's real queue,
     -- but never invents a ranged filler from proc/highlight/final-fallback data.
     preserveSourceQueueOnly = true,
@@ -41,6 +41,9 @@ Registry.RegisterSpec("DEATHKNIGHT", 2, {
             spellID = 279302,      -- Frostwyrm's Fury
             afterSpellID = 51271,  -- Pillar of Frost
             afterAuraID = 51271,
+            -- The base buff lasts 12 sec. When aura data is hidden, accept
+            -- only the first 10 sec after the authoritative success event.
+            withinSeconds = 10,
             -- Chosen of Frostbrood's recall is a live action-bar override.
             -- Its timing stays entirely owned by JustAC.
             passthroughEffectiveSpellIDs = { 1265384 },
