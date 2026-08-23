@@ -67,6 +67,9 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
   动作和所有注入/兜底；距离未知时不改变原行为。
 - `preserveSourceQueueOnlyBeyond`：与上一项相同，但作用于 M4，并继续执行 M4 的爆发
   保留与按住安全过滤。
+- `castFollowups`：成功施放 `triggerSpells` 中的精确事件 ID 后，在 `withinSeconds`
+  窗口内优先推荐 `spellID`；用 `lossless`/`preserve` 指定输出。跟随技能必须明确不在
+  冷却且满足归属、可用、安全和绑定条件；冷却或未知状态立即放弃，不阻塞原队列。
 - `maintenanceBuffs`：自身 Buff 明确不存在时插入的维护技能。每项登记
   `spellID`、`auraID`，并用 `lossless`/`preserve` 指定作用于哪一路；只有光环缺失、
   法术已学习、冷却明确就绪且快捷键已绑定时才会加入；`reserveCharges` 可要求自动
@@ -87,6 +90,15 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
     preserveSourceQueueOnlyBeyond = {
         beyond = 5,
         allow = { 8001 },
+    },
+    castFollowups = {
+        {
+            spellID = 8002,
+            triggerSpells = { 8001 },
+            withinSeconds = 4,
+            lossless = true,
+            preserve = false,
+        },
     },
     reserve = { 1001, 1002 },
     reservePassthrough = { 1000 },

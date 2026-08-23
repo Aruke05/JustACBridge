@@ -16,7 +16,7 @@ dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
 
 local registry = JustACBridgePolicyRegistry
-assert(registry.schemaVersion == 22)
+assert(registry.schemaVersion == 23)
 
 local arcane = assert(registry.Resolve("MAGE", 1, 120007))
 assert(arcane.storageKey == "MAGE_1" and arcane.id == "arcane")
@@ -124,7 +124,7 @@ assert(frostDK.fallbackActions[1].spellID == 49184 and frostDK.fallbackActions[1
 assert(#frostDK.rotationExclusions == 1 and frostDK.rotationExclusions[1] == 49576)
 
 local frostDK121 = assert(registry.Resolve("DEATHKNIGHT", 2, 120100))
-assert(frostDK121.ruleset == "base" and frostDK121.revision == 13)
+assert(frostDK121.ruleset == "base" and frostDK121.revision == 14)
 assert(frostDK121.preserveSourceQueueOnly == true)
 assert(frostDK121.losslessSourceQueueOnlyBeyond.beyond == 5
     and frostDK121.losslessSourceQueueOnlyBeyond.allow[1] == 49184)
@@ -144,6 +144,12 @@ assert(frostDK121.castSequenceRules[1].spellID == 279302
     and frostDK121.castSequenceRules[1].withinSeconds == 10)
 assert(#frostDK121.castSequenceRules[1].passthroughEffectiveSpellIDs == 1
     and frostDK121.castSequenceRules[1].passthroughEffectiveSpellIDs[1] == 1265384)
+assert(#frostDK121.castFollowups == 1)
+assert(frostDK121.castFollowups[1].spellID == 46585
+    and frostDK121.castFollowups[1].triggerSpells[1] == 279302
+    and frostDK121.castFollowups[1].withinSeconds == 4
+    and frostDK121.castFollowups[1].lossless == true
+    and frostDK121.castFollowups[1].preserve == false)
 
 local unholy = assert(registry.Resolve("DEATHKNIGHT", 3, 120007))
 assert(unholy.revision == 4)

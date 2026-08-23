@@ -64,6 +64,7 @@ local successfulCastResumeTriggerAt = {}
 local successfulCastSequenceSerial = 0
 local successfulCastSequenceStep = {}
 local successfulCastSequenceAt = {}
+local pendingCastFollowups = {}
 local MOVEMENT_FLAP_WINDOW_SECONDS = 0.12
 local MOVEMENT_STOP_DEBOUNCE_SECONDS = 0.25
 local queueReady = true
@@ -587,6 +588,7 @@ local function resetSuccessfulCastSequences()
     successfulCastSequenceSerial = 0
     successfulCastSequenceStep = {}
     successfulCastSequenceAt = {}
+    pendingCastFollowups = {}
 end
 
 local function isCastSequenceSafeQueueValue(queueValue)
@@ -642,6 +644,28 @@ local function recordSuccessfulCastSequence(spellID)
                 successfulCastSequenceStep[configuredID] = successfulCastSequenceSerial
                 successfulCastSequenceAt[configuredID] = GetTime()
                 matched = true
+            end
+        end
+    end
+    return matched
+end
+
+local function recordSuccessfulCastFollowups(spellID)
+    spellID = tonumber(spellID)
+    if not spellID then return false end
+    local matched = false
+    for _, rule in ipairs(currentPolicy and currentPolicy.castFollowups or {}) do
+        if spellID == tonumber(rule.spellID) then
+            pendingCastFollowups[rule] = nil
+            matched = true
+        end
+        for _, triggerSpellID in ipairs(rule.triggerSpells or {}) do
+            -- Trigger IDs are intentionally exact. A transformed second cast
+            -- must not silently masquerade as the base first-cast event.
+            if spellID == tonumber(triggerSpellID) then
+                pendingCastFollowups[rule] = GetTime()
+                matched = true
+                break
             end
         end
     end
@@ -978,6 +1002,51 @@ local function isPolicyPriorityCueReadyNow(spellID)
     local ready = usableOK and not isSecret(usable) and usable == true
         and cooldownOK and not isSecret(onCooldown) and onCooldown == false
     return ready, usableOK, usable, cooldownOK, onCooldown
+end
+
+local function findPolicyCastFollowupRecommendation(position)
+    for _, rule in ipairs(currentPolicy and currentPolicy.castFollowups or {}) do
+        local enabled = position == 1 and rule.lossless == true
+            or position == 2 and rule.preserve == true
+        local triggeredAt = enabled and pendingCastFollowups[rule] or nil
+        local withinSeconds = tonumber(rule.withinSeconds)
+        local elapsed = triggeredAt and GetTime() - triggeredAt or nil
+        if triggeredAt and (not withinSeconds or elapsed < 0
+            or elapsed >= withinSeconds) then
+            pendingCastFollowups[rule] = nil
+        elseif triggeredAt then
+            local spellID = tonumber(rule.spellID)
+            if not spellID or not isSpellKnown(spellID) then
+                pendingCastFollowups[rule] = nil
+            else
+                local ready, usableOK, usable, cooldownOK, onCooldown =
+                    isPolicyPriorityCueReadyNow(spellID)
+                -- A definite cooldown, or cooldown state that cannot be
+                -- positively observed, abandons this follow-up immediately.
+                -- The caller then continues through the untouched source
+                -- queue in the same refresh; this rule can never stall M5.
+                if not cooldownOK or isSecret(onCooldown)
+                    or onCooldown ~= false then
+                    pendingCastFollowups[rule] = nil
+                elseif ready then
+                    local safe = position == 1 and isSafeQueueValue(spellID, 1)
+                        or position == 2 and isPreserveSafeQueueValue(spellID)
+                    local data = safe and getSpellData(spellID, position) or nil
+                    if data and data.plainHotkey ~= "" then
+                        data.policyCastFollowup = true
+                        data.policyCastFollowupLabel = rule.label
+                        data.policyCastFollowupTriggeredAt = triggeredAt
+                        return data
+                    elseif not data or data.plainHotkey == "" then
+                        pendingCastFollowups[rule] = nil
+                    end
+                elseif not usableOK or isSecret(usable) or usable == nil then
+                    pendingCastFollowups[rule] = nil
+                end
+            end
+        end
+    end
+    return nil
 end
 
 -- A recommendation source may explicitly mark a queue entry as its current
@@ -1466,7 +1535,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.24", GetTime() - debugStartedAt,
+            reason, "2.12.25", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1924,13 +1993,14 @@ local function refresh()
 
     policyFallbackTraces = {}
     policyPriorityCueTraces = {}
-    local losslessQueueOnlyRule = getActiveSourceQueueOnlyBeyondRule(
+    local lossless = findPolicyCastFollowupRecommendation(1)
+    local losslessQueueOnlyRule = not lossless
+        and getActiveSourceQueueOnlyBeyondRule(
         "losslessSourceQueueOnlyBeyond")
-    local lossless
-    if losslessQueueOnlyRule then
+    if not lossless and losslessQueueOnlyRule then
         lossless = findAllowedSourceQueueRecommendation(
             queue, losslessQueueOnlyRule.allow, 1)
-    else
+    elseif not lossless then
         lossless = findPolicyPriorityCueRecommendation()
             or findSourceBurstCueRecommendation(queue)
             or findMaintenanceRecommendation(1)
@@ -2482,7 +2552,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.24", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.25", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -2575,6 +2645,9 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         if recordSuccessfulCastSequence(succeededSpellID) then
             -- A strict policy-owned action order changed even when JustAC's
             -- cached queue did not.
+            lastSignature = nil
+        end
+        if recordSuccessfulCastFollowups(succeededSpellID) then
             lastSignature = nil
         end
         if recordSuccessfulCastResumeTrigger(succeededSpellID) then

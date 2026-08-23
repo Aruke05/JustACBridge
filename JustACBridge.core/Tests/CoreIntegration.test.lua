@@ -514,6 +514,13 @@ JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 279302)
 
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "wyrm-1", 279302)
+JustACBridge.Refresh()
+local raiseAfterWyrm = JustACBridge.GetLosslessRecommendation()
+assert(raiseAfterWyrm.spellID == 46585
+    and raiseAfterWyrm.policyCastFollowup == true)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "raise-1", 46585)
+
 -- Chosen of Frostbrood changes the live button to the exact recall override.
 -- That second release belongs wholly to JustAC and must bypass the first-cast
 -- Pillar gate without using a guessed timer or inferred talent state.
@@ -521,6 +528,7 @@ effectiveSpellOverrides[279302] = 1265384
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 1265384)
 assert(JustACBridge.GetLosslessRecommendation().sourceSpellID == 279302)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "recall-1", 1265384)
 
 effectiveSpellOverrides[279302] = nil
 JustACBridge.Refresh()
@@ -530,6 +538,18 @@ assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "pillar-2", 51271)
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 279302)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "wyrm-2", 279302)
+cooldownSpellID = 46585
+cooldownEndsAt = now + 20
+testQueue = { 49184 }
+JustACBridge.Refresh()
+local cooldownRaiseFallback = JustACBridge.GetLosslessRecommendation()
+assert(cooldownRaiseFallback.spellID == 49184
+    and cooldownRaiseFallback.policyCastFollowup ~= true)
+cooldownSpellID = nil
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
+assert(JustACBridge.GetLosslessRecommendation().policyCastFollowup ~= true)
 eventFrame.OnEvent(eventFrame, "PLAYER_REGEN_ENABLED")
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
@@ -537,6 +557,7 @@ now = 100
 
 -- An explicitly observable live Pillar aura recovers the ordering proof after
 -- reload/zone transitions; secret or missing aura data still fails closed.
+testQueue = { 279302, 49184 }
 playerAuras[51271] = secretAuraValue
 auraSecret = true
 JustACBridge.Refresh()

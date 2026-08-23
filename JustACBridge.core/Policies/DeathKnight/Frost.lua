@@ -4,7 +4,7 @@ if not Registry then return end
 Registry.RegisterSpec("DEATHKNIGHT", 2, {
     id = "frost",
     name = "冰霜",
-    revision = 13,
+    revision = 14,
     -- M4 may consume Howling Blast when it is present in JustAC's real queue,
     -- but never invents a ranged filler from proc/highlight/final-fallback data.
     preserveSourceQueueOnly = true,
@@ -48,6 +48,16 @@ Registry.RegisterSpec("DEATHKNIGHT", 2, {
             -- Its timing stays entirely owned by JustAC.
             passthroughEffectiveSpellIDs = { 1265384 },
             label = "冰霜巨龙之怒必须在冰霜之柱之后",
+        },
+    },
+    castFollowups = {
+        {
+            spellID = 46585,       -- Raise Dead
+            triggerSpells = { 279302 }, -- First Frostwyrm's Fury only
+            withinSeconds = 4,
+            lossless = true,
+            preserve = false,
+            label = "冰霜巨龙之怒后接亡者复生",
         },
     },
 })
