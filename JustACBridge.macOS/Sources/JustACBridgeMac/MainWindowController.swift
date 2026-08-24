@@ -201,7 +201,8 @@ final class MainWindowController: NSWindowController {
       applyInputActions(packet)
     } else {
       input.setActions(
-        lossless: nil, preserveBurst: nil, suppressWithoutBinding: lastBusy, canPulse: false)
+        lossless: nil, preserveBurst: nil, suppressWithoutBinding: lastBusy,
+        losslessCanPulse: false, preserveCanPulse: false)
     }
 
     stateLabel.stringValue = update.state
@@ -224,9 +225,20 @@ final class MainWindowController: NSWindowController {
         ? "持续引导保护：两个功能键均已屏蔽"
         : "施法读条保护：两个功能键均已屏蔽"
       stateLabel.textColor = .systemBlue
-    } else if !packet.queueReady {
+    } else if !packet.queueReady && !packet.lossless.offGCD && !packet.preserveBurst.offGCD {
       stateLabel.stringValue = "等待最佳入队窗口：GCD 约剩 \(packet.gcdRemainingMs)ms"
       stateLabel.textColor = .systemOrange
+    } else if !packet.queueReady {
+      let slot: String
+      if packet.lossless.offGCD && packet.preserveBurst.offGCD {
+        slot = "M5/M4"
+      } else if packet.lossless.offGCD {
+        slot = "M5"
+      } else {
+        slot = "M4"
+      }
+      stateLabel.stringValue = "\(slot) Off-GCD 通道开放：GCD 约剩 \(packet.gcdRemainingMs)ms"
+      stateLabel.textColor = .systemGreen
     } else if let remaining = blizzardSuppressionRemaining() {
       stateLabel.stringValue = String(format: "已取消暴风雪：%.1f 秒内不再释放", remaining)
       stateLabel.textColor = .systemOrange
@@ -241,7 +253,7 @@ final class MainWindowController: NSWindowController {
       packet.isChanneling ? "channeling" : packet.isCasting ? "casting/empowering" : "idle"
     let timing =
       packet.protocolVersion >= 3
-      ? "入队=\(packet.queueReady ? "开放" : "等待") gcd≈\(packet.gcdRemainingMs)ms"
+      ? "入队=\(packet.queueReady ? "开放" : "等待") offGCD=\(packet.lossless.offGCD)/\(packet.preserveBurst.offGCD) gcd≈\(packet.gcdRemainingMs)ms"
       : "tick=\(packet.gameTickMs) 兼容连发"
     detailsLabel.stringValue = String(
       format: "v%d seq=%d %@ 状态=%@ 解码=%.2fms pitch=%@",
@@ -266,7 +278,8 @@ final class MainWindowController: NSWindowController {
   private func applyInputActions(_ packet: Packet) {
     if packet.isBusy {
       input.setActions(
-        lossless: nil, preserveBurst: nil, suppressWithoutBinding: true, canPulse: false)
+        lossless: nil, preserveBurst: nil, suppressWithoutBinding: true,
+        losslessCanPulse: false, preserveCanPulse: false)
       return
     }
 
@@ -278,7 +291,8 @@ final class MainWindowController: NSWindowController {
       preserveBurst: packet.protocolVersion >= 2 && !preserveSuppressed
         ? parse(packet.preserveBurst) : nil,
       suppressWithoutBinding: false,
-      canPulse: packet.queueReady,
+      losslessCanPulse: packet.losslessCanPulse,
+      preserveCanPulse: packet.preserveCanPulse,
       suppressLosslessWithoutBinding: losslessSuppressed,
       suppressPreserveWithoutBinding: preserveSuppressed
     )

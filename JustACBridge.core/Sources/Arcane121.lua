@@ -12,6 +12,7 @@ if not Registry then return end
 
 local SpellQueue
 local BlizzardAPI
+local SURGE_AFTER_TOUCH_SECONDS = 10
 
 local SPELL = {
     ARCANE_BLAST = 30451,
@@ -50,45 +51,58 @@ local GCD_SPELLS = {
 local state = {
     cleanAuraBaseline = false,
     liquidLusterCastAt = nil,
+    castSequenceSerial = 0,
+    touchCastAt = nil,
+    touchCastStep = 0,
     surgeCastAt = nil,
+    surgeCastStep = 0,
     orbCastAt = nil,
     lastGCDSpellID = nil,
     decision = "uninitialized",
     selectedSpellID = nil,
 }
 
+local function isPlain(value, expectedType)
+    if type(value) ~= expectedType then return false end
+    return not (issecretvalue and issecretvalue(value))
+end
+
 local function now()
-    return GetTime and GetTime() or 0
+    if not GetTime then return 0 end
+    local ok, value = pcall(GetTime)
+    return ok and isPlain(value, "number") and value or 0
 end
 
 local function inCombat()
-    return UnitAffectingCombat and UnitAffectingCombat("player") == true
-end
-
-local function hasHostileTarget()
-    if not (UnitExists and UnitCanAttack) then return false end
-    local okExists, exists = pcall(UnitExists, "target")
-    local okAttack, attackable = pcall(UnitCanAttack, "player", "target")
-    return okExists and exists == true and okAttack and attackable == true
+    if not UnitAffectingCombat then return false end
+    local ok, value = pcall(UnitAffectingCombat, "player")
+    return ok and isPlain(value, "boolean") and value == true
 end
 
 local function isArcane121()
     if not UnitClass then return false end
-    local _, classFile = UnitClass("player")
-    local spec = GetSpecialization and GetSpecialization()
-    local interface = GetBuildInfo and select(4, GetBuildInfo())
-    return classFile == "MAGE" and spec == 1
-        and type(interface) == "number" and interface >= 120100 and interface <= 120199
+    local okClass, _, classFile = pcall(UnitClass, "player")
+    local okSpec, spec = false, nil
+    if GetSpecialization then okSpec, spec = pcall(GetSpecialization) end
+    local okBuild, interface = false, nil
+    if GetBuildInfo then
+        local version, build, date
+        okBuild, version, build, date, interface = pcall(GetBuildInfo)
+    end
+    return okClass and isPlain(classFile, "string") and classFile == "MAGE"
+        and okSpec and isPlain(spec, "number") and spec == 1
+        and okBuild and isPlain(interface, "number")
+        and interface >= 120100 and interface <= 120199
 end
 
 local function isKnown(spellID)
     if IsPlayerSpell then
         local ok, value = pcall(IsPlayerSpell, spellID)
-        if ok then return value == true end
+        if ok and isPlain(value, "boolean") and value == true then return true end
     end
     if IsSpellKnown then
         local ok, value = pcall(IsSpellKnown, spellID)
-        if ok then return value == true end
+        if ok and isPlain(value, "boolean") and value == true then return true end
     end
     return false
 end
@@ -102,11 +116,15 @@ end
 local function callBoolean(method, ...)
     if not BlizzardAPI or type(BlizzardAPI[method]) ~= "function" then return nil end
     local ok, value = pcall(BlizzardAPI[method], ...)
-    if not ok or type(value) ~= "boolean" then return nil end
+    if not ok or not isPlain(value, "boolean") then return nil end
     return value
 end
 
 local function spellReady(spellID)
+    -- Cooldown/usability/proc state never proves that the current character
+    -- actually owns an action. Every source-owned export starts with a
+    -- positive ownership check.
+    if not isKnown(spellID) then return false end
     local usable = callBoolean("IsSpellUsable", spellID)
     local cooldown = callBoolean("IsSpellOnCooldown", spellID)
     if usable == nil or cooldown == nil then return nil end
@@ -116,7 +134,7 @@ end
 local function auraAtLeast(spellID, stacks)
     if not BlizzardAPI or type(BlizzardAPI.GetAuraStackAtLeast) ~= "function" then return nil end
     local ok, value = pcall(BlizzardAPI.GetAuraStackAtLeast, "player", spellID, stacks)
-    if not ok or type(value) ~= "boolean" then return nil end
+    if not ok or not isPlain(value, "boolean") then return nil end
     return value
 end
 
@@ -125,7 +143,9 @@ local function classResource()
         return nil, nil
     end
     local ok, current, maximum, resource = pcall(BlizzardAPI.GetClassResourcePoints)
-    if not ok or resource ~= "arcane_charges" or type(current) ~= "number" then
+    if not ok or not isPlain(resource, "string") or resource ~= "arcane_charges"
+        or not isPlain(current, "number")
+        or (maximum ~= nil and not isPlain(maximum, "number")) then
         return nil, nil
     end
     return current, maximum
@@ -134,10 +154,13 @@ end
 local function displaySpell(spellID)
     if not BlizzardAPI or type(BlizzardAPI.GetDisplaySpellID) ~= "function" then return nil end
     local ok, value = pcall(BlizzardAPI.GetDisplaySpellID, spellID)
-    return ok and tonumber(value) or nil
+    return ok and isPlain(value, "number") and value or nil
 end
 
 local function prismaticBoltActive()
+    -- Prismatic Bolt is the live replacement form of the owned Arcane Blast
+    -- button; the display ID alone is not sufficient ownership evidence.
+    if not isKnown(SPELL.ARCANE_BLAST) then return false end
     local display = displaySpell(SPELL.ARCANE_BLAST)
     if display == nil then return nil end
     return display == SPELL.PRISMATIC_BOLT or display == 1295939
@@ -167,15 +190,63 @@ local function surgeWindow()
     end
     local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, SPELL.ARCANE_SURGE)
     if not ok then return nil, nil end
-    if not aura or not aura.auraInstanceID then
-        if BlizzardAPI.AreAurasSecret and BlizzardAPI.AreAurasSecret() then return nil, nil end
+    if aura ~= nil and type(aura) ~= "table" then return nil, nil end
+    if not aura or not isPlain(aura.auraInstanceID, "number") then
+        local secret = callBoolean("AreAurasSecret")
+        if secret == true or secret == nil then return nil, nil end
         return false, false
     end
-    local duration = BlizzardAPI.GetAuraDurationObject("player", aura.auraInstanceID)
+    local okDuration, duration = pcall(BlizzardAPI.GetAuraDurationObject,
+        "player", aura.auraInstanceID)
+    if not okDuration then return true, nil end
     if not duration then return true, nil end
-    local below = BlizzardAPI.IsDurationBelowSeconds(duration, 12)
-    if type(below) == "boolean" then return true, below end
+    local okBelow, below = pcall(BlizzardAPI.IsDurationBelowSeconds, duration, 12)
+    if okBelow and isPlain(below, "boolean") then return true, below end
     return true, nil
+end
+
+-- The capped-Salvo Sunfury Barrage branch requires Surge to be down or to
+-- have more than gcd.max remaining.  A Mage GCD cannot exceed 1.5 seconds, so
+-- a plain >1.5 s duration result is a sufficient (conservative) proof.  The
+-- first 12 seconds after a confirmed Surge cast are also safe because the
+-- non-shortenable base aura still has more than 3 seconds remaining.
+local function surgeDownOrSafelyAboveGCD()
+    local active = auraAtLeast(SPELL.ARCANE_SURGE, 1)
+    if active == false then return true, "surge-down" end
+
+    local age = state.surgeCastAt and (now() - state.surgeCastAt) or nil
+    if age and age >= 0 and age < 12 then
+        return true, "confirmed-surge-remains>3"
+    end
+
+    if not (C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID
+            and BlizzardAPI and BlizzardAPI.GetAuraDurationObject
+            and BlizzardAPI.IsDurationBelowSeconds) then
+        return nil, "surge-gcd-window-unknown"
+    end
+    local okAura, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, SPELL.ARCANE_SURGE)
+    if not okAura or (aura ~= nil and type(aura) ~= "table") then
+        return nil, "surge-gcd-window-unknown"
+    end
+    if not aura then
+        local secret = callBoolean("AreAurasSecret")
+        if secret == false then return true, "surge-down-observed" end
+        return nil, "surge-gcd-window-unknown"
+    end
+    if not isPlain(aura.auraInstanceID, "number") then
+        return nil, "surge-gcd-window-unknown"
+    end
+
+    local okDuration, duration = pcall(BlizzardAPI.GetAuraDurationObject,
+        "player", aura.auraInstanceID)
+    if not okDuration or not duration then return nil, "surge-gcd-window-unknown" end
+    -- 1.51 deliberately leaves a small strictness margin: `not below 1.5`
+    -- could include the exact equality point, while SimC requires `> gcd.max`.
+    local okBelow, below = pcall(BlizzardAPI.IsDurationBelowSeconds, duration, 1.51)
+    if not okBelow or not isPlain(below, "boolean") then
+        return nil, "surge-gcd-window-unknown"
+    end
+    return not below, below and "surge-remains<1.51" or "surge-remains>=1.51"
 end
 
 local function lustrousGate()
@@ -205,6 +276,30 @@ local function lustrousGate()
         return true, "lustrous-missing-observed"
     end
     return nil, "lustrous-unknown"
+end
+
+-- User-required cooldown ordering, deliberately identical in evidence quality
+-- to Frostwyrm after Pillar: only a newer successful Touch event may release
+-- Surge, and that proof expires after ten seconds. Cooldown state and a stale
+-- historical Touch never count as ordering evidence.
+local function touchRecentlyPrecedesSurge()
+    local touchAt = state.touchCastAt
+    if not touchAt then return false end
+    if state.touchCastStep <= state.surgeCastStep then return false end
+    local age = now() - touchAt
+    return age >= 0 and age < SURGE_AFTER_TOUCH_SECONDS
+end
+
+local function withoutSpell(raw, blockedSpellID)
+    local result, changed = {}, false
+    for _, spellID in ipairs(raw) do
+        if spellID == blockedSpellID then
+            changed = true
+        else
+            result[#result + 1] = spellID
+        end
+    end
+    return changed and result or raw
 end
 
 local function appendFallback(first, raw)
@@ -245,6 +340,7 @@ end
 -- sacrifices unknown optimal Barrage windows rather than pretending we can
 -- read them; source-owned proven Barrage decisions never pass through here.
 local function buildConservativeFallback(raw)
+    if not isKnown(SPELL.ARCANE_BLAST) then return raw end
     local barrageIndex, blastIndex
     for index, spellID in ipairs(raw) do
         if spellID == SPELL.ARCANE_BARRAGE and not barrageIndex then
@@ -279,18 +375,10 @@ local function selectQueue(raw, preserve)
 
     local combat = inCombat()
 
-    -- Current 12.1 SimC precombat: Sunfury opens with Surge; Spellslinger does
-    -- not.  This is source-owned and does not depend on Assisted Combat.
-    if not preserve and not combat and hero == "sunfury" and hasHostileTarget() then
-        local ready = spellReady(SPELL.ARCANE_SURGE)
-        if ready == true then
-            return choose(SPELL.ARCANE_SURGE, "precombat.arcane_surge", "sunfury", raw)
-        elseif ready == nil then
-            return fallback("precombat-surge-readiness-unknown", raw)
-        end
-    end
-
-    if not combat then return fallback("precombat-delegated", raw) end
+    -- This project intentionally diverges from SimC's Sunfury precombat Surge:
+    -- Surge may never precede a newly successful Touch, so it is not injected
+    -- before combat. The policy sequence gate also removes any raw JustAC Surge.
+    if not combat then return fallback("precombat-surge-waits-touch", raw) end
 
     -- Spellslinger cooldown list starts with one Arcane Orb per combat.  The
     -- cast event, not a guessed timer, owns line_cd=999. Both modes expose the
@@ -308,19 +396,28 @@ local function selectQueue(raw, preserve)
         end
     end
 
-    -- Touch is higher priority than Surge.  We implement only the branch whose
-    -- entire predicate is observable: previous GCD was Bolt/Barrage while the
-    -- Surge aura is positively active.  Cooldown-remains>30 and other duration
-    -- branches are not approximated.
-    if not preserve and (state.lastGCDSpellID == SPELL.PRISMATIC_BOLT
+    local previousSetsTouch = state.lastGCDSpellID == SPELL.PRISMATIC_BOLT
         or state.lastGCDSpellID == 1295939
-        or state.lastGCDSpellID == SPELL.ARCANE_BARRAGE) then
+        or state.lastGCDSpellID == SPELL.ARCANE_BARRAGE
+    local surgeReady
+    if not preserve then
+        surgeReady = spellReady(SPELL.ARCANE_SURGE)
+        if surgeReady == nil then return fallback("surge-readiness-unknown", raw) end
+    end
+
+    -- The original observable Touch branch remains valid while Surge is
+    -- already active. The custom sync adds a second exact branch: when Surge
+    -- is ready but lacks a recent Touch token, the next proven Bolt/Barrage
+    -- setup releases Touch first. Touch's successful event then unlocks Surge.
+    if not preserve and previousSetsTouch then
         local surgeActive = surgeWindow()
-        if surgeActive == true then
+        if surgeActive == true
+            or (surgeReady == true and not touchRecentlyPrecedesSurge()) then
             local ready = spellReady(SPELL.TOUCH_OF_THE_MAGI)
             if ready == true then
                 return choose(SPELL.TOUCH_OF_THE_MAGI, "cooldowns.touch_of_the_magi",
-                    "prev-bolt-or-barrage+surge", raw)
+                    surgeActive == true and "prev-bolt-or-barrage+surge"
+                        or "prev-bolt-or-barrage+surge-ready-first", raw)
             elseif ready == nil then
                 return fallback("touch-readiness-unknown", raw)
             end
@@ -329,21 +426,22 @@ local function selectQueue(raw, preserve)
         end
     end
 
-    if not preserve then
-        local surgeReady = spellReady(SPELL.ARCANE_SURGE)
-        if surgeReady == nil then return fallback("surge-readiness-unknown", raw) end
-        if surgeReady then
+    if not preserve and surgeReady then
+        if touchRecentlyPrecedesSurge() then
             local gate, detail = lustrousGate()
             if gate == true then
-                return choose(SPELL.ARCANE_SURGE, "cooldowns.arcane_surge", detail, raw)
+                return choose(SPELL.ARCANE_SURGE, "cooldowns.arcane_surge",
+                    "after-touch+" .. detail, raw)
             elseif gate == nil then
                 return fallback(detail, raw)
             end
-            -- Exactly one Gleam stack: the APL intentionally holds Surge and
-            -- continues into the normal list. The remaining full APL has several
-            -- unreadable dynamic priorities, so delegation is the correct next step.
-            return fallback(detail, raw)
+            -- A proven single Gleam stack still holds Surge. Because the recent
+            -- Touch token would otherwise make the generic sequence gate admit
+            -- a raw JustAC Surge, remove only Surge from this fallback queue.
+            return fallback(detail, withoutSpell(raw, SPELL.ARCANE_SURGE))
         end
+        -- No recent successful Touch: continue the normal owned list while the
+        -- policy sequence gate independently blocks any raw/source Surge.
     end
 
     -- Sunfury's first normal-list line is fully observable when Missiles has
@@ -512,6 +610,23 @@ local function selectQueue(raw, preserve)
     end
 
     if charges == 4 then
+        -- Current Sunfury APL has an independent capped-Salvo release even
+        -- without Clearcasting. Arcane Salvo caps at 25, so >=25 is exact.
+        local salvo25 = auraAtLeast(SPELL.ARCANE_SALVO, 25)
+        if salvo25 == nil then return fallback("sunfury-salvo-25-state-unknown", raw) end
+        if salvo25 then
+            local surgeGate, detail = surgeDownOrSafelyAboveGCD()
+            if surgeGate == true then
+                local ready = spellReady(SPELL.ARCANE_BARRAGE)
+                if ready == true then
+                    return choose(SPELL.ARCANE_BARRAGE, "sunfury.arcane_barrage",
+                        "four-charges+salvo=25+" .. detail, raw)
+                elseif ready == nil then return fallback("barrage-readiness-unknown", raw) end
+            elseif surgeGate == nil then
+                return fallback(detail, raw)
+            end
+        end
+
         local salvo12 = auraAtLeast(SPELL.ARCANE_SALVO, 12)
         if salvo12 == nil then return fallback("sunfury-complex-barrage-unknown", raw) end
         if salvo12 == true then
@@ -575,12 +690,26 @@ function Source.Initialize()
             if event == "PLAYER_REGEN_ENABLED" then
                 state.cleanAuraBaseline = true
                 state.orbCastAt = nil
+                state.castSequenceSerial = 0
+                state.touchCastAt = nil
+                state.touchCastStep = 0
                 state.surgeCastAt = nil
+                state.surgeCastStep = 0
                 state.lastGCDSpellID = nil
             elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
-                spellID = tonumber(spellID)
+                if not isPlain(spellID, "number") then return end
                 if spellID == SPELL.LIQUID_LUSTER then state.liquidLusterCastAt = now() end
-                if spellID == SPELL.ARCANE_SURGE then state.surgeCastAt = now() end
+                if spellID == SPELL.TOUCH_OF_THE_MAGI
+                    or spellID == SPELL.ARCANE_SURGE then
+                    state.castSequenceSerial = state.castSequenceSerial + 1
+                    if spellID == SPELL.TOUCH_OF_THE_MAGI then
+                        state.touchCastAt = now()
+                        state.touchCastStep = state.castSequenceSerial
+                    else
+                        state.surgeCastAt = now()
+                        state.surgeCastStep = state.castSequenceSerial
+                    end
+                end
                 if spellID == SPELL.ARCANE_ORB then state.orbCastAt = now() end
                 if GCD_SPELLS[spellID] then state.lastGCDSpellID = spellID end
             end
@@ -594,9 +723,16 @@ function Source.IsAvailable()
     return SpellQueue ~= nil and BlizzardAPI ~= nil
 end
 
+local function rawQueue()
+    if not SpellQueue or type(SpellQueue.GetCurrentSpellQueue) ~= "function" then
+        return {}
+    end
+    local ok, value = pcall(SpellQueue.GetCurrentSpellQueue)
+    return ok and type(value) == "table" and value or {}
+end
+
 function Source.GetQueue()
-    local raw = SpellQueue.GetCurrentSpellQueue()
-    if type(raw) ~= "table" then raw = {} end
+    local raw = rawQueue()
     local selected = selectQueue(raw, false)
     if selected == raw then
         local adjusted = buildConservativeFallback(raw)
@@ -610,8 +746,7 @@ function Source.GetQueue()
 end
 
 function Source.GetPreserveQueue()
-    local raw = SpellQueue.GetCurrentSpellQueue()
-    if type(raw) ~= "table" then raw = {} end
+    local raw = rawQueue()
     local selected = selectQueue(raw, true)
     if selected == raw then
         local adjusted = buildConservativeFallback(raw)

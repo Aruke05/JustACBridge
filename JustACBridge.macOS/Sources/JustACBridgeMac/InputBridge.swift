@@ -15,7 +15,8 @@ final class InputBridge {
     lossless: nil,
     preserveBurst: nil,
     suppressWithoutBinding: false,
-    canPulse: false,
+    losslessCanPulse: false,
+    preserveCanPulse: false,
     suppressLosslessWithoutBinding: false,
     suppressPreserveWithoutBinding: false
   )
@@ -48,7 +49,8 @@ final class InputBridge {
     lossless: HotkeyBinding?,
     preserveBurst: HotkeyBinding?,
     suppressWithoutBinding: Bool,
-    canPulse: Bool,
+    losslessCanPulse: Bool,
+    preserveCanPulse: Bool,
     suppressLosslessWithoutBinding: Bool = false,
     suppressPreserveWithoutBinding: Bool = false
   ) {
@@ -56,7 +58,8 @@ final class InputBridge {
       lossless: lossless,
       preserveBurst: preserveBurst,
       suppressWithoutBinding: suppressWithoutBinding,
-      canPulse: canPulse,
+      losslessCanPulse: losslessCanPulse,
+      preserveCanPulse: preserveCanPulse,
       suppressLosslessWithoutBinding: suppressLosslessWithoutBinding,
       suppressPreserveWithoutBinding: suppressPreserveWithoutBinding
     )
@@ -131,9 +134,9 @@ final class InputBridge {
       return Unmanaged.passUnretained(event)
     }
     if type == .rightMouseDown {
-      if actions.canPulse, actions.lossless != nil, losslessHeld != nil {
+      if actions.losslessCanPulse, actions.lossless != nil, losslessHeld != nil {
         onRightClickWhileHolding?(.lossless)
-      } else if actions.canPulse, actions.preserveBurst != nil, preserveHeld != nil {
+      } else if actions.preserveCanPulse, actions.preserveBurst != nil, preserveHeld != nil {
         onRightClickWhileHolding?(.preserveBurst)
       }
       return Unmanaged.passUnretained(event)
@@ -180,7 +183,7 @@ final class InputBridge {
         binding: actions.lossless,
         suppressWithoutBinding: actions.suppressWithoutBinding
           || actions.suppressLosslessWithoutBinding,
-        canPulse: actions.canPulse,
+        canPulse: actions.losslessCanPulse,
         held: &losslessHeld
       )
     }
@@ -193,7 +196,7 @@ final class InputBridge {
         binding: actions.preserveBurst,
         suppressWithoutBinding: actions.suppressWithoutBinding
           || actions.suppressPreserveWithoutBinding,
-        canPulse: actions.canPulse,
+        canPulse: actions.preserveCanPulse,
         held: &preserveHeld
       )
     }
@@ -244,10 +247,10 @@ final class InputBridge {
   }
 
   private func pulseHeldAction() {
-    guard enabled, !actions.suppressWithoutBinding, actions.canPulse else { return }
-    if losslessHeld != nil, let binding = actions.lossless {
+    guard enabled, !actions.suppressWithoutBinding else { return }
+    if losslessHeld != nil, actions.losslessCanPulse, let binding = actions.lossless {
       binding.pulse(marker: Self.injectedMarker)
-    } else if preserveHeld != nil, let binding = actions.preserveBurst {
+    } else if preserveHeld != nil, actions.preserveCanPulse, let binding = actions.preserveBurst {
       binding.pulse(marker: Self.injectedMarker)
     }
   }
@@ -257,7 +260,8 @@ private struct ActionMap {
   let lossless: HotkeyBinding?
   let preserveBurst: HotkeyBinding?
   let suppressWithoutBinding: Bool
-  let canPulse: Bool
+  let losslessCanPulse: Bool
+  let preserveCanPulse: Bool
   let suppressLosslessWithoutBinding: Bool
   let suppressPreserveWithoutBinding: Bool
 }

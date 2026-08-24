@@ -84,14 +84,16 @@ enum PixelProtocol {
         isItem: flags & 0x02 != 0,
         id: firstExists ? u24(data, 7) : 0,
         hotkey: firstExists ? string(data, offset: 11, length: Int(data[10])) : "",
-        bound: flags & 0x04 != 0
+        bound: flags & 0x04 != 0,
+        offGCD: version >= 3 && data[63] & 0x08 != 0
       ),
       preserveBurst: Recommendation(
         exists: secondExists,
         isItem: flags & 0x10 != 0,
         id: secondExists ? u24(data, 35) : 0,
         hotkey: secondExists ? string(data, offset: 39, length: Int(data[38])) : "",
-        bound: flags & 0x20 != 0
+        bound: flags & 0x20 != 0,
+        offGCD: version >= 3 && data[63] & 0x10 != 0
       )
     )
   }

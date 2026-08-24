@@ -27,4 +27,24 @@ Registry.RegisterSpec("MAGE", 2, {
         11366, -- Pyroblast
         2120,  -- Flamestrike
     },
+    versions = {
+        {
+            id = "midnight-12.1",
+            minInterface = 120100,
+            maxInterface = 120199,
+            revision = 6,
+            -- 12.1 gives Blazing Barrier an additional charge. M4 may refresh
+            -- the exact self aura but preserves one charge for manual mechanics.
+            maintenanceBuffs = {
+                {
+                    spellID = 235313,
+                    auraID = 235313,
+                    lossless = false,
+                    preserve = true,
+                    reserveCharges = 1,
+                    label = "烈焰护体",
+                },
+            },
+        },
+    },
 })

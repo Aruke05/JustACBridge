@@ -16,7 +16,7 @@ dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
 
 local registry = JustACBridgePolicyRegistry
-assert(registry.schemaVersion == 23)
+assert(registry.schemaVersion == 24)
 
 local arcane = assert(registry.Resolve("MAGE", 1, 120007))
 assert(arcane.storageKey == "MAGE_1" and arcane.id == "arcane")
@@ -37,9 +37,15 @@ assert(#arcane.priorityCues == 0)
 
 local arcane121 = assert(registry.Resolve("MAGE", 1, 120100))
 assert(arcane121.ruleset == "midnight-12.1")
-assert(arcane121.revision == 24)
+assert(arcane121.revision == 25)
 assert(#arcane121.reserveExclusions == 0)
 assert(arcane121.useDetectedBurstTriggers == false)
+assert(#arcane121.offGCD == 1 and arcane121.offGCD[1] == 321507)
+assert(#arcane121.castSequenceRules == 1)
+assert(arcane121.castSequenceRules[1].spellID == 365350
+    and arcane121.castSequenceRules[1].afterSpellID == 321507
+    and arcane121.castSequenceRules[1].withinSeconds == 10
+    and arcane121.castSequenceRules[1].afterAuraID == nil)
 assert(arcane121.preserveUsesCurrentSafety == true)
 assert(#arcane121.rotationExclusions == 0)
 assert(#arcane121.rotationEffectiveExclusions == 1
@@ -104,12 +110,23 @@ assert(#frostMage.reserveExclusions == 4)
 assert(frostMage.reserveExclusions[1] == 84714)
 assert(frostMage.reserveExclusions[4] == 120)
 
+local frostMage121 = assert(registry.Resolve("MAGE", 3, 120100))
+assert(frostMage121.ruleset == "midnight-12.1")
+assert(frostMage121.revision == 16)
+assert(#frostMage121.reserve == 1 and frostMage121.reserve[1] == 205021)
+assert(frostMage121.useDetectedBurstTriggers == false)
+
 local fire = assert(registry.Resolve("MAGE", 2, 120100))
-assert(fire.revision == 4)
+assert(fire.ruleset == "midnight-12.1" and fire.revision == 6)
 assert(#fire.reserve == 2 and fire.reserve[1] == 190319 and fire.reserve[2] == 153561)
 assert(#fire.reserveExclusions == 1 and fire.reserveExclusions[1] == 2120)
 assert(#fire.moveCastAlways == 1 and fire.moveCastAlways[1] == 2948)
 assert(#fire.moveCastInstantOnly == 2)
+assert(#fire.maintenanceBuffs == 1)
+assert(fire.maintenanceBuffs[1].spellID == 235313)
+assert(fire.maintenanceBuffs[1].auraID == 235313)
+assert(fire.maintenanceBuffs[1].preserve == true)
+assert(fire.maintenanceBuffs[1].reserveCharges == 1)
 assert(fire.moveCastInstantOnly[1] == 11366 and fire.moveCastInstantOnly[2] == 2120)
 
 local blood = assert(registry.Resolve("DEATHKNIGHT", 1, 120007))

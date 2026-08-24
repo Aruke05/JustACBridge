@@ -264,12 +264,22 @@ unusableSpells[235450] = nil
 playerAuras[235450] = {}
 
 -- A custom M5 source may own a different queue, while M4 must consume its
--- explicit untouched preserve queue. It must never copy the M5 action across.
+-- explicit untouched preserve queue. The policy-level Touch -> Surge sequence
+-- gate applies even to source-owned and raw JustAC queues, exactly like the DK
+-- Pillar -> Frostwyrm gate.
 testQueue = { 365350, 30451 }
 testPreserveQueue = { 44425 }
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 365350)
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "touch-1", 321507)
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 365350)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "surge-1", 365350)
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)
 testPreserveQueue = nil
 
 -- 12.1 Arcane M4 is the same live rotation as M5 minus the two reserved
@@ -278,7 +288,9 @@ testPreserveQueue = nil
 testQueue = { 321507, 5143, 30451, 153626, 1449, 44425 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
+assert(JustACBridge.GetLosslessRecommendation().offGCD == true)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 5143)
+assert(JustACBridge.GetPreserveBurstRecommendation().offGCD == false)
 
 -- Stationary Arcane M5 and M4 both allow Orb when no directional delay is
 -- active.
@@ -389,6 +401,9 @@ burstTriggers = { 365350 }
 burstCues[365350] = true
 testQueue = { 30451, 365350, 44425 }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "touch-cue", 321507)
 JustACBridge.Refresh()
 local surgeCue = JustACBridge.GetLosslessRecommendation()
 assert(surgeCue.spellID == 365350 and surgeCue.sourceBurstCue == true

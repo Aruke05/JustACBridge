@@ -1,4 +1,4 @@
-﻿local ADDON_NAME = ...
+local ADDON_NAME = ...
 
 -- WoW addons cannot open sockets or write arbitrary files.  This addon therefore
 -- exposes live data to other addons through _G.JustACBridge, and exposes data to
@@ -1397,6 +1397,7 @@ getSpellData = function(queueValue, position)
         icon = 134400,
         hotkey = "",
         plainHotkey = "",
+        offGCD = false,
     }
 
     if queueValue < 0 then
@@ -1422,6 +1423,7 @@ getSpellData = function(queueValue, position)
         local effectiveSpellID = getEffectiveSpellID(queueValue)
         data.spellID = effectiveSpellID
         data.sourceSpellID = queueValue
+        data.offGCD = policyContains("offGCD", queueValue)
 
         local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(effectiveSpellID)
         if info then
@@ -1535,7 +1537,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.27", GetTime() - debugStartedAt,
+            reason, "2.12.30", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1650,6 +1652,7 @@ local function makeSignature(dataRows, canCommitQueue)
                 tostring(data.queueValue),
                 data.hotkey,
                 data.name,
+                tostring(data.offGCD == true),
             }, "\031")
         else
             parts[index] = "-"
@@ -1749,8 +1752,13 @@ local function updatePixelProtocol(dataRows)
     putU24(bytes, 36, second and (second.spellID or second.itemID) or 0)
     putFixedString(bytes, 39, 40, second and second.plainHotkey or "")
 
-    -- Diagnostic protocol v4 adds live movement state to the v3 queue gate.
+    -- Byte 64 extends the v3 queue gate with per-slot off-GCD permission.
+    -- Old v3/v4 readers ignore the new high bits and remain safely gated;
+    -- updated readers may bypass queueReady only for the marked slot. The
+    -- diagnostic v4 low bits continue to carry movement state.
     bytes[64] = (queueReady and 1 or 0)
+        + (first and first.offGCD and 8 or 0)
+        + (second and second.offGCD and 16 or 0)
     if PIXEL_PROTOCOL_VERSION >= 4 then
         bytes[64] = bytes[64]
             + (playerIsMoving and 2 or 0)
@@ -2552,7 +2560,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.27", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.30", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 

@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 23
+Registry.schemaVersion = 24
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -432,6 +432,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         reserveEffectiveExclusions = copyArray(classPolicy.reserveEffectiveExclusions),
         rotationExclusions = copyArray(classPolicy.rotationExclusions),
         rotationEffectiveExclusions = copyArray(classPolicy.rotationEffectiveExclusions),
+        offGCD = copyArray(classPolicy.offGCD),
         moveCastAlways = copyArray(classPolicy.moveCastAlways),
         moveCastBuffs = copyArray(classPolicy.moveCastBuffs),
         moveCastNever = copyArray(classPolicy.moveCastNever),
@@ -455,6 +456,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     addUniqueValues(result.reserveEffectiveExclusions, specPolicy.reserveEffectiveExclusions)
     addUniqueValues(result.rotationExclusions, specPolicy.rotationExclusions)
     addUniqueValues(result.rotationEffectiveExclusions, specPolicy.rotationEffectiveExclusions)
+    addUniqueValues(result.offGCD, specPolicy.offGCD)
     addUniqueValues(result.moveCastAlways, specPolicy.moveCastAlways)
     addUniqueValues(result.moveCastBuffs, specPolicy.moveCastBuffs)
     addUniqueValues(result.moveCastNever, specPolicy.moveCastNever)
@@ -513,6 +515,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         end
         if patch.rotationEffectiveExclusions then
             replaceArray(result.rotationEffectiveExclusions, patch.rotationEffectiveExclusions)
+        end
+        if patch.offGCD then
+            replaceArray(result.offGCD, patch.offGCD)
         end
         if patch.moveCastAlways then
             replaceArray(result.moveCastAlways, patch.moveCastAlways)
@@ -573,6 +578,8 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         addUniqueValues(result.rotationExclusions, patch.addRotationExclusions)
         removeValues(result.rotationEffectiveExclusions, patch.removeRotationEffectiveExclusions)
         addUniqueValues(result.rotationEffectiveExclusions, patch.addRotationEffectiveExclusions)
+        removeValues(result.offGCD, patch.removeOffGCD)
+        addUniqueValues(result.offGCD, patch.addOffGCD)
         removeValues(result.moveCastAlways, patch.removeMoveCastAlways)
         addUniqueValues(result.moveCastAlways, patch.addMoveCastAlways)
         removeValues(result.moveCastBuffs, patch.removeMoveCastBuffs)

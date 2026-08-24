@@ -112,7 +112,7 @@ y = originY + floor((row    + 0.5) * pitch)
 | 35 | 3 | `preserveID` | 保留爆发版动作的法术或物品 ID，uint24 little-endian |
 | 38 | 1 | `preserveKeyLength` | 保留爆发版快捷键字节数，范围 `0..24` |
 | 39 | 24 | `preserveKey` | 保留爆发版快捷键 UTF-8/ASCII，尾部补零 |
-| 63 | 1 | `queueReady` | `1` 表示 GCD 空闲或已进入最后约 120 ms 的入队窗口；`0` 表示暂缓输入 |
+| 63 | 1 | `queueFlags` | 位 0 为普通 GCD 门控；位 3/4 为 M5/M4 逐动作 off-GCD；诊断 v4 另使用位 1/2，见下文 |
 | 64 | 2 | `gcdRemainingMs` | 最近一次门控变化时的 GCD 剩余毫秒数，uint16 LE；仅用于状态显示 |
 | 66 | 1 | `sum1` | 对字节 `0..65` 的 Fletcher sum1 |
 | 67 | 1 | `sum2` | 对字节 `0..65` 的 Fletcher sum2 |
@@ -155,6 +155,27 @@ JustAC 用负数表示队列中的物品，例如 `-5512`。协议中发送正 I
 
 推荐不存在时，相应 exists flag 清零，ID 和长度为零。读取器应以 exists flag
 为准，而不是只判断 ID。
+
+### 3.1.1 queueFlags（偏移 63）
+
+| 位掩码 | 适用版本 | 含义 |
+|---:|---:|---|
+| `0x01` | v3+ | `queueReady`：GCD 空闲或剩余不超过约 120ms |
+| `0x02` | v4 | 诊断包：玩家正在移动 |
+| `0x04` | v4 | 诊断包：移动过滤已开启 |
+| `0x08` | v3+ | M5 当前动作是已登记的 off-GCD 动作 |
+| `0x10` | v3+ | M4 当前动作是已登记的 off-GCD 动作 |
+
+读取器必须按槽位计算发送门控，不能把一个槽位的 off-GCD 权限泄漏给另一个槽位：
+
+```text
+losslessCanPulse = queueReady || losslessOffGCD
+preserveCanPulse = queueReady || preserveOffGCD
+```
+
+off-GCD 只绕过普通 GCD 入队门控。`flags & 0x40`、`flags & 0x80`、快捷键缺失、
+动作不存在及本地 protected-channel latch 仍然优先阻止发送。旧 v3/v4 读取器会忽略
+偏移 63 的高位并继续等待 `queueReady`，因此该扩展向后安全兼容，只是不具备即时发送。
 
 ### 3.2 双动作语义
 
@@ -202,6 +223,8 @@ JustAC 用负数表示队列中的物品，例如 `-5512`。协议中发送正 I
 - 门控变化会递增 `sequence`，因此读取器无需逐帧处理动态倒计时。
 - v1/v2 的偏移 `63..65` 是旧 `gameTickMs`；兼容读取器应将旧包视为
   `queueReady=1`，保持历史行为。
+- v3/v4 读取器应保留偏移 63 除位 0 外的标志；当前大法师之触使用 M5 off-GCD 位，
+  使其可在弹幕成功事件后的下一份有效像素包立即发送，而不是等待当前 GCD 末尾。
 
 ## 4. 校验算法
 
@@ -222,7 +245,7 @@ for value in payload[0:66]:
 
 ```text
 payload[0:3]   == b"JAC"
-payload[3]     == 3       # 当前发送版本
+payload[3]     in (3, 4)  # 正常 v3；诊断模式 v4
 payload[66]    == sum1
 payload[67]    == sum2
 payload[68]    == rolling

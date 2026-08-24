@@ -11,7 +11,15 @@ local missilesProcced = false
 local salvoStacks
 local charges = 4
 local displayBlast = 30451
-local knownSpells = {}
+local knownSpells = {
+    [30451] = true,
+    [44425] = true,
+    [5143] = true,
+    [153626] = true,
+    [321507] = true,
+    [365350] = true,
+    [1241462] = true,
+}
 local auraStacks = {}
 local rawQueue = { 30451, 44425 }
 local sourceFrame
@@ -28,6 +36,7 @@ function IsPlayerSpell(id)
     if id == 448601 then return hero == "sunfury" end
     return knownSpells[id] == true
 end
+function IsSpellKnown(id) return knownSpells[id] == true end
 
 function CreateFrame()
     sourceFrame = {
@@ -72,16 +81,17 @@ dofile("JustACBridge.core/Sources/Registry.lua")
 dofile("JustACBridge.core/Sources/Arcane121.lua")
 local source = assert(JustACBridgeRecommendationSources.Get("arcane121"))
 
--- Sunfury owns the current SimC precombat Surge.
+-- Project-specific strict pairing intentionally suppresses SimC's precombat
+-- Sunfury Surge: there cannot yet be a newer successful Touch token.
 local queue = source.GetQueue()
-assert(queue[1] == 365350)
-assert(source.GetDecisionTrace():match("precombat.arcane_surge"))
+assert(queue[1] == rawQueue[1])
+assert(source.GetDecisionTrace():match("precombat%-surge%-waits%-touch"))
 local preserve = source.GetPreserveQueue()
 assert(preserve[1] == rawQueue[1])
-assert(not source.GetDecisionTrace():match("precombat.arcane_surge"))
 
--- Spellslinger owns one opening Orb; after its successful cast it advances to
--- Surge without waiting for Assisted Combat to surface that cooldown.
+-- Spellslinger still owns one opening Orb. Surge stays held after it; a
+-- confirmed Barrage/Bolt setup must emit Touch, and only Touch success releases
+-- Surge inside the ten-second sequence window.
 hero, combat = "spellslinger", true
 queue = source.GetQueue()
 assert(queue[1] == 153626)
@@ -89,9 +99,15 @@ preserve = source.GetPreserveQueue()
 assert(preserve[1] == 153626)
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 153626)
 lustrousOne, lustrousTwo = nil, nil
+sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 44425)
+queue = source.GetQueue()
+assert(queue[1] == 321507)
+assert(source.GetDecisionTrace():match("surge%-ready%-first"))
+sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 321507)
 queue = source.GetQueue()
 assert(queue[1] == 365350)
-assert(source.GetDecisionTrace():match("lustrous%-missing%-observed"))
+assert(source.GetDecisionTrace():match("after%-touch%+lustrous%-missing%-observed"))
+sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 365350)
 -- M4 skips Surge but continues through the same owned normal priority instead
 -- of dropping back to the raw JustAC head.
 salvoStacks = 20
@@ -100,14 +116,25 @@ assert(preserve[1] == 44425)
 assert(source.GetDecisionTrace():match("spellslinger.arcane_barrage"))
 salvoStacks = nil
 
--- Exactly one Gleam stack holds; two stacks release Surge.
+-- Exactly one Gleam stack holds; two stacks release Surge, but only while a
+-- newer successful Touch token exists.
+sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 44425)
+sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 321507)
 lustrousOne, lustrousTwo = true, false
 queue = source.GetQueue()
 assert(queue[1] == rawQueue[1])
-assert(source.GetDecisionTrace():match("fallback=true"))
+assert(source.GetDecisionTrace():match("lustrous=1"))
 lustrousOne, lustrousTwo = true, true
 queue = source.GetQueue()
 assert(queue[1] == 365350)
+
+-- A successful Touch is not a permanent token. Ten seconds later Surge is
+-- held again even when its cooldown and Lustrous gate are otherwise ready.
+now = now + 10.1
+queue = source.GetQueue()
+assert(queue[1] ~= 365350)
+assert(not source.GetDecisionTrace():match("cooldowns.arcane_surge"))
+now = now - 10.1
 
 -- If a Liquid Luster was observed but its combat stacks are secret, the
 -- source does not guess and returns the exact JustAC fallback queue.
@@ -117,8 +144,7 @@ queue = source.GetQueue()
 assert(queue[1] == rawQueue[1])
 assert(source.GetDecisionTrace():match("lustrous%-secret%-after%-potion"))
 
--- Touch is source-owned only when the complete higher-priority branch is
--- proven: a successful Barrage immediately inside the observed Surge window.
+-- The original active-Surge Touch branch remains source-owned too.
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 365350)
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 44425)
 cooldowns[365350] = true
@@ -181,6 +207,15 @@ assert(preserve[1] == 5143 and preserve[2] == 30451 and preserve[3] == 44425)
 assert(source.GetDecisionTrace():match("blast%-before%-unproven%-barrage"))
 rawQueue = { 30451, 44425 }
 
+-- A usable/cooldown result alone must never export an action the character
+-- does not positively own, including the conservative Arcane fallback.
+knownSpells[30451] = false
+rawQueue = { 44425, 1449 }
+queue = source.GetQueue()
+assert(queue == rawQueue and queue[1] == 44425)
+knownSpells[30451] = true
+rawQueue = { 30451, 44425 }
+
 -- Normal-list branches are source-owned whenever every higher predicate is
 -- false or a target-count-independent OR branch is true.
 hero = "spellslinger"
@@ -206,5 +241,16 @@ auraStacks[453413] = 1
 queue = source.GetQueue()
 assert(queue[1] == 44425)
 assert(source.GetDecisionTrace():match("arcane%-soul"))
+
+-- Capped Salvo is an independent Sunfury Barrage branch. It does not require
+-- Clearcasting when four charges and the exact Surge timing gate are proven.
+auraStacks[453413] = nil
+salvoStacks, charges, missilesProcced = 25, 4, false
+cooldowns[321507], cooldowns[365350] = true, true
+source._Test.state.lastGCDSpellID = nil
+source._Test.state.surgeCastAt = now
+queue = source.GetQueue()
+assert(queue[1] == 44425)
+assert(source.GetDecisionTrace():match("four%-charges%+salvo=25"))
 
 print("arcane 12.1 source tests passed")

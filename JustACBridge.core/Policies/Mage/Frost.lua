@@ -55,4 +55,17 @@ Registry.RegisterSpec("MAGE", 3, {
             prefer = { 44614 }, -- Flurry
         },
     },
+    versions = {
+        {
+            id = "midnight-12.1",
+            minInterface = 120100,
+            maxInterface = 120199,
+            revision = 16,
+            -- Icy Veins was removed in Midnight. Ray of Frost is the current
+            -- main cooldown and must be held by M4; do not let a stale JustAC
+            -- Burst Trigger re-add the removed spell to this exact ruleset.
+            reserve = { 205021 },
+            useDetectedBurstTriggers = false,
+        },
+    },
 })

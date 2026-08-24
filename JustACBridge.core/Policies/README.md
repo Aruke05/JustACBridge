@@ -41,6 +41,8 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
   推荐源或突进模块误注入的控制/位移按钮。
 - `rotationEffectiveExclusions`：从两路排除当前实际法术，但不连带排除占用同一基础
   按钮的天赋替换/动态 Proc 形态。
+- `offGCD`：当前版本被权威 APL 明确标记为 off-GCD 的法术。最终动作命中该列表时
+  只允许对应桌面槽位绕过普通 GCD 门控；读条、引导、安全、可用性和绑定门控不变。
 - `reservePassthrough`：即使推荐源把技能识别为爆发触发器，保留爆发版仍允许它
   正常通过；适合新版本已移除爆发联动、但旧推荐源配置可能仍残留的技能。
 - `moveCastAlways`：自身带读条，但天生允许移动施放的技能。
@@ -106,6 +108,7 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
     reserveEffectiveExclusions = { 1005 },
     rotationExclusions = { 1004 },
     rotationEffectiveExclusions = { 1006 },
+    offGCD = { 1007 },
     moveCastAlways = { 3001 },
     moveCastBuffs = { 4001 },
     moveCastNever = { 4002 },
@@ -179,6 +182,7 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
   `add/removeRotationExclusions` 增量修改，并同时约束两个导出动作。
 - 当前实际法术的全循环排除支持 `rotationEffectiveExclusions` 完整替换和
   `add/removeRotationEffectiveExclusions` 增量修改，并同时约束两个导出动作。
+- Off-GCD 列表支持 `offGCD` 完整替换和 `add/removeOffGCD` 增量修改。
 - 移动规则对应支持 `moveCastAlways/moveCastBuffs` 完整替换，以及
   `add/removeMoveCastAlways`、`add/removeMoveCastBuffs` 增量修改；
   `moveCastNever` 同样支持完整替换和 `add/removeMoveCastNever`；

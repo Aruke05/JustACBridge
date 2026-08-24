@@ -136,6 +136,45 @@ ready(431044)
 queue = fire.GetQueue()
 assert(queue[1] == 431044 and fire.GetDecisionTrace():match("filler.terminal"))
 
+-- During a Firestarter hold, three-target Fuel the Fire no longer forces an
+-- instant Flamestrike. Current APL keeps Hot Streak on Pyroblast until the
+-- target crosses the health gate (Pyroclasm is the explicit exception).
+enemies = 3
+known[416094] = true -- Fuel the Fire
+auras[48108] = true -- Hot Streak
+ready(11366)
+ready(2120)
+queue = fire.GetQueue()
+assert(queue[1] == 11366 and fire.GetDecisionTrace():match("filler.spender"))
+
+-- Sunfury Execution owns the post-Hot-Streak Meteor setup before Combustion.
+reset("MAGE", 2)
+fire._Test.context.castAt = {}
+fire._Test.state.combustionPrecast = nil
+fire._Test.state.combustionPrecastAt = nil
+known[448601] = true -- Sunfury
+known[449349] = true -- Sunfury Execution
+ready(190319)
+ready(153561)
+queue = fire.GetQueue()
+assert(queue[1] == 153561 and fire.GetDecisionTrace():match("combustion.precast_meteor"))
+
+-- Frostfire Burnout's live, laundered <8 s predicate is exact enough to own
+-- Meteor; unreadable duration state still delegates.
+reset("MAGE", 2)
+fire._Test.context.castAt = {}
+known[431044] = true -- Frostfire
+known[1271177] = true -- Burnout
+auras[190319] = true
+durationBelow[190319] = true
+ready(153561)
+queue = fire.GetQueue()
+assert(queue[1] == 153561 and fire.GetDecisionTrace():match("burnout%+remains<8"))
+durationBelow[190319] = nil
+queue = fire.GetQueue()
+assert(queue[1] == rawQueue[1]
+    and fire.GetDecisionTrace():match("frostfire%-meteor%-remains%-unknown"))
+
 -- Frost Mage: opener advances only after successful casts; normal priority is
 -- owned after the three confirmed opener actions.
 reset("MAGE", 3)

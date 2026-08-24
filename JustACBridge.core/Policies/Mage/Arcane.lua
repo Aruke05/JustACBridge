@@ -59,7 +59,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 24,
+            revision = 25,
             -- 12.1 M4 shares the owned Arcane priority with M5. Orb is no
             -- longer permanently excluded; both modes use the movement and
             -- stationary-resume rules below.
@@ -69,6 +69,26 @@ Registry.RegisterSpec("MAGE", 1, {
             -- silently turn additional ordinary Arcane actions into M4 holds.
             -- Explicit /jacb reserve overrides remain authoritative.
             useDetectedBurstTriggers = false,
+            -- Touch is explicitly use_off_gcd=1 in the current SimC APL.
+            -- The action retains every normal safety/binding gate, but the
+            -- desktop may send it immediately after the confirmed Barrage or
+            -- Prismatic Bolt event instead of waiting for the GCD commit gate.
+            offGCD = {
+                321507, -- Touch of the Magi
+            },
+            -- Strict cooldown pairing requested for this project: Surge is
+            -- never allowed before a newer, server-confirmed Touch. This gate
+            -- also filters Surge out of raw JustAC fallback queues, so source
+            -- uncertainty cannot bypass the order. Unlike Frost DK's Pillar
+            -- rule there is no aura recovery: Touch is a target debuff and is
+            -- not a reliable player-aura proof after reload/target changes.
+            castSequenceRules = {
+                {
+                    spellID = 365350,      -- Arcane Surge
+                    afterSpellID = 321507, -- Touch of the Magi
+                    withinSeconds = 10,
+                },
+            },
             -- Arcane M4 shares M5's proven owned actions minus Surge and Touch.
             -- On a JustAC fallback, both routes put baseline Blast before an
             -- unproven Barrage, inserting Blast when the capped raw queue omitted

@@ -32,6 +32,8 @@ local SPELL = {
     BLAST_ZONE = 416719,
     SCALD = 450746,
     SPELLFIRE_SPHERES = 448601,
+    SUNFURY_EXECUTION = 449349,
+    BURNOUT = 1271177,
 }
 
 local GCD = {
@@ -97,8 +99,9 @@ local function chooseIfReady(spellID, rule, detail, raw)
     return nil, ready
 end
 
-local function spender(enemies, proc, phase, raw)
-    local flamestrike = enemies >= 3 and context:Known(SPELL.FUEL_THE_FIRE)
+local function spender(enemies, proc, phase, raw, allowFlamestrike)
+    local flamestrike = allowFlamestrike ~= false and enemies >= 3
+        and context:Known(SPELL.FUEL_THE_FIRE)
     local spellID = flamestrike and SPELL.FLAMESTRIKE or SPELL.PYROBLAST
     local action, ready = chooseIfReady(spellID, phase .. ".spender",
         ("proc=%s enemies=%d threshold=%s"):format(proc, enemies,
@@ -121,9 +124,9 @@ local function chooseTerminal(hero, rule, raw)
 end
 
 local function selectCombustion(raw, hero, enemies, proc)
-    -- Meteor lands within Combustion. Frostfire Burnout wants a late Meteor;
-    -- without a readable aura-remains predicate that exact sub-branch stays
-    -- with JustAC instead of being approximated by a fixed timer.
+    -- Meteor lands within Combustion. Current Frostfire changes the exact
+    -- timing by build: Burnout waits for <8 s; without Burnout it fires while
+    -- >2 s remains. Secret duration state delegates instead of using a timer.
     local meteorReady = context:Ready(SPELL.METEOR)
     if meteorReady == nil then return context:Fallback("meteor-readiness-unknown", raw) end
     if meteorReady then
@@ -144,7 +147,17 @@ local function selectCombustion(raw, hero, enemies, proc)
             end
         end
         if hero == "frostfire" then
-            return context:Fallback("frostfire-burnout-meteor-timing-delegated", raw)
+            local burnout = context:Known(SPELL.BURNOUT)
+            local threshold = burnout and 8 or 2
+            local below = context:PlayerAuraRemainsBelow(SPELL.COMBUSTION, threshold)
+            if below == nil then
+                return context:Fallback("frostfire-meteor-remains-unknown", raw)
+            end
+            if (burnout and below) or (not burnout and not below) then
+                return context:Choose(SPELL.METEOR, "combustion.meteor",
+                    burnout and "frostfire+burnout+remains<8"
+                        or "frostfire+no-burnout+remains>2", raw)
+            end
         end
     end
 
@@ -199,7 +212,9 @@ local function selectFiller(raw, hero, enemies, proc, combustionReady, heldForFi
 
     if proc == "unknown" then return context:Fallback("pyro-proc-kind-unknown", raw) end
     if proc == "instant" then
-        local action = spender(enemies, proc, "filler", raw)
+        -- Current APL disables Flamestrike during the Firestarter delay, but
+        -- explicitly re-enables it for a Pyroclasm hardcast.
+        local action = spender(enemies, proc, "filler", raw, not heldForFirestarter)
         if action then return action end
     elseif proc == "pyroclasm" then
         if hero == "sunfury" then
@@ -287,6 +302,20 @@ local function selectQueue(raw)
             if action then return action end
         elseif proc == "unknown" then
             return context:Fallback("combustion-setup-proc-kind-unknown", raw)
+        end
+
+        -- Sunfury Execution makes Meteor the exact pre-combustion setup after
+        -- a visible Hot Streak has been spent. The next idle frame can then
+        -- consume the resulting Pyroclasm without inventing cast-end weaving.
+        if hero == "sunfury" and context:Known(SPELL.SUNFURY_EXECUTION) then
+            local meteorReady = context:Ready(SPELL.METEOR)
+            if meteorReady == nil then
+                return context:Fallback("combustion-precast-meteor-readiness-unknown", raw)
+            end
+            if meteorReady then
+                return context:Choose(SPELL.METEOR, "combustion.precast_meteor",
+                    "sunfury-execution", raw)
+            end
         end
 
         local completedAge = state.combustionPrecastAt

@@ -42,6 +42,17 @@ internal static unsafe class SelfTest
             Console.Error.WriteLine("protocol v3 queue-ready self-test failed");
             return 14;
         }
+        byte[] version3OffGcd = (byte[])version3.Clone();
+        version3OffGcd[63] = 0x08; // M5 off-GCD only; ordinary queue gate closed
+        RewriteChecksums(version3OffGcd);
+        if (!PixelProtocol.TryDecode(version3OffGcd, out var v3OffGcd) ||
+            v3OffGcd is not { QueueReady: false } ||
+            !v3OffGcd.Lossless.OffGcd || v3OffGcd.PreserveBurst.OffGcd ||
+            !v3OffGcd.LosslessCanPulse || v3OffGcd.PreserveCanPulse)
+        {
+            Console.Error.WriteLine("protocol v3 off-GCD self-test failed");
+            return 23;
+        }
         byte[] version4 = (byte[])version3.Clone();
         version4[3] = 4;
         version4[63] = 0x06; // moving + movement filter, queue gate closed

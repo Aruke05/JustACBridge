@@ -13,6 +13,7 @@
 # Local packages and logs
 packages/
 *.log
+.reference/
 
 # OS-generated files
 .DS_Store

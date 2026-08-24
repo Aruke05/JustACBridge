@@ -206,7 +206,7 @@ internal sealed class MainForm : Form
                 }
             }
             // Busy 状态下遇到撕裂帧时保持保护，直到读到明确的空闲包。
-            _hook.SetActions(null, null, _lastBusy, false, observedBusy: null);
+            _hook.SetActions(null, null, _lastBusy, false, false, observedBusy: null);
         }
 
         try { BeginInvoke(() => ApplyUpdate(update)); }
@@ -223,7 +223,7 @@ internal sealed class MainForm : Form
         RememberSpellBinding(packet.PreserveBurst);
         if (packet.IsBusy)
         {
-            _hook.SetActions(null, null, true, false, observedBusy: true);
+            _hook.SetActions(null, null, true, false, false, observedBusy: true);
             return;
         }
 
@@ -245,7 +245,8 @@ internal sealed class MainForm : Form
             losslessBinding,
             packet.ProtocolVersion >= 2 ? preserveBinding : null,
             false,
-            packet.QueueReady,
+            packet.LosslessCanPulse,
+            packet.PreserveCanPulse,
             (losslessSuppressed && losslessBinding is null) || movementBlocksLossless,
             (preserveSuppressed && preserveBinding is null) || movementBlocksPreserve,
             delayArcaneExplosion ? ArcaneExplosionSpellId : 0,
@@ -329,10 +330,17 @@ internal sealed class MainForm : Form
             _state.Text = p.IsChanneling ? "持续引导保护：两个功能键均已屏蔽" : "施法读条保护：两个功能键均已屏蔽";
             _state.ForeColor = Color.RoyalBlue;
         }
-        else if (!p.QueueReady)
+        else if (!p.QueueReady && !p.Lossless.OffGcd && !p.PreserveBurst.OffGcd)
         {
             _state.Text = $"等待最佳入队窗口：GCD 约剩 {p.GcdRemainingMs}ms";
             _state.ForeColor = Color.DarkOrange;
+        }
+        else if (!p.QueueReady)
+        {
+            string slot = p.Lossless.OffGcd && p.PreserveBurst.OffGcd
+                ? "M5/M4" : p.Lossless.OffGcd ? "M5" : "M4";
+            _state.Text = $"{slot} Off-GCD 通道开放：GCD 约剩 {p.GcdRemainingMs}ms";
+            _state.ForeColor = Color.ForestGreen;
         }
         else
         {
@@ -360,7 +368,7 @@ internal sealed class MainForm : Form
         string moveState = p.ProtocolVersion >= 4
             ? $"移动={(p.IsMoving ? "是" : "否")}/{(p.MovementFilter ? "过滤开" : "过滤关")}" : "移动=协议未提供";
         string timing = p.ProtocolVersion >= 3
-            ? $"入队={(p.QueueReady ? "开放" : "等待")}  gcd≈{p.GcdRemainingMs}ms"
+            ? $"入队={(p.QueueReady ? "开放" : "等待")} offGCD={p.Lossless.OffGcd}/{p.PreserveBurst.OffGcd} gcd≈{p.GcdRemainingMs}ms"
             : $"tick={p.GameTickMs}  兼容连发";
         _details.Text = $"v{p.ProtocolVersion}  seq={p.Sequence}  {timing}  状态={castState}  {moveState}  解码={update.CaptureMs:F2}ms  pitch={update.Geometry}";
         _lossless.ForeColor = BindingColor(p.Lossless, p.IsBusy, out string losslessError);
@@ -385,7 +393,7 @@ internal sealed class MainForm : Form
         !r.Exists ? "— 无可用推荐 —" : $"{(r.IsItem ? "物品" : "法术")} {r.Id}    [{(string.IsNullOrEmpty(r.Hotkey) ? "未绑定" : r.Hotkey)}]";
 
     private static string PacketRecommendation(Recommendation r) =>
-        !r.Exists ? "none" : $"{(r.IsItem ? "item" : "spell")}:{r.Id}:{r.Hotkey}:bound={r.Bound}";
+        !r.Exists ? "none" : $"{(r.IsItem ? "item" : "spell")}:{r.Id}:{r.Hotkey}:bound={r.Bound}:offGcd={r.OffGcd}";
 
     private void CopyDebugLog()
     {
