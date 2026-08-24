@@ -98,6 +98,7 @@ local DEBUG_RETAIN_LINES = 9000
 local policyFallbackTraces = {}
 local policyPriorityCueTraces = {}
 local failedMovementRecommendations = {}
+local cancelledMovementProbeForRefresh = {}
 local debugFailureLastLog = {}
 local FAILURE_WINDOW_SECONDS = 0.30
 local FAILURE_DUPLICATE_WINDOW_SECONDS = 0.08
@@ -804,6 +805,9 @@ local function isFailureSuppressedQueueValue(queueValue)
     if type(queueValue) ~= "number" or queueValue <= 0 then
         return false
     end
+    if cancelledMovementProbeForRefresh[queueValue] then
+        return true
+    end
     local state = failedMovementRecommendations[queueValue]
     if state and state.probeBlocked and getConditionalMoveCastLabel(queueValue) then
         -- Newly observable exact evidence is stronger than an earlier blind
@@ -820,6 +824,22 @@ local function resetMovementProbeFailures()
             failedMovementRecommendations[spellID] = nil
         end
     end
+end
+
+local function cancelCurrentMovementProbeForNextRefresh()
+    local changed = false
+    for index = 1, ROW_COUNT do
+        local row = currentRows[index]
+        if row and row.movementProbe and tonumber(row.queueValue) then
+            cancelledMovementProbeForRefresh[tonumber(row.queueValue)] = true
+            changed = true
+        end
+    end
+    return changed
+end
+
+local function clearCancelledMovementProbes()
+    cancelledMovementProbeForRefresh = {}
 end
 
 local function isSafeQueueValue(queueValue, position)
@@ -1256,6 +1276,7 @@ local function refreshPlayerMoving()
         local wasMoving = playerIsMoving
         playerIsMoving = speed > 0
         if wasMoving and not playerIsMoving then
+            cancelCurrentMovementProbeForNextRefresh()
             lastMovementStoppedAt = GetTime()
             resetMovementProbeFailures()
         end
@@ -1264,6 +1285,7 @@ local function refreshPlayerMoving()
         -- When speed is secret, accept a STOP only after no matching START has
         -- arrived for the debounce interval. Repeated same-frame START/STOP
         -- pairs therefore represent movement intent instead of stationary.
+        cancelCurrentMovementProbeForNextRefresh()
         playerIsMoving = false
         lastMovementStoppedAt = GetTime()
         resetMovementProbeFailures()
@@ -1443,6 +1465,7 @@ getSpellData = function(queueValue, position)
         hotkey = "",
         plainHotkey = "",
         offGCD = false,
+        movementProbe = false,
     }
 
     if queueValue < 0 then
@@ -1469,6 +1492,9 @@ getSpellData = function(queueValue, position)
         data.spellID = effectiveSpellID
         data.sourceSpellID = queueValue
         data.offGCD = policyContains("offGCD", queueValue)
+        data.movementProbe = playerIsMoving
+            and getConditionalMoveCastLabel(queueValue) == nil
+            and getMoveCastProbeLabel(queueValue) ~= nil
 
         local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(effectiveSpellID)
         if info then
@@ -1583,7 +1609,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.31", GetTime() - debugStartedAt,
+            reason, "2.12.32", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1699,6 +1725,7 @@ local function makeSignature(dataRows, canCommitQueue)
                 data.hotkey,
                 data.name,
                 tostring(data.offGCD == true),
+                tostring(data.movementProbe == true),
             }, "\031")
         else
             parts[index] = "-"
@@ -2104,6 +2131,7 @@ local function refresh()
     recordDebugSnapshot("frame", queue, preserveQueue, lossless, preserve)
     local signature = makeSignature(nextRows, nextQueueReady)
     if signature == lastSignature then
+        clearCancelledMovementProbes()
         return true
     end
 
@@ -2111,6 +2139,7 @@ local function refresh()
     currentRows = nextRows
     updateSavedExport(currentRows)
     updateUI(currentRows)
+    clearCancelledMovementProbes()
     return true
 end
 
@@ -2606,7 +2635,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.31", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.32", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -2661,6 +2690,10 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
     elseif event == "PLAYER_STOPPED_MOVING" then
         local now = GetTime()
         local deferred = now - lastMovementStartedAt <= MOVEMENT_FLAP_WINDOW_SECONDS
+        -- Cancel the currently exported probe immediately, even when the
+        -- generic movement debounce defers accepting the STOP. This prevents
+        -- the stale probe from turning into a stationary Missiles cast.
+        cancelCurrentMovementProbeForNextRefresh()
         if deferred then
             movementStopPendingUntil = now + MOVEMENT_STOP_DEBOUNCE_SECONDS
             movementFlapCount = movementFlapCount + 1

@@ -369,6 +369,25 @@ playerAuras[263725] = nil
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 5143)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 5143)
+
+-- A STOP arriving while the blind probe is exported cancels that action
+-- instance and exposes the next queue skill for one complete refresh. A new
+-- stationary recommendation may then legitimately be Missiles again; it is
+-- not confused with the cancelled moving probe even though the spell ID is
+-- identical.
+speed = 0
+eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 5143)
+assert(JustACBridge.GetLosslessRecommendation().movementProbe == false)
+speed = 7
+eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 5143)
+assert(JustACBridge.GetLosslessRecommendation().movementProbe == true)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player", "missiles-probe-1", 5143)
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
