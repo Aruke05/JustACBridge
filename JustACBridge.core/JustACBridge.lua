@@ -534,6 +534,28 @@ local function getConditionalMoveCastLabel(spellID)
     return nil
 end
 
+local function getMoveCastProbeRule(spellID)
+    for _, rule in ipairs(currentPolicy and currentPolicy.moveCastConditions or {}) do
+        local configuredSpellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local requiresSpell = type(rule) == "table" and tonumber(rule.requiresSpell) or nil
+        if rule.probeWhenUsable == true
+            and configuredSpellID and spellListContains({ configuredSpellID }, spellID)
+            and (not requiresSpell or isSpellKnown(requiresSpell))
+            and isSpellKnown(configuredSpellID) then
+            return rule
+        end
+    end
+    return nil
+end
+
+local function getMoveCastProbeLabel(spellID)
+    local rule = getMoveCastProbeRule(spellID)
+    if rule and isUsableNow(spellID) then
+        return rule.label or tostring(rule.spellID)
+    end
+    return nil
+end
+
 local function isSpellMoveCastableNow(spellID)
     -- Some replacement spells share the base button's proc/highlight state.
     -- Stationary-only policy must win before generic movement buffs or proc
@@ -543,6 +565,13 @@ local function isSpellMoveCastableNow(spellID)
     end
     local instantOnly = policyContains("moveCastInstantOnly", spellID)
     if getConditionalMoveCastLabel(spellID) then
+        return true
+    end
+    -- A narrowly configured policy may request one empirical moving attempt
+    -- when the positive aura is hidden but the owned action is currently
+    -- usable. A failed attempt is latched below until movement really stops;
+    -- this is not a generic permission for channels or hardcasts.
+    if getMoveCastProbeLabel(spellID) then
         return true
     end
     if not instantOnly
@@ -776,7 +805,21 @@ local function isFailureSuppressedQueueValue(queueValue)
         return false
     end
     local state = failedMovementRecommendations[queueValue]
+    if state and state.probeBlocked and getConditionalMoveCastLabel(queueValue) then
+        -- Newly observable exact evidence is stronger than an earlier blind
+        -- failure, which may have had a different transient cause.
+        failedMovementRecommendations[queueValue] = nil
+        return false
+    end
     return state and (tonumber(state.suppressUntil) or 0) > GetTime() or false
+end
+
+local function resetMovementProbeFailures()
+    for spellID, state in pairs(failedMovementRecommendations) do
+        if state and state.probeBlocked then
+            failedMovementRecommendations[spellID] = nil
+        end
+    end
 end
 
 local function isSafeQueueValue(queueValue, position)
@@ -1214,6 +1257,7 @@ local function refreshPlayerMoving()
         playerIsMoving = speed > 0
         if wasMoving and not playerIsMoving then
             lastMovementStoppedAt = GetTime()
+            resetMovementProbeFailures()
         end
         movementStopPendingUntil = 0
     elseif movementStopPendingUntil > 0 and GetTime() >= movementStopPendingUntil then
@@ -1222,6 +1266,7 @@ local function refreshPlayerMoving()
         -- pairs therefore represent movement intent instead of stationary.
         playerIsMoving = false
         lastMovementStoppedAt = GetTime()
+        resetMovementProbeFailures()
         movementStopPendingUntil = 0
         lastSignature = nil
     end
@@ -1497,6 +1542,7 @@ local function movementDecision(spellID)
         "always=" .. tostring(policyContains("moveCastAlways", spellID)),
         "moveBuff=" .. tostring(hasMovementCastBuff()),
         "moveCondition=" .. debugSafe(getConditionalMoveCastLabel(spellID)),
+        "moveProbe=" .. debugSafe(getMoveCastProbeLabel(spellID)),
         "chan=" .. (chOk and debugSafe(channeled) or "call-error"),
         "proc=" .. (procOk and debugSafe(procced) or "call-error"),
         "safe=" .. tostring(isMovementSafeQueueValue(spellID)),
@@ -1537,7 +1583,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.30", GetTime() - debugStartedAt,
+            reason, "2.12.31", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -2560,7 +2606,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.30", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.31", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -2622,6 +2668,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
             playerIsMoving = false
             lastMovementStoppedAt = now
             movementStopPendingUntil = 0
+            resetMovementProbeFailures()
             lastSignature = nil
         end
         local ok, speed = pcall(GetUnitSpeed, "player")
@@ -2726,6 +2773,8 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         local newlySuppressed = false
         local duplicateFailure = false
         local fallbackSpell = isPolicyFallbackSpell(failureKey)
+        local movementProbe = failureKey and getMoveCastProbeRule(failureKey) ~= nil
+            and getConditionalMoveCastLabel(failureKey) == nil
         if selected and not fallbackSpell and playerIsMoving
             and JustACBridgeDB.movementFilter ~= false then
             if not state or now - (tonumber(state.lastAt) or 0) > FAILURE_WINDOW_SECONDS then
@@ -2741,7 +2790,13 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
             if not duplicateFailure then
                 state.count = (tonumber(state.count) or 0) + 1
                 state.lastAt = now
-                if state.count >= FAILURE_THRESHOLD then
+                if movementProbe then
+                    local previousUntil = tonumber(state.suppressUntil) or 0
+                    state.probeBlocked = true
+                    state.suppressUntil = math.huge
+                    newlySuppressed = previousUntil <= now
+                    lastSignature = nil
+                elseif state.count >= FAILURE_THRESHOLD then
                     local previousUntil = tonumber(state.suppressUntil) or 0
                     state.suppressUntil = math.max(previousUntil, now + FAILURE_SUPPRESS_SECONDS)
                     newlySuppressed = previousUntil <= now
@@ -2753,9 +2808,9 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         local lastLog = numericSpellID and (debugFailureLastLog[numericSpellID] or 0) or 0
         if newlySuppressed or now - lastLog >= FAILURE_WINDOW_SECONDS then
             if numericSpellID then debugFailureLastLog[numericSpellID] = now end
-            appendDebug(("EVENT %s spell=%s castGUID=%s moving=%s selected=%s fallback=%s duplicate=%s failCount=%s suppressed=%s suppressRemaining=%.3f")
+            appendDebug(("EVENT %s spell=%s castGUID=%s moving=%s selected=%s fallback=%s probe=%s duplicate=%s failCount=%s suppressed=%s suppressRemaining=%.3f")
                 :format(event, debugSafe(spellID), debugSafe(castGUID), tostring(playerIsMoving),
-                    tostring(selected), tostring(fallbackSpell), tostring(duplicateFailure),
+                    tostring(selected), tostring(fallbackSpell), tostring(movementProbe), tostring(duplicateFailure),
                     debugSafe(state and state.count), tostring(newlySuppressed),
                     math.max(0, (state and tonumber(state.suppressUntil) or 0) - now)))
         end

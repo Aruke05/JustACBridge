@@ -346,9 +346,10 @@ assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 153626)
 now = 100
 
--- Midnight 12.1 movement exceptions are allowed only while their exact live
--- requirements are observable. Slipstream plus Clearcasting permits the
--- Missiles channel while moving; either missing condition fails closed.
+-- Slipstream plus observable Clearcasting permits the Missiles channel while
+-- moving. If combat hides the aura but Missiles is owned and currently usable,
+-- Arcane gets one bounded probe; its first failed cast blocks further attempts
+-- until movement really stops. A missing Slipstream never probes.
 speed = 7
 eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
 testQueue = { 5143, 44425 }
@@ -366,8 +367,28 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 unlearnedSpells[236457] = nil
 playerAuras[263725] = nil
 JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 5143)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 5143)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player", "missiles-probe-1", 5143)
+JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+
+-- Exact positive evidence overrides a prior ambiguous probe failure.
+playerAuras[263725] = {}
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 5143)
+playerAuras[263725] = nil
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player", "missiles-probe-2", 5143)
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+now = now + 0.13
+speed = 0
+eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
+speed = 7
+eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 5143)
 
 -- Presence of Mind's player aura is sufficient and spell-specific evidence
 -- that Arcane Blast is instant. Losing the aura immediately restores the
@@ -473,7 +494,7 @@ for index = 1, 3 do
 end
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation() == nil)
-now = 101.1
+now = 101.3
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 1295939)
 speed = 0

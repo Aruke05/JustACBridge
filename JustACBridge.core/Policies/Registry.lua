@@ -178,6 +178,7 @@ local function copyMoveCastConditions(source)
                     spellID = spellID,
                     requiresSpell = requiresSpell,
                     auraID = auraID,
+                    probeWhenUsable = rule.probeWhenUsable == true,
                     label = rule.label,
                 }
             end

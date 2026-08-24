@@ -52,7 +52,9 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
   API 明确报告为零读条时允许。
 - `moveCastConditions`：只对指定 `spellID` 生效的移动施法例外；可用
   `requiresSpell` 要求已学习的天赋/法术，并用 `auraID` 要求当前玩家 Buff。配置的
-  条件全部可确认时才允许，未知状态保守跳过。
+  条件全部可确认时才允许，未知状态保守跳过。极少数专精可显式设置
+  `probeWhenUsable=true`：光环条件不可见时允许当前已拥有、可用的实际队列动作试放
+  一次；第一次失败会锁到真实停止移动，不能作为通用读条放行规则。
 - `clipChannels`：循环明确要求可在 GCD 末主动截断的引导技能。引导状态仍会导出，
   但不会一直占用动作队列。
 - `rangeSequenceRules`：只在目标被明确判定超过指定距离时调整技能先后；距离未知时
@@ -114,7 +116,7 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
     moveCastNever = { 4002 },
     moveCastInstantOnly = { 4003 },
     moveCastConditions = {
-        { spellID = 4004, requiresSpell = 4005, auraID = 4006 },
+        { spellID = 4004, requiresSpell = 4005, auraID = 4006, probeWhenUsable = true },
     },
     clipChannels = { 5001 },
     rangeSequenceRules = {

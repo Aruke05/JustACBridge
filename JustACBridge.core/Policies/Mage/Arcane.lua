@@ -59,7 +59,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 25,
+            revision = 26,
             -- 12.1 M4 shares the owned Arcane priority with M5. Orb is no
             -- longer permanently excluded; both modes use the movement and
             -- stationary-resume rules below.
@@ -122,6 +122,11 @@ Registry.RegisterSpec("MAGE", 1, {
                     spellID = 5143,          -- Arcane Missiles
                     requiresSpell = 236457,  -- Slipstream
                     auraID = 263725,         -- Clearcasting
+                    -- Combat aura enumeration can hide Clearcasting even while
+                    -- JustAC still exposes a usable Missiles recommendation.
+                    -- Permit one bounded moving probe per continuous movement
+                    -- episode; its first failed cast blocks further probes.
+                    probeWhenUsable = true,
                     label = "Slipstream + Clearcasting",
                 },
                 {

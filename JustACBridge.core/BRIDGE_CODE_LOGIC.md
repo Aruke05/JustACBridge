@@ -1,4 +1,4 @@
-# JustACBridge 2.12.30：代码路径与判定逻辑
+# JustACBridge 2.12.31：代码路径与判定逻辑
 
 > 本文是当前实现的代码级说明，不是面向玩家的职业循环翻译。伪代码保留真实函数名、
 > 分支顺序、三态返回值和 fail-open/fail-closed 语义，便于与其他 Bridge 实现逐函数对比。
@@ -870,6 +870,8 @@ maintenanceBuffs = {
 }
 moveCastConditions = {
     Missiles: requires Slipstream + Clearcasting aura,
+              probeWhenUsable=true when aura is hidden;
+              first failure blocks until confirmed movement stop,
     ArcaneBlast: requires PresenceOfMind aura,
 }
 moveCastNever = { ArcaneOrb raw/compat IDs }
