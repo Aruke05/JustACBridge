@@ -166,6 +166,14 @@ assert(#unholy.fallbackActions == 2)
 assert(unholy.fallbackActions[1].spellID == 207317 and unholy.fallbackActions[1].minEnemies == 5)
 assert(unholy.fallbackActions[2].spellID == 47541)
 
+local unholy121 = assert(registry.Resolve("DEATHKNIGHT", 3, 120100))
+assert(unholy121.ruleset == "midnight-12.1" and unholy121.revision == 5)
+assert(unholy121.useDetectedBurstTriggers == false)
+assert(#unholy121.reserve == 3)
+assert(unholy121.reserve[1] == 63560
+    and unholy121.reserve[2] == 1233448
+    and unholy121.reserve[3] == 42650)
+
 -- An unregistered class falls back to JustAC-only behavior in the bridge core.
 assert(registry.Resolve("WARRIOR", 1, 120007) == nil)
 

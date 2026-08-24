@@ -657,10 +657,12 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 196770)
 burstTriggers = {}
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 
--- Unholy already reserves its major cooldown suite and excludes the aimed
--- Death and Decay reticle. M4 must advance through all of them to a cheap,
--- instant runic-power filler rather than becoming empty during movement.
+-- Midnight 12.1 Unholy owns an exact Army + Dark Transformation preserve
+-- set. Putrefy is rotational and must pass through from JustAC even if a stale
+-- Burst Trigger still calls it (or removed legacy cooldowns) burst. Ground-
+-- targeted Death and Decay remains excluded because M4 cannot aim it.
 classFile, specIndex = "DEATHKNIGHT", 3
+burstTriggers = { 207289, 49206, 288853, 390279, 1247378 }
 testQueue = { 343294, 42650, 47541 }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 JustACBridge.Refresh()
@@ -670,7 +672,13 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 343294)
 testQueue = { 42650, 1233448, 1247378, 43265, 47541 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 42650)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 47541)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 1247378)
+
+testQueue = { 207289, 49206, 288853, 390279, 1247378, 47541 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 207289)
+burstTriggers = {}
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 
 classFile, specIndex = "MAGE", 1
 testQueue = { 12051, 44425 }

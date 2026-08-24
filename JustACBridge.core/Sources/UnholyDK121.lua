@@ -3,7 +3,8 @@
 -- It owns the observable parts of the current priority list. Predicates that
 -- depend on add/fight remains, pet lifetime, exact cooldown remains or hidden
 -- aura timers return the untouched JustAC queue before any lower action is
--- selected. M4 is always the raw queue and its policy reserves every burst CD.
+-- selected. M4 is always the raw queue and its 12.1 policy precisely reserves
+-- Army of the Dead and Dark Transformation; rotational Putrefy stays in queue.
 
 local Registry = _G.JustACBridgeRecommendationSources
 local Runtime = _G.JustACBridge121Runtime

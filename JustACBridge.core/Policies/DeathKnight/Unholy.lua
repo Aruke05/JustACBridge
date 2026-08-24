@@ -21,6 +21,25 @@ Registry.RegisterSpec("DEATHKNIGHT", 3, {
         390279,  -- Vile Contagion
         1247378, -- Putrefy / 腐化
     },
+    versions = {
+        {
+            id = "midnight-12.1",
+            minInterface = 120100,
+            maxInterface = 120199,
+            revision = 5,
+            -- Midnight 12.1 has only two policy-owned burst cooldowns:
+            -- Army and Dark Transformation. Putrefy is a charge-based
+            -- rotational action and must remain owned by JustAC. Ignore stale
+            -- Burst Trigger entries; explicit /jacb reserve overrides still
+            -- apply after this exact set is built.
+            useDetectedBurstTriggers = false,
+            reserve = {
+                63560,   -- Dark Transformation (base/compatibility)
+                1233448, -- Dark Transformation (current override)
+                42650,   -- Army of the Dead
+            },
+        },
+    },
     -- Death and Decay is ground-targeted; M4 never guesses cursor placement.
     reserveExclusions = {
         43265, -- Death and Decay
