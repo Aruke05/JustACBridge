@@ -387,6 +387,26 @@ speed = 7
 eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 5143)
+
+-- If GetUnitSpeed becomes secret, a deferred STOP must not let the same blind
+-- probe reappear on the following frames. Keep the next skill until the 250 ms
+-- movement debounce resolves, then treat a same-ID stationary Missiles result
+-- as a new recommendation instance.
+speedSecret = true
+eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+now = now + 0.10
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+now = now + 0.16
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 5143)
+assert(JustACBridge.GetLosslessRecommendation().movementProbe == false)
+speedSecret = false
+speed = 7
+eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
+JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().movementProbe == true)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player", "missiles-probe-1", 5143)
 JustACBridge.Refresh()
@@ -513,7 +533,7 @@ for index = 1, 3 do
 end
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation() == nil)
-now = 101.3
+now = 101.5
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 1295939)
 speed = 0

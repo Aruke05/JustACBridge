@@ -58,6 +58,7 @@ local playerIsMoving = false
 local lastMovementStartedAt = -math.huge
 local lastMovementStoppedAt = -math.huge
 local movementStopPendingUntil = 0
+local movementProbeStopPending = false
 local movementFlapCount = 0
 local movementLastDebugAt = -math.huge
 local successfulCastResumeTriggerAt = {}
@@ -550,6 +551,9 @@ local function getMoveCastProbeRule(spellID)
 end
 
 local function getMoveCastProbeLabel(spellID)
+    if movementProbeStopPending then
+        return nil
+    end
     local rule = getMoveCastProbeRule(spellID)
     if rule and isUsableNow(spellID) then
         return rule.label or tostring(rule.spellID)
@@ -1279,8 +1283,21 @@ local function refreshPlayerMoving()
             cancelCurrentMovementProbeForNextRefresh()
             lastMovementStoppedAt = GetTime()
             resetMovementProbeFailures()
+            movementProbeStopPending = false
+            movementStopPendingUntil = 0
+        elseif movementProbeStopPending then
+            -- A visible nonzero speed immediately after STOP can be a sampling
+            -- lag. Keep probes blocked for the debounce window, then accept
+            -- the authoritative moving speed if no zero sample or new event
+            -- arrives.
+            if movementStopPendingUntil > 0
+                and GetTime() >= movementStopPendingUntil then
+                movementProbeStopPending = false
+                movementStopPendingUntil = 0
+            end
+        else
+            movementStopPendingUntil = 0
         end
-        movementStopPendingUntil = 0
     elseif movementStopPendingUntil > 0 and GetTime() >= movementStopPendingUntil then
         -- When speed is secret, accept a STOP only after no matching START has
         -- arrived for the debounce interval. Repeated same-frame START/STOP
@@ -1289,6 +1306,7 @@ local function refreshPlayerMoving()
         playerIsMoving = false
         lastMovementStoppedAt = GetTime()
         resetMovementProbeFailures()
+        movementProbeStopPending = false
         movementStopPendingUntil = 0
         lastSignature = nil
     end
@@ -1609,7 +1627,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.32", GetTime() - debugStartedAt,
+            reason, "2.12.33", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -2635,7 +2653,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.32", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.33", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -2677,6 +2695,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         local now = GetTime()
         local changed = not playerIsMoving
         playerIsMoving = true
+        movementProbeStopPending = false
         lastMovementStartedAt = now
         movementStopPendingUntil = 0
         if changed then lastSignature = nil end
@@ -2693,12 +2712,17 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         -- Cancel the currently exported probe immediately, even when the
         -- generic movement debounce defers accepting the STOP. This prevents
         -- the stale probe from turning into a stationary Missiles cast.
-        cancelCurrentMovementProbeForNextRefresh()
+        local cancelledProbe = cancelCurrentMovementProbeForNextRefresh()
+        if cancelledProbe then movementProbeStopPending = true end
         if deferred then
+            -- Do not create a new blind probe from a recommendation that
+            -- appears while STOP itself is still unresolved.
+            movementProbeStopPending = true
             movementStopPendingUntil = now + MOVEMENT_STOP_DEBOUNCE_SECONDS
             movementFlapCount = movementFlapCount + 1
         else
             playerIsMoving = false
+            movementProbeStopPending = false
             lastMovementStoppedAt = now
             movementStopPendingUntil = 0
             resetMovementProbeFailures()
