@@ -4,7 +4,11 @@ if not Registry then return end
 Registry.RegisterSpec("DEATHKNIGHT", 2, {
     id = "frost",
     name = "冰霜",
-    revision = 14,
+    revision = 15,
+    -- Frost owns an exact M4 preserve set.  A stale/custom JustAC Burst
+    -- Trigger must not turn resource recovery or Raise Dead back into a hold;
+    -- explicit /jacb reserve overrides remain authoritative in the core.
+    useDetectedBurstTriggers = false,
     -- M4 may consume Howling Blast when it is present in JustAC's real queue,
     -- but never invents a ranged filler from proc/highlight/final-fallback data.
     preserveSourceQueueOnly = true,
@@ -26,10 +30,8 @@ Registry.RegisterSpec("DEATHKNIGHT", 2, {
         51271,   -- Pillar of Frost
         152279,  -- Breath of Sindragosa
         1249658, -- Breath of Sindragosa (current override)
-        47568,   -- Empower Rune Weapon
         279302,  -- Frostwyrm's Fury
         439843,  -- Reaper's Mark
-        46585,   -- Raise Dead
     },
     -- Directional frontal movement is left to M5/manual facing.
     reserveExclusions = {

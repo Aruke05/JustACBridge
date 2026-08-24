@@ -124,15 +124,16 @@ assert(frostDK.fallbackActions[1].spellID == 49184 and frostDK.fallbackActions[1
 assert(#frostDK.rotationExclusions == 1 and frostDK.rotationExclusions[1] == 49576)
 
 local frostDK121 = assert(registry.Resolve("DEATHKNIGHT", 2, 120100))
-assert(frostDK121.ruleset == "base" and frostDK121.revision == 14)
+assert(frostDK121.ruleset == "base" and frostDK121.revision == 15)
+assert(frostDK121.useDetectedBurstTriggers == false)
 assert(frostDK121.preserveSourceQueueOnly == true)
 assert(frostDK121.losslessSourceQueueOnlyBeyond.beyond == 5
     and frostDK121.losslessSourceQueueOnlyBeyond.allow[1] == 49184)
 assert(frostDK121.preserveSourceQueueOnlyBeyond.beyond == 5
     and frostDK121.preserveSourceQueueOnlyBeyond.allow[1] == 49184)
-assert(#frostDK121.reserve == 7)
+assert(#frostDK121.reserve == 5)
 assert(frostDK121.reserve[1] == 51271)
-assert(frostDK121.reserve[6] == 439843 and frostDK121.reserve[7] == 46585)
+assert(frostDK121.reserve[4] == 279302 and frostDK121.reserve[5] == 439843)
 assert(#frostDK121.rotationExclusions == 1 and frostDK121.rotationExclusions[1] == 49576)
 assert(#frostDK121.reserveExclusions == 2)
 assert(frostDK121.reserveExclusions[1] == 194913

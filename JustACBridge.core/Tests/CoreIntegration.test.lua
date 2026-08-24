@@ -628,13 +628,34 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 196770)
 targetWithin5 = nil
 highlightSpellID = nil
 
--- Raise Dead remains reserved, but Remorseless Winter is an ordinary rotational
--- cooldown rather than a blanket M4 blacklist. After skipping Raise Dead, M4
--- must keep JustAC's Remorseless Winter recommendation instead of advancing.
+-- Frost owns an exact M4 preserve set. Resource recovery and Raise Dead are
+-- ordinary JustAC actions during a short tail, even if stale/custom JustAC
+-- Burst Trigger settings still classify them as burst. The synchronized
+-- Pillar/Breath/Fury/Reaper suite remains held for the next pull.
+burstTriggers = { 47568, 46585, 196770 }
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+testQueue = { 47568, 196770, 49184 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 47568)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 47568)
+
 testQueue = { 46585, 196770, 49184 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 46585)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 46585)
+
+JustACBridgeDB.reserveOverrides.DEATHKNIGHT_2 = { include = { [46585] = true } }
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+JustACBridge.Refresh()
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 196770)
+JustACBridgeDB.reserveOverrides.DEATHKNIGHT_2 = nil
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+
+testQueue = { 51271, 152279, 1249658, 279302, 439843, 196770 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 196770)
+burstTriggers = {}
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 
 -- Unholy already reserves its major cooldown suite and excludes the aimed
 -- Death and Decay reticle. M4 must advance through all of them to a cheap,
