@@ -12,7 +12,7 @@ if not Registry then return end
 
 local SpellQueue
 local BlizzardAPI
-local SURGE_AFTER_TOUCH_SECONDS = 10
+local TOUCH_AFTER_SURGE_SECONDS = 10
 
 local SPELL = {
     ARCANE_BLAST = 30451,
@@ -278,16 +278,22 @@ local function lustrousGate()
     return nil, "lustrous-unknown"
 end
 
--- User-required cooldown ordering, deliberately identical in evidence quality
--- to Frostwyrm after Pillar: only a newer successful Touch event may release
--- Surge, and that proof expires after ten seconds. Cooldown state and a stale
--- historical Touch never count as ordering evidence.
-local function touchRecentlyPrecedesSurge()
-    local touchAt = state.touchCastAt
-    if not touchAt then return false end
-    if state.touchCastStep <= state.surgeCastStep then return false end
-    local age = now() - touchAt
-    return age >= 0 and age < SURGE_AFTER_TOUCH_SECONDS
+-- User-required cooldown ordering: only a newer successful Surge event may
+-- release Touch, and that proof expires after ten seconds. Cooldown state and
+-- stale combat history never count as ordering evidence.
+local function surgeRecentlyPrecedesTouch()
+    local surgeAt = state.surgeCastAt
+    if not surgeAt then return false end
+    if state.surgeCastStep <= state.touchCastStep then return false end
+    local age = now() - surgeAt
+    return age >= 0 and age < TOUCH_AFTER_SURGE_SECONDS
+end
+
+local function surgeSucceededRecently()
+    local surgeAt = state.surgeCastAt
+    if not surgeAt then return false end
+    local age = now() - surgeAt
+    return age >= 0 and age < TOUCH_AFTER_SURGE_SECONDS
 end
 
 local function withoutSpell(raw, blockedSpellID)
@@ -375,10 +381,10 @@ local function selectQueue(raw, preserve)
 
     local combat = inCombat()
 
-    -- This project intentionally diverges from SimC's Sunfury precombat Surge:
-    -- Surge may never precede a newly successful Touch, so it is not injected
-    -- before combat. The policy sequence gate also removes any raw JustAC Surge.
-    if not combat then return fallback("precombat-surge-waits-touch", raw) end
+    -- Outside combat, keep the current JustAC order. Surge is allowed to lead;
+    -- the policy sequence gate still prevents a raw Touch until a successful
+    -- Surge event provides current pairing evidence.
+    if not combat then return fallback("precombat-delegate-surge-first", raw) end
 
     -- Spellslinger cooldown list starts with one Arcane Orb per combat.  The
     -- cast event, not a guessed timer, owns line_cd=999. Both modes expose the
@@ -399,49 +405,46 @@ local function selectQueue(raw, preserve)
     local previousSetsTouch = state.lastGCDSpellID == SPELL.PRISMATIC_BOLT
         or state.lastGCDSpellID == 1295939
         or state.lastGCDSpellID == SPELL.ARCANE_BARRAGE
-    local surgeReady
+    local surgeReady, touchReady
     if not preserve then
         surgeReady = spellReady(SPELL.ARCANE_SURGE)
         if surgeReady == nil then return fallback("surge-readiness-unknown", raw) end
-    end
-
-    -- The original observable Touch branch remains valid while Surge is
-    -- already active. The custom sync adds a second exact branch: when Surge
-    -- is ready but lacks a recent Touch token, the next proven Bolt/Barrage
-    -- setup releases Touch first. Touch's successful event then unlocks Surge.
-    if not preserve and previousSetsTouch then
-        local surgeActive = surgeWindow()
-        if surgeActive == true
-            or (surgeReady == true and not touchRecentlyPrecedesSurge()) then
-            local ready = spellReady(SPELL.TOUCH_OF_THE_MAGI)
-            if ready == true then
-                return choose(SPELL.TOUCH_OF_THE_MAGI, "cooldowns.touch_of_the_magi",
-                    surgeActive == true and "prev-bolt-or-barrage+surge"
-                        or "prev-bolt-or-barrage+surge-ready-first", raw)
-            elseif ready == nil then
-                return fallback("touch-readiness-unknown", raw)
-            end
-        elseif surgeActive == nil and callBoolean("IsSpellOnCooldown", SPELL.ARCANE_SURGE) == true then
-            return fallback("touch-surge-window-unknown", raw)
+        touchReady = spellReady(SPELL.TOUCH_OF_THE_MAGI)
+        if touchReady == nil then
+            return fallback("touch-readiness-unknown",
+                withoutSpell(raw, SPELL.ARCANE_SURGE))
         end
     end
 
-    if not preserve and surgeReady then
-        if touchRecentlyPrecedesSurge() then
-            local gate, detail = lustrousGate()
-            if gate == true then
-                return choose(SPELL.ARCANE_SURGE, "cooldowns.arcane_surge",
-                    "after-touch+" .. detail, raw)
-            elseif gate == nil then
-                return fallback(detail, raw)
-            end
-            -- A proven single Gleam stack still holds Surge. Because the recent
-            -- Touch token would otherwise make the generic sequence gate admit
-            -- a raw JustAC Surge, remove only Surge from this fallback queue.
+    -- Surge leads only when Touch is positively ready too. If Touch is not
+    -- ready, remove raw Surge and continue the normal list rather than spending
+    -- the leader without its follower.
+    if not preserve and surgeReady and surgeSucceededRecently() then
+        -- Cooldown state can lag the authoritative success event by a frame.
+        -- Never export the same Surge instance again; remove a stale raw Surge
+        -- and continue so the subsequent Barrage/Bolt -> Touch step can win.
+        raw = withoutSpell(raw, SPELL.ARCANE_SURGE)
+    elseif not preserve and surgeReady and not touchReady then
+        raw = withoutSpell(raw, SPELL.ARCANE_SURGE)
+    elseif not preserve and surgeReady then
+        local gate, detail = lustrousGate()
+        if gate == true then
+            return choose(SPELL.ARCANE_SURGE, "cooldowns.arcane_surge",
+                "before-touch+" .. detail, raw)
+        elseif gate == nil then
             return fallback(detail, withoutSpell(raw, SPELL.ARCANE_SURGE))
         end
-        -- No recent successful Touch: continue the normal owned list while the
-        -- policy sequence gate independently blocks any raw/source Surge.
+        return fallback(detail, withoutSpell(raw, SPELL.ARCANE_SURGE))
+    end
+
+    -- Touch keeps the Bolt/Barrage travel-time setup. A recent successful Surge
+    -- selects the paired path; when Surge is positively unavailable, M5 may
+    -- release Touch directly instead of waiting for a cooldown that cannot pair.
+    if not preserve and previousSetsTouch and touchReady
+        and (surgeRecentlyPrecedesTouch() or not surgeReady) then
+        return choose(SPELL.TOUCH_OF_THE_MAGI, "cooldowns.touch_of_the_magi",
+            surgeRecentlyPrecedesTouch() and "prev-bolt-or-barrage+after-surge"
+                or "prev-bolt-or-barrage+surge-unavailable-direct", raw)
     end
 
     -- Sunfury's first normal-list line is fully observable when Missiles has

@@ -1,4 +1,4 @@
-# JustACBridge 2.12.33：代码路径与判定逻辑
+# JustACBridge 2.12.34：代码路径与判定逻辑
 
 > 本文是当前实现的代码级说明，不是面向玩家的职业循环翻译。伪代码保留真实函数名、
 > 分支顺序、三态返回值和 fail-open/fail-closed 语义，便于与其他 Bridge 实现逐函数对比。
@@ -460,6 +460,10 @@ or afterAuraID is positively observable
 or effectiveID in passthroughEffectiveSpellIDs
 ```
 
+`pairedCastRules` 同时约束两端：leader 只有 follower 的归属、绑定、可用性和冷却都明确
+就绪时才通过；follower 有 10 秒内的新 leader 成功事件时按顺序通过，否则仅在 leader
+被明确证明不可用时允许直接通过。任一读取未知都失败关闭。
+
 `castFollowups` 在 M5/M4 主队列之前执行；技能未知、冷却不是明确 false、窗口过期或
 没有绑定都会清除 pending，不会等待并阻塞主队列。
 
@@ -531,29 +535,31 @@ hero = Known(SPLINTERING_SORCERY) ? spellslinger
      : nil
 if not hero then fallback end
 
-if not combat then fallback("precombat-surge-waits-touch") end
+if not combat then fallback("precombat-delegate-surge-first") end
 
 if hero == spellslinger and first Orb not confirmed this combat then
     if Ready(ARCANE_ORB) == true then choose ARCANE_ORB end
     if Ready(...) == nil then fallback end
 end
 
-if not preserve
-    and previousGCD in {PRISMATIC_BOLT, 1295939, ARCANE_BARRAGE}
-    and (surgeWindow() == true
-         or (Ready(ARCANE_SURGE) and not recentTouchAfterLastSurge(10s)))
-    and Ready(TOUCH) == true then
-    choose TOUCH
+surgeReady = Ready(ARCANE_SURGE)
+touchReady = Ready(TOUCH)
+
+if not preserve and surgeReady and recentSuccessfulSurge(10s) then
+    raw = raw without ARCANE_SURGE  -- absorb one-frame cooldown-state lag
+elseif not preserve and surgeReady and not touchReady then
+    raw = raw without ARCANE_SURGE  -- Touch 未就绪，不能单开 Surge
+elseif not preserve and surgeReady and touchReady then
+    gate = lustrousGate()
+    if gate == true then choose ARCANE_SURGE end
+    if gate == false or gate == nil then fallback(raw without Surge) end
 end
 
-if not preserve and Ready(ARCANE_SURGE) then
-    if recentTouchAfterLastSurge(10s) then
-        gate = lustrousGate()
-        if gate == true then choose ARCANE_SURGE end
-        if gate == false then fallback(raw without Surge) end
-        if gate == nil then fallback(raw JustAC) end
-    end
-    -- 没有新的 Touch 成功凭据：继续普通表；核心顺序门同时过滤 raw Surge
+if not preserve
+    and previousGCD in {PRISMATIC_BOLT, 1295939, ARCANE_BARRAGE}
+    and touchReady
+    and (recentSurgeAfterLastTouch(10s) or surgeReady == false) then
+    choose TOUCH
 end
 
 if hero == sunfury
@@ -859,8 +865,8 @@ Frostbolt terminal
 reserve = { 365350, 321507 }            -- Surge, Touch
 useDetectedBurstTriggers = false
 offGCD = { 321507 }
-castSequenceRules = {
-    { spellID = 365350, afterSpellID = 321507, withinSeconds = 10 },
+pairedCastRules = {
+    { leaderSpellID = 365350, followerSpellID = 321507, withinSeconds = 10 },
 }
 preserveUsesCurrentSafety = true
 rotationEffectiveExclusions = { 1449 }
@@ -878,7 +884,7 @@ moveCastConditions = {
     ArcaneBlast: requires PresenceOfMind aura,
 }
 moveCastNever = { ArcaneOrb raw/compat IDs }
-moveCastResumeDelays = { Orb: M4 2s }
+moveCastResumeDelays = { Orb: M5/M4 observed-stationary 2s, including load/reload }
 successfulCastResumeDelays = { Orb after Blink/Shimmer: M5/M4 2s }
 ```
 

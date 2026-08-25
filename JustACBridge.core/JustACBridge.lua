@@ -55,6 +55,7 @@ local playerIsChanneling = false
 local playerChannelSpellID
 local playerIsCasting = false
 local playerIsMoving = false
+local movementStateInitialized = false
 local lastMovementStartedAt = -math.huge
 local lastMovementStoppedAt = -math.huge
 local movementStopPendingUntil = 0
@@ -661,6 +662,56 @@ local function isCastSequenceSafeQueueValue(queueValue)
             end
         end
     end
+
+    for _, rule in ipairs(currentPolicy and currentPolicy.pairedCastRules or {}) do
+        local leaderSpellID = tonumber(rule.leaderSpellID)
+        local followerSpellID = tonumber(rule.followerSpellID)
+        if leaderSpellID and followerSpellID then
+            local isLeader = spellListContains({ leaderSpellID }, queueValue)
+            local isFollower = spellListContains({ followerSpellID }, queueValue)
+            if isLeader or isFollower then
+                local partnerSpellID = isLeader and followerSpellID or leaderSpellID
+                local partnerKnown = isSpellKnown and isSpellKnown(partnerSpellID) or false
+                local partnerReady
+                if not partnerKnown then
+                    partnerReady = false
+                else
+                    local hotkeyOK, hotkey = sourceCall("GetSpellHotkey", partnerSpellID)
+                    local usableOK, usable = sourceCall("IsSpellUsable", partnerSpellID)
+                    local cooldownOK, onCooldown = sourceCall("IsSpellOnCooldown", partnerSpellID)
+                    if not hotkeyOK or type(hotkey) ~= "string" or hotkey == "" then
+                        partnerReady = hotkeyOK and false or nil
+                    elseif not usableOK or type(usable) ~= "boolean"
+                        or not cooldownOK or type(onCooldown) ~= "boolean" then
+                        partnerReady = nil
+                    else
+                        partnerReady = usable and not onCooldown
+                    end
+                end
+
+                if isLeader then
+                    -- Never spend the leader unless the follower can actually
+                    -- be executed immediately afterward in this pairing.
+                    if partnerReady ~= true then return false end
+                else
+                    local leaderStep = successfulCastSequenceStep[leaderSpellID] or 0
+                    local followerStep = successfulCastSequenceStep[followerSpellID] or 0
+                    local recentLeader = leaderStep > followerStep
+                    local withinSeconds = tonumber(rule.withinSeconds)
+                    if recentLeader and withinSeconds and withinSeconds > 0 then
+                        local castAt = successfulCastSequenceAt[leaderSpellID]
+                        local elapsed = castAt and GetTime() - castAt or nil
+                        recentLeader = elapsed ~= nil and elapsed >= 0
+                            and elapsed < withinSeconds
+                    end
+                    -- A recent leader success proves the ordered path. Without
+                    -- it, direct follower use is legal only when the leader is
+                    -- positively unavailable; ready or unknown both hold.
+                    if not recentLeader and partnerReady ~= false then return false end
+                end
+            end
+        end
+    end
     return true
 end
 
@@ -672,6 +723,19 @@ local function recordSuccessfulCastSequence(spellID)
         for _, configuredID in ipairs({
             tonumber(rule.spellID),
             tonumber(rule.afterSpellID),
+        }) do
+            if configuredID and spellListContains({ configuredID }, spellID) then
+                successfulCastSequenceSerial = successfulCastSequenceSerial + 1
+                successfulCastSequenceStep[configuredID] = successfulCastSequenceSerial
+                successfulCastSequenceAt[configuredID] = GetTime()
+                matched = true
+            end
+        end
+    end
+    for _, rule in ipairs(currentPolicy and currentPolicy.pairedCastRules or {}) do
+        for _, configuredID in ipairs({
+            tonumber(rule.leaderSpellID),
+            tonumber(rule.followerSpellID),
         }) do
             if configuredID and spellListContains({ configuredID }, spellID) then
                 successfulCastSequenceSerial = successfulCastSequenceSerial + 1
@@ -1277,6 +1341,22 @@ local function refreshPlayerMoving()
     end
     local ok, speed = pcall(GetUnitSpeed, "player")
     if ok and type(speed) == "number" and not isSecret(speed) then
+        if not movementStateInitialized then
+            movementStateInitialized = true
+            playerIsMoving = speed > 0
+            if playerIsMoving then
+                lastMovementStartedAt = GetTime()
+            else
+                -- Direction-dependent actions such as 12.1 Arcane Orb must
+                -- prove a full stationary delay even immediately after addon
+                -- load/reload; -infinity would incorrectly release them on the
+                -- first frame without two seconds of observed stillness.
+                lastMovementStoppedAt = GetTime()
+            end
+            movementStopPendingUntil = 0
+            movementProbeStopPending = false
+            return
+        end
         local wasMoving = playerIsMoving
         playerIsMoving = speed > 0
         if wasMoving and not playerIsMoving then
@@ -1627,7 +1707,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.33", GetTime() - debugStartedAt,
+            reason, "2.12.34", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -2653,7 +2733,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.33", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.34", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -2685,6 +2765,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         if CooldownReadyTracker and CooldownReadyTracker.RefreshEquipment then
             CooldownReadyTracker.RefreshEquipment()
         end
+        movementStateInitialized = false
         refreshPlayerMoving()
         lastSignature = nil
         refreshReservedSpells()

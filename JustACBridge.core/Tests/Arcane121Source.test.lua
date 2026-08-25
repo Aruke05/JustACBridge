@@ -81,17 +81,16 @@ dofile("JustACBridge.core/Sources/Registry.lua")
 dofile("JustACBridge.core/Sources/Arcane121.lua")
 local source = assert(JustACBridgeRecommendationSources.Get("arcane121"))
 
--- Project-specific strict pairing intentionally suppresses SimC's precombat
--- Sunfury Surge: there cannot yet be a newer successful Touch token.
+-- Precombat delegates to JustAC. Surge may lead, while the core policy blocks
+-- Touch until a newer successful Surge event exists.
 local queue = source.GetQueue()
 assert(queue[1] == rawQueue[1])
-assert(source.GetDecisionTrace():match("precombat%-surge%-waits%-touch"))
+assert(source.GetDecisionTrace():match("precombat%-delegate%-surge%-first"))
 local preserve = source.GetPreserveQueue()
 assert(preserve[1] == rawQueue[1])
 
--- Spellslinger still owns one opening Orb. Surge stays held after it; a
--- confirmed Barrage/Bolt setup must emit Touch, and only Touch success releases
--- Surge inside the ten-second sequence window.
+-- Spellslinger still owns one opening Orb. Surge is the first paired cooldown;
+-- after its successful event, a confirmed Barrage/Bolt setup emits Touch.
 hero, combat = "spellslinger", true
 queue = source.GetQueue()
 assert(queue[1] == 153626)
@@ -99,15 +98,22 @@ preserve = source.GetPreserveQueue()
 assert(preserve[1] == 153626)
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 153626)
 lustrousOne, lustrousTwo = nil, nil
+usable[321507] = false
+queue = source.GetQueue()
+assert(queue[1] == rawQueue[1])
+assert(not source.GetDecisionTrace():match("cooldowns.arcane_surge"))
+usable[321507] = true
+queue = source.GetQueue()
+assert(queue[1] == 365350)
+assert(source.GetDecisionTrace():match("before%-touch%+lustrous%-missing%-observed"))
+sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 365350)
+-- Even if cooldown state lags one frame and still reports ready, the successful
+-- event suppresses a duplicate Surge and allows the paired Touch to proceed.
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 44425)
 queue = source.GetQueue()
 assert(queue[1] == 321507)
-assert(source.GetDecisionTrace():match("surge%-ready%-first"))
+assert(source.GetDecisionTrace():match("after%-surge"))
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 321507)
-queue = source.GetQueue()
-assert(queue[1] == 365350)
-assert(source.GetDecisionTrace():match("after%-touch%+lustrous%-missing%-observed"))
-sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 365350)
 -- M4 skips Surge but continues through the same owned normal priority instead
 -- of dropping back to the raw JustAC head.
 salvoStacks = 20
@@ -116,10 +122,9 @@ assert(preserve[1] == 44425)
 assert(source.GetDecisionTrace():match("spellslinger.arcane_barrage"))
 salvoStacks = nil
 
--- Exactly one Gleam stack holds; two stacks release Surge, but only while a
--- newer successful Touch token exists.
-sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 44425)
-sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 321507)
+-- Exactly one Gleam stack holds Surge; two stacks release it before Touch.
+cooldowns[365350] = false
+now = now + 10.1
 lustrousOne, lustrousTwo = true, false
 queue = source.GetQueue()
 assert(queue[1] == rawQueue[1])
@@ -128,23 +133,26 @@ lustrousOne, lustrousTwo = true, true
 queue = source.GetQueue()
 assert(queue[1] == 365350)
 
--- A successful Touch is not a permanent token. Ten seconds later Surge is
--- held again even when its cooldown and Lustrous gate are otherwise ready.
+-- When Surge becomes positively unavailable, a valid Barrage setup may release
+-- Touch directly; it must not wait for an impossible pair.
+sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 365350)
+cooldowns[365350] = true
+sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 44425)
 now = now + 10.1
 queue = source.GetQueue()
-assert(queue[1] ~= 365350)
-assert(not source.GetDecisionTrace():match("cooldowns.arcane_surge"))
-now = now - 10.1
+assert(queue[1] == 321507)
+assert(source.GetDecisionTrace():match("surge%-unavailable%-direct"))
 
 -- If a Liquid Luster was observed but its combat stacks are secret, the
 -- source does not guess and returns the exact JustAC fallback queue.
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 1295132)
 lustrousOne, lustrousTwo = nil, nil
+cooldowns[365350] = false
 queue = source.GetQueue()
 assert(queue[1] == rawQueue[1])
 assert(source.GetDecisionTrace():match("lustrous%-secret%-after%-potion"))
 
--- The original active-Surge Touch branch remains source-owned too.
+-- A fresh successful Surge re-arms the paired Touch branch.
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 365350)
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 44425)
 cooldowns[365350] = true

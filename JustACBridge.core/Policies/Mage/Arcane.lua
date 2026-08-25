@@ -59,7 +59,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 26,
+            revision = 28,
             -- 12.1 M4 shares the owned Arcane priority with M5. Orb is no
             -- longer permanently excluded; both modes use the movement and
             -- stationary-resume rules below.
@@ -76,16 +76,15 @@ Registry.RegisterSpec("MAGE", 1, {
             offGCD = {
                 321507, -- Touch of the Magi
             },
-            -- Strict cooldown pairing requested for this project: Surge is
-            -- never allowed before a newer, server-confirmed Touch. This gate
-            -- also filters Surge out of raw JustAC fallback queues, so source
-            -- uncertainty cannot bypass the order. Unlike Frost DK's Pillar
-            -- rule there is no aura recovery: Touch is a target debuff and is
-            -- not a reliable player-aura proof after reload/target changes.
-            castSequenceRules = {
+            -- Pairing contract: when Surge is currently available, hold it
+            -- until Touch is also positively ready, then enforce Surge first
+            -- and Touch within ten seconds. If Surge is positively unavailable
+            -- (unlearned, unusable or on cooldown), Touch may fire directly.
+            -- Unknown readiness fails closed instead of guessing either path.
+            pairedCastRules = {
                 {
-                    spellID = 365350,      -- Arcane Surge
-                    afterSpellID = 321507, -- Touch of the Magi
+                    leaderSpellID = 365350,   -- Arcane Surge
+                    followerSpellID = 321507, -- Touch of the Magi
                     withinSeconds = 10,
                 },
             },
@@ -136,16 +135,16 @@ Registry.RegisterSpec("MAGE", 1, {
                 },
             },
             -- Orb is instant but travels along the player's facing. While the
-            -- player is moving neither held key may guess that direction. M4
-            -- also waits for two continuous stationary seconds after ordinary
-            -- movement stops; M5 may resume immediately after an ordinary stop.
+            -- player is moving neither held key may guess that direction. Both
+            -- M5 and M4 wait for two continuous stationary seconds after every
+            -- ordinary movement stop before Orb can be exported again.
             moveCastNever = {
                 153626, -- Arcane Orb
                 153640, -- Arcane Orb override/compatibility form
             },
             moveCastResumeDelays = {
-                { spellID = 153626, seconds = 2.0, lossless = false, preserve = true },
-                { spellID = 153640, seconds = 2.0, lossless = false, preserve = true },
+                { spellID = 153626, seconds = 2.0, lossless = true, preserve = true },
+                { spellID = 153640, seconds = 2.0, lossless = true, preserve = true },
             },
             -- A successful Blink/Shimmer changes facing without a trustworthy
             -- target-direction signal. Both M5 and M4 therefore hold Orb for

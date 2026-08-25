@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 24
+Registry.schemaVersion = 25
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -281,6 +281,38 @@ local function appendCastSequenceRules(target, source)
     end
 end
 
+-- Two-action cooldown pairing. The leader is legal only while its follower is
+-- positively executable; the follower may bypass ordering only when the leader
+-- is positively unavailable.
+local function copyPairedCastRules(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        local leaderSpellID = type(rule) == "table"
+            and tonumber(rule.leaderSpellID) or nil
+        local followerSpellID = type(rule) == "table"
+            and tonumber(rule.followerSpellID) or nil
+        local withinSeconds = type(rule) == "table"
+            and tonumber(rule.withinSeconds) or nil
+        if leaderSpellID and leaderSpellID > 0
+            and followerSpellID and followerSpellID > 0 then
+            result[#result + 1] = {
+                leaderSpellID = leaderSpellID,
+                followerSpellID = followerSpellID,
+                withinSeconds = withinSeconds and withinSeconds > 0
+                    and withinSeconds or nil,
+                label = rule.label,
+            }
+        end
+    end
+    return result
+end
+
+local function appendPairedCastRules(target, source)
+    for _, rule in ipairs(copyPairedCastRules(source)) do
+        target[#target + 1] = rule
+    end
+end
+
 local function copyCastFollowups(source)
     local result = {}
     for _, rule in ipairs(source or {}) do
@@ -443,6 +475,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         successfulCastResumeDelays = copySuccessfulCastResumeDelays(
             classPolicy.successfulCastResumeDelays),
         castSequenceRules = copyCastSequenceRules(classPolicy.castSequenceRules),
+        pairedCastRules = copyPairedCastRules(classPolicy.pairedCastRules),
         castFollowups = copyCastFollowups(classPolicy.castFollowups),
         clipChannels = copyArray(classPolicy.clipChannels),
         protectedChannels = copyArray(classPolicy.protectedChannels),
@@ -467,6 +500,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     appendSuccessfulCastResumeDelays(result.successfulCastResumeDelays,
         specPolicy.successfulCastResumeDelays)
     appendCastSequenceRules(result.castSequenceRules, specPolicy.castSequenceRules)
+    appendPairedCastRules(result.pairedCastRules, specPolicy.pairedCastRules)
     appendCastFollowups(result.castFollowups, specPolicy.castFollowups)
     addUniqueValues(result.clipChannels, specPolicy.clipChannels)
     addUniqueValues(result.protectedChannels, specPolicy.protectedChannels)
@@ -545,6 +579,9 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.castSequenceRules then
             result.castSequenceRules = copyCastSequenceRules(patch.castSequenceRules)
         end
+        if patch.pairedCastRules then
+            result.pairedCastRules = copyPairedCastRules(patch.pairedCastRules)
+        end
         if patch.castFollowups then
             result.castFollowups = copyCastFollowups(patch.castFollowups)
         end
@@ -594,6 +631,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         appendSuccessfulCastResumeDelays(result.successfulCastResumeDelays,
             patch.addSuccessfulCastResumeDelays)
         appendCastSequenceRules(result.castSequenceRules, patch.addCastSequenceRules)
+        appendPairedCastRules(result.pairedCastRules, patch.addPairedCastRules)
         appendCastFollowups(result.castFollowups, patch.addCastFollowups)
         removeValues(result.clipChannels, patch.removeClipChannels)
         addUniqueValues(result.clipChannels, patch.addClipChannels)

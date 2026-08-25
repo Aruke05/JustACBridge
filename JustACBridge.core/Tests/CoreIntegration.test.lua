@@ -25,6 +25,7 @@ local highlightSpellID
 local targetWithin5
 local cooldownSpellID
 local cooldownEndsAt = 0
+local unknownCooldownSpells = {}
 local effectiveSpellOverrides = {}
 local unlearnedSpells = {}
 local unusableSpells = {}
@@ -160,6 +161,7 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     GetEffectiveSpellID = function(id) return effectiveSpellOverrides[id] or id end,
     IsSpellUsable = function(id) return unusableSpells[id] ~= true end,
     IsSpellOnCooldown = function(id)
+        if unknownCooldownSpells[id] then return nil end
         return id == cooldownSpellID and cooldownEndsAt > now
     end,
     IsSpellProcced = function() return false end,
@@ -264,44 +266,87 @@ unusableSpells[235450] = nil
 playerAuras[235450] = {}
 
 -- A custom M5 source may own a different queue, while M4 must consume its
--- explicit untouched preserve queue. The policy-level Touch -> Surge sequence
+-- explicit untouched preserve queue. The policy-level Surge -> Touch sequence
 -- gate applies even to source-owned and raw JustAC queues, exactly like the DK
 -- Pillar -> Frostwyrm gate.
-testQueue = { 365350, 30451 }
+testQueue = { 321507, 30451 }
 testPreserveQueue = { 44425 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
 assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
-eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "touch-1", 321507)
-JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 365350)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "surge-1", 365350)
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "touch-1", 321507)
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
 assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "surge-expiry", 365350)
+now = now + 10.0
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)
+now = now - 10.0
+
+-- If Surge is positively unavailable, Touch is allowed directly. Conversely,
+-- a ready Surge is held until Touch is learned, bound, usable and off cooldown.
+cooldownSpellID, cooldownEndsAt = 365350, now + 30
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
+testQueue = { 365350, 30451 }
+cooldownSpellID, cooldownEndsAt = 321507, now + 30
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+cooldownSpellID, cooldownEndsAt = nil, 0
+unboundSpells[321507] = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+unboundSpells[321507] = nil
+unknownCooldownSpells[321507] = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+unknownCooldownSpells[321507] = nil
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 365350)
+testQueue = { 321507, 30451 }
+unknownCooldownSpells[365350] = true
+now = now + 10.0
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+now = now - 10.0
+unknownCooldownSpells[365350] = nil
 testPreserveQueue = nil
 
 -- 12.1 Arcane M4 is the same live rotation as M5 minus the two reserved
 -- cooldowns. After skipping Touch it must keep the owned Missiles action;
 -- Arcane Explosion remains excluded from both outputs.
 testQueue = { 321507, 5143, 30451, 153626, 1449, 44425 }
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "surge-2", 365350)
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
 assert(JustACBridge.GetLosslessRecommendation().offGCD == true)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 5143)
 assert(JustACBridge.GetPreserveBurstRecommendation().offGCD == false)
 
--- Stationary Arcane M5 and M4 both allow Orb when no directional delay is
--- active.
+-- Addon load/reload starts a fresh observed-stationary interval. Neither key
+-- may export Orb until that initial interval reaches two complete seconds.
 testQueue = { 153626, 44425 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+now = now + 1.99
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+now = now + 0.01
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 153626)
 
 -- While moving, neither held key may guess the facing-dependent Orb. Both
--- skip it. After an ordinary stop M5 resumes immediately, while M4 requires
--- two continuous stationary seconds.
+-- skip it. After an ordinary stop both M5 and M4 require two continuous
+-- stationary seconds.
 speed = 7
 eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
 JustACBridge.Refresh()
@@ -310,11 +355,11 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 speed = 0
 eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 now = now + 1.99
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 now = now + 0.01
 JustACBridge.Refresh()
@@ -461,9 +506,6 @@ burstTriggers = { 365350 }
 burstCues[365350] = true
 testQueue = { 30451, 365350, 44425 }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
-JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
-eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "touch-cue", 321507)
 JustACBridge.Refresh()
 local surgeCue = JustACBridge.GetLosslessRecommendation()
 assert(surgeCue.spellID == 365350 and surgeCue.sourceBurstCue == true
