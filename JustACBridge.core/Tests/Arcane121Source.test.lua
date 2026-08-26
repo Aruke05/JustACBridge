@@ -98,19 +98,18 @@ dofile("JustACBridge.core/Sources/Registry.lua")
 dofile("JustACBridge.core/Sources/Arcane121.lua")
 local source = assert(JustACBridgeRecommendationSources.Get("arcane121"))
 
--- Precombat delegates to JustAC after the source removes any raw Touch. Surge
--- may lead; automatic Touch is emitted only by a proven in-combat branch.
+-- Precombat delegates to JustAC; the core pairing gate owns any raw Touch.
 local queue = source.GetQueue()
 assert(queue[1] == rawQueue[1])
 assert(source.GetDecisionTrace():match("precombat%-delegate%-surge%-first"))
 local preserve = source.GetPreserveQueue()
 assert(preserve[1] == rawQueue[1])
 
--- Spellslinger still owns one opening Orb. Surge is the first paired cooldown;
--- after its successful event, a confirmed Barrage/Bolt setup emits Touch.
+-- M5's hard pair outranks the Spellslinger opening Orb. M4 still holds both
+-- cooldowns and may execute that normal Orb action.
 hero, combat = "spellslinger", true
 queue = source.GetQueue()
-assert(queue[1] == 153626)
+assert(queue[1] == 365350 and queue[2] == 321507)
 preserve = source.GetPreserveQueue()
 assert(preserve[1] == 153626)
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 153626)
@@ -121,47 +120,41 @@ assert(queue[1] == rawQueue[1])
 assert(not source.GetDecisionTrace():match("cooldowns.arcane_surge"))
 usable[321507] = true
 queue = source.GetQueue()
-assert(queue[1] == 365350)
-assert(source.GetDecisionTrace():match("before%-touch%+lustrous%-missing%-observed"))
+assert(queue[1] == 365350 and queue[2] == 321507)
+assert(source.GetDecisionTrace():match("touch%-ready%+hard%-pair"))
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 365350)
--- The guide-owned big burn advances only on authoritative successful casts:
--- Surge -> Missiles -> Barrage -> Touch. A lagging cooldown must never export
--- the same Surge instance twice.
-queue = source.GetQueue()
-assert(queue[1] == 5143)
-assert(source.GetDecisionTrace():match("expect%-missiles"))
-sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 5143)
-queue = source.GetQueue()
-assert(queue[1] == 44425)
-assert(source.GetDecisionTrace():match("expect%-barrage"))
-sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 44425)
+-- Reliability override: the M5 pair advances only on authoritative successful
+-- casts and immediately recommends Touch after Surge. A lagging cooldown must
+-- never export the same Surge instance twice.
 queue = source.GetQueue()
 assert(queue[1] == 321507)
 assert(source.GetDecisionTrace():match("expect%-touch"))
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 321507)
 
--- A Barrage/Touch travel credential belongs to exactly one hostile target.
--- Switching away clears it permanently; returning to the old GUID cannot
--- resurrect the credential inside its former timing window.
+-- A Surge -> Touch credential belongs to exactly one hostile target. Switching
+-- clears it permanently. Because Surge is now on cooldown, the new target may
+-- independently receive the explicitly allowed direct Touch.
 cooldowns[365350] = true
 surgeCooldownRemaining = 60
-sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 44425)
+sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 365350)
 targetGUID = "Creature-0-0-0-0-200-0000000002"
 sourceFrame.OnEvent(sourceFrame, "PLAYER_TARGET_CHANGED")
 rawQueue = { 321507, 30451 }
 queue = source.GetQueue()
-assert(queue[1] == 30451 and queue[2] == nil)
+assert(source._Test.state.burstStage == nil and source._Test.state.surgeCastAt == nil)
+assert(queue[1] == 321507)
 targetGUID = "Creature-0-0-0-0-100-0000000001"
 sourceFrame.OnEvent(sourceFrame, "PLAYER_TARGET_CHANGED")
 queue = source.GetQueue()
-assert(queue[1] == 30451 and queue[2] == nil)
+assert(queue[1] == 321507)
 rawQueue = { 30451, 44425 }
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 44425)
 targetDead = true
 sourceFrame.OnEvent(sourceFrame, "UNIT_HEALTH", "target")
 targetDead = false
 queue = source.GetQueue()
-assert(queue[1] ~= 321507)
+assert(source._Test.state.burstStage == nil and source._Test.state.surgeCastAt == nil)
+assert(queue[1] == 321507)
 
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 365350)
 now = now + 10.1
@@ -177,56 +170,48 @@ assert(preserve[1] == 44425)
 assert(source.GetDecisionTrace():match("spellslinger.arcane_barrage"))
 salvoStacks = nil
 
--- Exactly one Gleam stack holds Surge; two stacks release it before Touch.
+-- The explicit reliability rule no longer lets Lustrous Gleam delay a ready
+-- Surge/Touch pair.
 cooldowns[365350] = false
 now = now + 10.1
 lustrousOne, lustrousTwo = true, false
 queue = source.GetQueue()
-assert(queue[1] == rawQueue[1])
-assert(source.GetDecisionTrace():match("lustrous=1"))
+assert(queue[1] == 365350 and queue[2] == 321507)
 lustrousOne, lustrousTwo = true, true
 queue = source.GetQueue()
-assert(queue[1] == 365350)
+assert(queue[1] == 365350 and queue[2] == 321507)
 
--- When Surge is safely far enough into its cooldown, a valid Barrage setup may
--- release the independent Touch without desynchronising the next big burn.
+-- Whenever Surge is positively not ready, Touch releases directly. No prior
+-- Barrage/Bolt and no cooldown-duration threshold are required.
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 365350)
 cooldowns[365350] = true
-sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 44425)
 now = now + 10.1
 queue = source.GetQueue()
 assert(queue[1] == 321507)
-assert(source.GetDecisionTrace():match("small%-touch%+surge%-remains>30"))
+assert(source.GetDecisionTrace():match("surge%-cooldown%-direct"))
 
--- A boolean "Surge is on cooldown" is insufficient for the intermediate
--- Touch. When only four seconds remain it would desynchronise the next big
--- burn, so the source removes Touch and continues the normal list. Unknown
--- duration-threshold evidence also fails closed.
+-- Remaining cooldown is intentionally irrelevant to the direct-Touch rule.
 surgeCooldownRemaining = 4
 queue = source.GetQueue()
-assert(queue[1] ~= 321507)
+assert(queue[1] == 321507)
 surgeCooldownRemaining = nil
 queue = source.GetQueue()
-assert(queue[1] ~= 321507)
-assert(source.GetDecisionTrace():match("small%-touch%-surge%-remains>30%-unknown"))
+assert(queue[1] == 321507)
 surgeCooldownRemaining = 60
 
--- If a Liquid Luster was observed but its combat stacks are secret, the
--- source does not guess and returns the exact JustAC fallback queue.
+-- Liquid Luster observations no longer gate the explicit pair.
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 1295132)
 lustrousOne, lustrousTwo = nil, nil
 cooldowns[365350] = false
 queue = source.GetQueue()
-assert(queue[1] == rawQueue[1])
-assert(source.GetDecisionTrace():match("lustrous%-secret%-after%-potion"))
+assert(queue[1] == 365350 and queue[2] == 321507)
 
 -- A fresh successful Surge re-arms the paired Touch branch.
 sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 365350)
-sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "cast", 44425)
 cooldowns[365350] = true
 queue = source.GetQueue()
 assert(queue[1] == 321507)
-assert(source.GetDecisionTrace():match("cooldowns.touch_of_the_magi"))
+assert(source.GetDecisionTrace():match("expect%-touch"))
 
 -- M4 holds Touch too, then continues through the same owned normal priority.
 salvoStacks = 20
@@ -241,6 +226,7 @@ hero = "sunfury"
 now = now + 20
 source._Test.state.lastGCDSpellID = nil
 cooldowns[365350] = true
+cooldowns[321507] = true
 missilesProcced, salvoStacks = true, 11
 queue = source.GetQueue()
 assert(queue[1] == 5143)
@@ -251,41 +237,50 @@ queue = source.GetQueue()
 assert(queue[1] == rawQueue[1])
 assert(source.GetDecisionTrace():match("arcane%-salvo<12%-unknown"))
 
--- When an unknown predicate delegates to JustAC, neither route may treat JustAC's
--- generic instant Barrage fallback as a proven stationary charge dump. Touch
--- is always stripped from raw fallback because it requires a target-bound
--- source credential; keep the remaining actions in order, but move an existing
--- Blast before the unproven Barrage for both routes. The core movement gate
--- remains responsible for skipping the hardcast back to Barrage while moving.
+-- Regression: when JustAC has already put capped-Salvo Barrage ahead of both
+-- available Missiles and Blast, an unknowable higher source predicate must not
+-- rewrite that order. This is the exact live failure that previously spammed
+-- Blast at 25 Salvo despite JustAC recommending Barrage.
+rawQueue = { 44425, 5143, 30451 }
+salvoStacks, charges, missilesProcced = 25, 4, true
+cooldowns[321507], cooldowns[365350] = true, true
+auraStacks[453413] = nil
+source._Test.state.surgeCastAt = nil
+queue = source.GetQueue()
+assert(queue == rawQueue and queue[1] == 44425)
+assert(source.GetDecisionTrace():match("fallback=true"))
+preserve = source.GetPreserveQueue()
+assert(preserve == rawQueue and preserve[1] == 44425)
+assert(source.GetDecisionTrace():match("fallback=true"))
+
+-- A positively unavailable Touch is an explicit legality deletion. Fallback
+-- must preserve the exact relative order of every remaining JustAC action.
 rawQueue = { 153626, 44425, 321507, 30451 }
+salvoStacks = nil
 queue = source.GetQueue()
 assert(queue ~= rawQueue)
-assert(queue[1] == 153626 and queue[2] == 30451 and queue[3] == 44425)
-assert(queue[4] == nil)
+assert(queue[1] == 153626 and queue[2] == 44425 and queue[3] == 30451
+    and queue[4] == nil)
 assert(source.GetDecisionTrace():match("fallback=true"))
-assert(source.GetDecisionTrace():match("conservativeFallback=blast%-before%-unproven%-barrage"))
 preserve = source.GetPreserveQueue()
-assert(preserve ~= rawQueue)
-assert(preserve[1] == 153626 and preserve[2] == 30451 and preserve[3] == 44425)
-assert(preserve[4] == nil)
+-- Preserve-source output stays raw; the M4 core reserve/readiness gate owns
+-- Touch deletion there.
+assert(preserve == rawQueue)
 assert(source.GetDecisionTrace():match("fallback=true"))
-assert(source.GetDecisionTrace():match("conservativeFallback=blast%-before%-unproven%-barrage"))
 
--- The live JustAC queue is capped and frequently omits Blast entirely while
--- still exposing generic Barrage. In that exact degraded shape, add only the
--- known baseline filler immediately before Barrage; do not invent any proc,
--- cooldown or aura-dependent action.
+-- A fallback without Touch must be the original table and original order; the
+-- source may not inject Blast when JustAC omitted it.
 rawQueue = { 5143, 44425, 1449, 153626 }
 queue = source.GetQueue()
-assert(queue[1] == 5143 and queue[2] == 30451 and queue[3] == 44425)
-assert(queue[4] == 1449 and queue[5] == 153626)
+assert(queue == rawQueue)
+assert(queue[1] == 5143 and queue[2] == 44425 and queue[3] == 1449
+    and queue[4] == 153626)
 preserve = source.GetPreserveQueue()
-assert(preserve[1] == 5143 and preserve[2] == 30451 and preserve[3] == 44425)
-assert(source.GetDecisionTrace():match("blast%-before%-unproven%-barrage"))
+assert(preserve == rawQueue)
 rawQueue = { 30451, 44425 }
 
 -- A usable/cooldown result alone must never export an action the character
--- does not positively own, including the conservative Arcane fallback.
+-- does not positively own.
 knownSpells[30451] = false
 rawQueue = { 44425, 1449 }
 queue = source.GetQueue()

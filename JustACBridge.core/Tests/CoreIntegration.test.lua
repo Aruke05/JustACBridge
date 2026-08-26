@@ -253,6 +253,12 @@ unboundSpells[153595] = nil
 -- keep it; an explicit player override may still reserve it.
 classFile, specIndex = "MAGE", 1
 burstTriggers = { 12051, 44425 }
+-- A source/JustAC queue that already ranks capped-Salvo Barrage first must be
+-- consumed in that order; the core may not insert or promote Arcane Blast.
+testQueue = { 44425, 5143, 30451 }
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
 testQueue = { 12051, 44425 }
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 JustACBridge.Refresh()
@@ -341,25 +347,19 @@ JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
 assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)
 
--- A cooldown boolean alone cannot release the independent 45 s Touch. The
--- current SimC >30 s gate must be positively proven through a duration-object
--- threshold; a nearly-ready Surge holds Touch, while a safely distant one
--- allows it. Conversely, a ready Surge waits for an executable Touch.
+-- Explicit reliability rule: any positively active Surge cooldown releases
+-- Touch directly, regardless of remaining duration or threshold capability.
+-- Conversely, a ready Surge still waits for an executable Touch.
 cooldownSpellID, cooldownEndsAt = 365350, now + 4
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
 cooldownEndsAt = now + 30.099
-JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
--- Avoid host floating-point subtraction at the exact representation boundary;
--- the support-source unit test below covers an exact 30.1 DurationObject.
-cooldownEndsAt = now + 30.101
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
 cooldownEndsAt = now + 40
 unknownCooldownThresholdSpells[365350] = true
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
 unknownCooldownThresholdSpells[365350] = nil
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
@@ -378,6 +378,16 @@ assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
 unknownCooldownSpells[321507] = nil
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 365350)
+-- The owned Arcane source exports its proven pair as Surge, Touch. If the core
+-- then proves Surge unbound, it skips the leader and direct Touch remains
+-- executable even when the original capped JustAC queue omitted it.
+testQueue = { 365350, 321507, 30451 }
+unboundSpells[365350] = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 321507,
+    "unbound Surge should release Touch, got "
+        .. tostring(JustACBridge.GetLosslessRecommendation().spellID))
+unboundSpells[365350] = nil
 testQueue = { 321507, 30451 }
 unknownCooldownSpells[365350] = true
 now = now + 10.0

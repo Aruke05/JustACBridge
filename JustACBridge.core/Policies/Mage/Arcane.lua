@@ -59,7 +59,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 29,
+            revision = 31,
             -- 12.1 M4 shares the owned Arcane priority with M5. Orb is no
             -- longer permanently excluded; both modes use the movement and
             -- stationary-resume rules below.
@@ -78,9 +78,9 @@ Registry.RegisterSpec("MAGE", 1, {
             },
             -- Pairing contract: when Surge is currently available, hold it
             -- until Touch is also positively ready, then enforce Surge first
-            -- and Touch within ten seconds. If Surge is unlearned, unbound or
-            -- positively unusable, Touch may fire directly; an active Surge
-            -- cooldown additionally needs the >30 s threshold configured below.
+            -- and Touch within ten seconds. If Surge is unlearned, unbound,
+            -- positively unusable or on cooldown, Touch fires directly with no
+            -- remaining-cooldown threshold.
             -- Unknown readiness fails closed instead of guessing either path.
             pairedCastRules = {
                 {
@@ -91,18 +91,10 @@ Registry.RegisterSpec("MAGE", 1, {
                     -- credential; a Surge/Barrage setup from enemy A may never
                     -- release Touch on enemy B.
                     targetBound = true,
-                    -- Current SimC permits the independent 45 s Touch only
-                    -- while Surge remains >30 s away. 30.1 preserves the strict
-                    -- inequality when the secret-safe predicate is a below/not-
-                    -- below split.
-                    directFollowerMinLeaderCooldownRemainingSeconds = 30.1,
                 },
             },
             -- Arcane M4 shares M5's proven owned actions minus Surge and Touch.
-            -- On a JustAC fallback, both routes put baseline Blast before an
-            -- unproven Barrage, inserting Blast when the capped raw queue omitted
-            -- it, so secret aura state cannot cause stationary charge dumping;
-            -- moving safety still skips Blast back to Barrage. Use the
+            -- JustAC fallback order remains unchanged. Use the
             -- player's real movement state instead of the generic always-moving
             -- M4 filter. Protected Missiles still lock both outputs until the
             -- real channel stop/interruption event.

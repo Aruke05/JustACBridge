@@ -119,38 +119,37 @@ end
 -- Merely asking for a recommendation never creates or advances a credential.
 resetCombat()
 local queue = source.GetQueue()
-assert(queue[1] == 365350)
+assert(queue[1] == 365350 and queue[2] == 321507)
 assert(source._Test.state.burstStage == nil)
 queue = source.GetQueue()
-assert(queue[1] == 365350 and source._Test.state.burstStage == nil)
+assert(queue[1] == 365350 and queue[2] == 321507
+    and source._Test.state.burstStage == nil)
 event("UNIT_SPELLCAST_FAILED", 365350)
 assert(source._Test.state.burstStage == nil)
 
--- A successful Surge starts the exact sequence. Repeated refreshes and the M4
--- key share the same state but do not advance or reset it.
+-- A successful Surge starts the exact one-step pair. Repeated refreshes and
+-- reading the M4 source queue do not advance or reset it; the core later removes
+-- both reserved cooldowns from M4.
 event("UNIT_SPELLCAST_SUCCEEDED", 365350)
-assert(source._Test.state.burstStage == STAGE.EXPECT_MISSILES)
-assert(source.GetQueue()[1] == 5143)
-assert(source.GetQueue()[1] == 5143)
+assert(source._Test.state.burstStage == STAGE.EXPECT_TOUCH)
+assert(source.GetQueue()[1] == 321507)
+assert(source.GetQueue()[1] == 321507)
 assert(source.GetPreserveQueue()[1] == 30451)
-assert(source._Test.state.burstStage == STAGE.EXPECT_MISSILES)
+assert(source._Test.state.burstStage == STAGE.EXPECT_TOUCH)
 
 -- Failed unrelated actions and successful off-GCD observations do not advance
 -- the sequence. Failure/interruption of a sequence action cancels it.
 event("UNIT_SPELLCAST_FAILED", 30451)
-assert(source._Test.state.burstStage == STAGE.EXPECT_MISSILES)
+assert(source._Test.state.burstStage == STAGE.EXPECT_TOUCH)
 event("UNIT_SPELLCAST_SUCCEEDED", 1295132)
-assert(source._Test.state.burstStage == STAGE.EXPECT_MISSILES)
-event("UNIT_SPELLCAST_INTERRUPTED", 5143)
+assert(source._Test.state.burstStage == STAGE.EXPECT_TOUCH)
+event("UNIT_SPELLCAST_INTERRUPTED", 321507)
 assert(source._Test.state.burstStage == nil)
 assert(source._Test.state.burstCancelReason:match("INTERRUPTED"))
 
--- Only authoritative successful casts advance all three edges.
+-- Only authoritative successful casts complete the pair.
 resetCombat()
 event("UNIT_SPELLCAST_SUCCEEDED", 365350)
-event("UNIT_SPELLCAST_SUCCEEDED", 5143)
-assert(source._Test.state.burstStage == STAGE.EXPECT_BARRAGE)
-event("UNIT_SPELLCAST_SUCCEEDED", 44425)
 assert(source._Test.state.burstStage == STAGE.EXPECT_TOUCH)
 assert(source.GetQueue()[1] == 321507)
 event("UNIT_SPELLCAST_SUCCEEDED", 321507)
@@ -168,16 +167,15 @@ assert(source._Test.state.burstCancelReason == "unexpected-success-30451")
 -- the same refresh instead of leaving the machine stuck.
 resetCombat()
 event("UNIT_SPELLCAST_SUCCEEDED", 365350)
-usable[5143] = false
+usable[321507] = false
 queue = source.GetQueue()
 assert(source._Test.state.burstStage == nil)
 assertNoTouch(queue)
 resetCombat()
 event("UNIT_SPELLCAST_SUCCEEDED", 365350)
-readinessUnknown[5143] = true
+readinessUnknown[321507] = true
 queue = source.GetQueue()
 assert(source._Test.state.burstStage == nil)
-assertNoTouch(queue)
 assert(source.GetDecisionTrace():match("readiness%-unknown"))
 
 -- The total sequence window is valid immediately below ten seconds and
@@ -186,12 +184,11 @@ resetCombat()
 event("UNIT_SPELLCAST_SUCCEEDED", 365350)
 local startedAt = now
 now = startedAt + 9.999
-assert(source.GetQueue()[1] == 5143)
+assert(source.GetQueue()[1] == 321507)
 now = startedAt + 10
 queue = source.GetQueue()
 assert(source._Test.state.burstStage == nil)
 assert(source._Test.state.burstCancelReason == "sequence-timeout")
-assertNoTouch(queue)
 
 -- PLAYER_TARGET_CHANGED invalidates credentials unconditionally, including a
 -- rapid clear/re-target that resolves to the same GUID. Returning to A after
@@ -208,7 +205,6 @@ sourceFrame.OnEvent(sourceFrame, "PLAYER_TARGET_CHANGED")
 targetGUID = "Creature-0-0-0-0-100-0000000001"
 queue = source.GetQueue()
 assert(source._Test.state.burstStage == nil)
-assertNoTouch(queue)
 
 -- Death, non-attackable targets, lost targets and Surge successes without a
 -- valid target all invalidate the sequence.
@@ -228,56 +224,49 @@ event("UNIT_SPELLCAST_SUCCEEDED", 365350)
 assert(source._Test.state.burstStage == nil)
 assert(source._Test.state.burstCancelReason == "surge-succeeded-without-valid-target")
 
--- Raw Touch never bypasses the source-owned same-target Barrage/Bolt proof.
+-- Direct Touch is the explicit M5 rule whenever Surge is positively not ready;
+-- no prior Barrage/Bolt is required.
 resetCombat()
 cooldowns[365350] = true
 queue = source.GetQueue()
-assert(queue[1] == 30451 and queue[2] == nil)
+assert(queue[1] == 321507)
 
--- The independent Touch uses a conservative strict >30 s proof. Values below
--- 30.1 are held; 30.1 and above are safe under the duration comparator.
-event("UNIT_SPELLCAST_SUCCEEDED", 44425)
-for _, remaining in ipairs({ 0, 4, 30, 30.099 }) do
-    surgeRemaining = remaining
-    queue = source.GetQueue()
-    assertNoTouch(queue)
-end
-for _, remaining in ipairs({ 30.1, 31, 60 }) do
+-- Cooldown duration is intentionally irrelevant, including missing or throwing
+-- DurationObject APIs.
+for _, remaining in ipairs({ 0, 4, 30, 30.099, 30.1, 31, 60 }) do
     surgeRemaining = remaining
     assert(source.GetQueue()[1] == 321507)
 end
-
--- Missing/throwing duration APIs and unknown spell readiness fail closed.
 surgeRemaining = nil
-assertNoTouch(source.GetQueue())
+assert(source.GetQueue()[1] == 321507)
 surgeRemaining, durationThrows = 60, true
-assertNoTouch(source.GetQueue())
+assert(source.GetQueue()[1] == 321507)
 durationThrows, comparisonThrows = false, true
-assertNoTouch(source.GetQueue())
+assert(source.GetQueue()[1] == 321507)
 comparisonThrows = false
 readinessUnknown[365350] = true
 assertNoTouch(source.GetQueue())
 
--- A same-target Barrage allows direct Touch when Surge is positively absent or
--- unusable, but never after an unannounced GUID mismatch or target death.
+-- Positively absent or unusable Surge also releases Touch without any setup.
 resetCombat()
 known[365350] = false
-event("UNIT_SPELLCAST_SUCCEEDED", 44425)
 assert(source.GetQueue()[1] == 321507)
 resetCombat()
 usable[365350] = false
-event("UNIT_SPELLCAST_SUCCEEDED", 44425)
 assert(source.GetQueue()[1] == 321507)
+
+-- Target mismatch/death still clears a pending Surge credential. Direct Touch
+-- after that is a new current-target decision rather than resurrected evidence.
 resetCombat()
-cooldowns[365350] = true
-event("UNIT_SPELLCAST_SUCCEEDED", 44425)
+event("UNIT_SPELLCAST_SUCCEEDED", 365350)
 targetGUID = "Creature-0-0-0-0-200-0000000002"
-assertNoTouch(source.GetQueue())
+queue = source.GetQueue()
+assert(source._Test.state.burstStage == nil)
 resetCombat()
-cooldowns[365350] = true
-event("UNIT_SPELLCAST_SUCCEEDED", 44425)
+event("UNIT_SPELLCAST_SUCCEEDED", 365350)
 targetDead = true
-assertNoTouch(source.GetQueue())
+queue = source.GetQueue()
+assert(source._Test.state.burstStage == nil)
 
 -- Combat end always resets target-bound and burst-stage state.
 resetCombat()

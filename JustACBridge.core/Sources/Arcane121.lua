@@ -1,9 +1,11 @@
 -- Independent Midnight 12.1 Arcane decision source.
 --
 -- This source owns every recommendation it can prove from live, branchable
--- state.  It deliberately returns the untouched JustAC queue as soon as a
+-- state. It deliberately preserves JustAC's relative queue order as soon as a
 -- higher-priority SimC predicate becomes unknowable; unknown is never treated
--- as false.  Arcane is the deliberate preserve-mode exception: M4 runs the
+-- as false, and fallback never injects or promotes Arcane Blast. Explicit
+-- target/movement/reserve legality filters may still remove unsafe actions.
+-- Arcane is the deliberate preserve-mode exception: M4 runs the
 -- same owned priority as M5, but never selects Arcane Surge or Touch of the
 -- Magi.  The policy layer still enforces hold-safe cast/channel rules.
 
@@ -14,14 +16,8 @@ local SpellQueue
 local BlizzardAPI
 local TOUCH_AFTER_SURGE_SECONDS = 10
 local BURST_SEQUENCE_TIMEOUT_SECONDS = 10
--- Current SimC permits an independent Touch only while Surge is still more
--- than 30 seconds away. Use a strictness margin because the APL says `>30`,
--- not `>=30`, and the duration predicate is otherwise a below/not-below split.
-local SMALL_TOUCH_SURGE_REMAINS_SECONDS = 30.1
 
 local BURST_STAGE = {
-    EXPECT_MISSILES = "expect-missiles",
-    EXPECT_BARRAGE = "expect-barrage",
     EXPECT_TOUCH = "expect-touch",
 }
 
@@ -37,8 +33,6 @@ local SPELL = {
 
     SPLINTERING_SORCERY = 443739,
     SPELLFIRE_SPHERES = 448601,
-    LUSTROUS_GLEAM = 1295147,
-    LIQUID_LUSTER = 1295132,
     ARCANE_SALVO = 1242974,
     CLEARCASTING = 263725,
     ARCANE_SOUL = 453413,
@@ -61,9 +55,7 @@ local GCD_SPELLS = {
 
 local state = {
     cleanAuraBaseline = false,
-    liquidLusterCastAt = nil,
     castSequenceSerial = 0,
-    touchCastAt = nil,
     touchCastStep = 0,
     surgeCastAt = nil,
     surgeCastStep = 0,
@@ -149,17 +141,12 @@ local function beginBurstSequence()
         return false
     end
     local timestamp = now()
-    state.burstStage = BURST_STAGE.EXPECT_MISSILES
+    state.burstStage = BURST_STAGE.EXPECT_TOUCH
     state.burstStartedAt = timestamp
     state.burstStageAt = timestamp
     state.burstTargetGUID = guid
     state.burstCancelReason = nil
     return true
-end
-
-local function setBurstStage(stage)
-    state.burstStage = stage
-    state.burstStageAt = now()
 end
 
 local function burstSequenceCurrent()
@@ -230,18 +217,6 @@ local function spellReady(spellID)
     if cooldown then return false, "cooldown" end
     if not usable then return false, "unusable" end
     return true, "ready"
-end
-
-local function cooldownRemainingAbove(spellID, seconds)
-    if not (C_Spell and C_Spell.GetSpellCooldownDuration
-            and BlizzardAPI and BlizzardAPI.IsDurationBelowSeconds) then
-        return nil
-    end
-    local okDuration, duration = pcall(C_Spell.GetSpellCooldownDuration, spellID, true)
-    if not okDuration or not duration then return nil end
-    local okBelow, below = pcall(BlizzardAPI.IsDurationBelowSeconds, duration, seconds)
-    if not okBelow or not isPlain(below, "boolean") then return nil end
-    return not below
 end
 
 local function auraAtLeast(spellID, stacks)
@@ -362,35 +337,6 @@ local function surgeDownOrSafelyAboveGCD()
     return not below, below and "surge-remains<1.51" or "surge-remains>=1.51"
 end
 
-local function lustrousGate()
-    local atLeastTwo = auraAtLeast(SPELL.LUSTROUS_GLEAM, 2)
-    if atLeastTwo == true then return true, "lustrous>=2" end
-
-    local atLeastOne = auraAtLeast(SPELL.LUSTROUS_GLEAM, 1)
-    if atLeastOne == true and atLeastTwo == false then
-        return false, "lustrous=1"
-    end
-    if atLeastOne == false then
-        return true, "lustrous-missing"
-    end
-
-    -- Liquid Luster is the only source of this gate.  Its successful use is a
-    -- plain player spellcast event.  From that event until the 30 s applicator
-    -- plus the final 30 s Gleam can have expired, unreadable stacks are unknown.
-    local castAge = state.liquidLusterCastAt and (now() - state.liquidLusterCastAt) or nil
-    if castAge and castAge >= 0 and castAge <= 61 then
-        return nil, "lustrous-secret-after-potion"
-    end
-
-    -- We have observed a clean, out-of-combat baseline and every subsequent
-    -- Liquid Luster cast since it.  With no such cast in its maximum window,
-    -- the aura is provably absent even if combat aura enumeration is hidden.
-    if state.cleanAuraBaseline then
-        return true, "lustrous-missing-observed"
-    end
-    return nil, "lustrous-unknown"
-end
-
 -- User-required cooldown ordering: only a newer successful Surge event may
 -- release Touch, and that proof expires after ten seconds. Cooldown state and
 -- stale combat history never count as ordering evidence.
@@ -404,16 +350,7 @@ local function surgeRecentlyPrecedesTouch()
     return age >= 0 and age < TOUCH_AFTER_SURGE_SECONDS
 end
 
-local function surgeSucceededRecently()
-    local surgeAt = state.surgeCastAt
-    if not surgeAt then return false end
-    local age = now() - surgeAt
-    return age >= 0 and age < TOUCH_AFTER_SURGE_SECONDS
-end
-
 local function burstStepSpellID()
-    if state.burstStage == BURST_STAGE.EXPECT_MISSILES then return SPELL.ARCANE_MISSILES end
-    if state.burstStage == BURST_STAGE.EXPECT_BARRAGE then return SPELL.ARCANE_BARRAGE end
     if state.burstStage == BURST_STAGE.EXPECT_TOUCH then return SPELL.TOUCH_OF_THE_MAGI end
     return nil
 end
@@ -446,7 +383,6 @@ end
 
 local function choose(spellID, rule, detail, raw)
     state.selectedSpellID = spellID
-    state.usedFallback = false
     state.decision = ("owner=arcane121 action=%s rule=%s detail=%s fallback=false burstStage=%s burstTarget=%s burstCancel=%s")
         :format(tostring(spellID), tostring(rule), tostring(detail or "ok"),
             tostring(state.burstStage), tostring(state.burstTargetGUID),
@@ -456,7 +392,6 @@ end
 
 local function fallback(reason, raw)
     state.selectedSpellID = nil
-    state.usedFallback = true
     state.decision = ("owner=arcane121 action=nil rule=fallback.justac reason=%s fallback=true burstStage=%s burstTarget=%s burstCancel=%s")
         :format(tostring(reason or "no-proven-action"), tostring(state.burstStage),
             tostring(state.burstTargetGUID), tostring(state.burstCancelReason))
@@ -485,70 +420,65 @@ local function selectBurstSequenceStep(raw)
     return nil
 end
 
--- A delegated JustAC queue can place Barrage ahead of Blast as a generic
--- instant fallback even when Barrage was not selected by a proven Arcane APL
--- branch. Under secret aura state that can make either held key dump charges
--- forever. Put the known baseline filler Blast before that unproven Barrage for
--- both routes, inserting it when JustAC's four-entry fallback omitted it. The
--- core will then use Blast while stationary and
--- naturally skip its hardcast back to Barrage while moving. This deliberately
--- sacrifices unknown optimal Barrage windows rather than pretending we can
--- read them; source-owned proven Barrage decisions never pass through here.
-local function buildConservativeFallback(raw)
-    if not isKnown(SPELL.ARCANE_BLAST) then return raw end
-    local barrageIndex, blastIndex
-    for index, spellID in ipairs(raw) do
-        if spellID == SPELL.ARCANE_BARRAGE and not barrageIndex then
-            barrageIndex = index
-        elseif spellID == SPELL.ARCANE_BLAST and not blastIndex then
-            blastIndex = index
-        end
-    end
-    if not barrageIndex or (blastIndex and blastIndex < barrageIndex) then
-        return raw
-    end
-
-    local result = {}
-    for index, spellID in ipairs(raw) do
-        if not blastIndex and index == barrageIndex then
-            result[#result + 1] = SPELL.ARCANE_BLAST
-            result[#result + 1] = SPELL.ARCANE_BARRAGE
-        elseif index ~= barrageIndex then
-            result[#result + 1] = spellID
-            if blastIndex and index == blastIndex then
-                result[#result + 1] = SPELL.ARCANE_BARRAGE
-            end
-        end
-    end
-    return result
-end
-
 local function selectQueue(raw, preserve)
     if not isArcane121() then return fallback("outside-mage-arcane-12.1", raw) end
     local hero = heroTree()
     if not hero then return fallback("hero-tree-unknown", raw) end
 
-    -- Touch is target- and travel-credential sensitive. Never allow a raw
-    -- fallback copy to bypass the same-target Barrage/Bolt proof, the big-burn
-    -- stage or the >30 s small-Touch gate. Every automatic Touch is therefore
-    -- source-owned and prepended only by one of the proven branches below.
-    raw = withoutSpell(raw, SPELL.TOUCH_OF_THE_MAGI)
-
     local combat = inCombat()
     validateTargetCredentials()
 
-    -- Outside combat, keep the current JustAC order after removing raw Touch.
-    -- Surge may remain at the head, but Touch is emitted only by a proven
-    -- in-combat source branch.
+    -- Outside combat, keep the current JustAC order. The core pairing gate still
+    -- prevents Touch from preceding a ready Surge.
     if not combat then return fallback("precombat-delegate-surge-first", raw) end
 
-    -- Only M5 forces the guide's short big-burn chain. M4 keeps the same shared
-    -- tracker but continues its ordinary preserve priority and never injects a
-    -- reserved cooldown. Successful casts from either physical key still update
-    -- the one shared state because the game does not identify which key caused it.
+    -- Reliability override: only M5 forces the short Surge -> Touch pair. M4
+    -- keeps the shared tracker but never injects either reserved cooldown.
     if not preserve and state.burstStage then
         local sequence = selectBurstSequenceStep(raw)
         if sequence then return sequence end
+    end
+
+    local surgeReady, touchReady, surgeReadiness
+    if not preserve then
+        surgeReady, surgeReadiness = spellReady(SPELL.ARCANE_SURGE)
+        if surgeReady == nil then
+            return fallback("surge-readiness-unknown",
+                withoutSpell(raw, SPELL.TOUCH_OF_THE_MAGI))
+        end
+        touchReady = spellReady(SPELL.TOUCH_OF_THE_MAGI)
+        if touchReady == nil then
+            return fallback("touch-readiness-unknown",
+                withoutSpell(raw, SPELL.ARCANE_SURGE))
+        end
+
+        -- M5 hard rule: if both cooldowns are ready, Surge leads immediately.
+        -- A same-target successful Surge event releases Touch even if cooldown
+        -- propagation lags by one frame. If Surge is not ready for any positively
+        -- known reason, Touch is released directly with no travel-spell or >30 s
+        -- cooldown threshold requirement.
+        if touchReady and surgeRecentlyPrecedesTouch() then
+            return choose(SPELL.TOUCH_OF_THE_MAGI, "cooldowns.touch_of_the_magi",
+                "after-surge+same-target", raw)
+        elseif surgeReady and touchReady then
+            -- Export Touch immediately behind Surge as part of this fully
+            -- proven pair. If the core later proves Surge unbound/unexecutable,
+            -- it can skip the leader and still execute the now-legal direct
+            -- Touch even when JustAC's capped raw queue omitted Touch.
+            return choose(SPELL.ARCANE_SURGE, "cooldowns.arcane_surge",
+                "touch-ready+hard-pair",
+                appendFallback(SPELL.TOUCH_OF_THE_MAGI, raw))
+        elseif surgeReady then
+            raw = withoutSpell(raw, SPELL.ARCANE_SURGE)
+        elseif touchReady then
+            return choose(SPELL.TOUCH_OF_THE_MAGI, "cooldowns.touch_of_the_magi",
+                "surge-" .. tostring(surgeReadiness) .. "-direct", raw)
+        end
+        if touchReady == false then
+            -- Positively unavailable is an explicit legality deletion, not an
+            -- APL reorder. Keep every remaining JustAC action in place.
+            raw = withoutSpell(raw, SPELL.TOUCH_OF_THE_MAGI)
+        end
     end
 
     -- Spellslinger cooldown list starts with one Arcane Orb per combat.  The
@@ -564,71 +494,6 @@ local function selectQueue(raw, preserve)
             elseif ready == nil then
                 return fallback("orb-readiness-unknown", raw)
             end
-        end
-    end
-
-    local currentTargetGUID = currentHostileTargetGUID()
-    local previousSetsTouch = state.lastGCDTargetGUID ~= nil
-        and state.lastGCDTargetGUID == currentTargetGUID
-        and (state.lastGCDSpellID == SPELL.PRISMATIC_BOLT
-            or state.lastGCDSpellID == 1295939
-            or state.lastGCDSpellID == SPELL.ARCANE_BARRAGE)
-    local surgeReady, touchReady
-    local surgeReadiness
-    if not preserve then
-        surgeReady, surgeReadiness = spellReady(SPELL.ARCANE_SURGE)
-        if surgeReady == nil then return fallback("surge-readiness-unknown", raw) end
-        touchReady = spellReady(SPELL.TOUCH_OF_THE_MAGI)
-        if touchReady == nil then
-            return fallback("touch-readiness-unknown",
-                withoutSpell(raw, SPELL.ARCANE_SURGE))
-        end
-    end
-
-    -- Surge leads only when Touch is positively ready too. If Touch is not
-    -- ready, remove raw Surge and continue the normal list rather than spending
-    -- the leader without its follower.
-    if not preserve and surgeReady and surgeSucceededRecently() then
-        -- Cooldown state can lag the authoritative success event by a frame.
-        -- Never export the same Surge instance again; remove a stale raw Surge
-        -- and continue so the subsequent Barrage/Bolt -> Touch step can win.
-        raw = withoutSpell(raw, SPELL.ARCANE_SURGE)
-    elseif not preserve and surgeReady and not touchReady then
-        raw = withoutSpell(raw, SPELL.ARCANE_SURGE)
-    elseif not preserve and surgeReady then
-        local gate, detail = lustrousGate()
-        if gate == true then
-            return choose(SPELL.ARCANE_SURGE, "cooldowns.arcane_surge",
-                "before-touch+" .. detail, raw)
-        elseif gate == nil then
-            return fallback(detail, withoutSpell(raw, SPELL.ARCANE_SURGE))
-        end
-        return fallback(detail, withoutSpell(raw, SPELL.ARCANE_SURGE))
-    end
-
-    -- Touch keeps the Bolt/Barrage travel-time setup. A recent successful Surge
-    -- selects the paired path. A missing/unusable Surge permits direct Touch;
-    -- an active cooldown additionally needs the SimC >30 s threshold proof.
-    if not preserve and previousSetsTouch and touchReady then
-        if surgeRecentlyPrecedesTouch() then
-            return choose(SPELL.TOUCH_OF_THE_MAGI, "cooldowns.touch_of_the_magi",
-                "prev-bolt-or-barrage+after-surge+same-target", raw)
-        elseif not surgeReady and surgeReadiness == "cooldown" then
-            local safelyFar = cooldownRemainingAbove(
-                SPELL.ARCANE_SURGE, SMALL_TOUCH_SURGE_REMAINS_SECONDS)
-            if safelyFar == true then
-                return choose(SPELL.TOUCH_OF_THE_MAGI, "cooldowns.touch_of_the_magi",
-                    "prev-bolt-or-barrage+small-touch+surge-remains>30", raw)
-            elseif safelyFar == nil then
-                return fallback("small-touch-surge-remains>30-unknown",
-                    withoutSpell(raw, SPELL.TOUCH_OF_THE_MAGI))
-            end
-            raw = withoutSpell(raw, SPELL.TOUCH_OF_THE_MAGI)
-        elseif not surgeReady then
-            -- Unlearned or positively unusable Surge cannot be aligned, so the
-            -- ordinary Touch remains legal after its same-target travel setup.
-            return choose(SPELL.TOUCH_OF_THE_MAGI, "cooldowns.touch_of_the_magi",
-                "prev-bolt-or-barrage+surge-" .. tostring(surgeReadiness) .. "-direct", raw)
         end
     end
 
@@ -885,7 +750,6 @@ function Source.Initialize()
                 state.cleanAuraBaseline = true
                 state.orbCastAt = nil
                 state.castSequenceSerial = 0
-                state.touchCastAt = nil
                 state.touchCastStep = 0
                 state.surgeCastAt = nil
                 state.surgeCastStep = 0
@@ -902,12 +766,10 @@ function Source.Initialize()
                 validateTargetCredentials()
             elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
                 if not isPlain(spellID, "number") then return end
-                if spellID == SPELL.LIQUID_LUSTER then state.liquidLusterCastAt = now() end
                 if spellID == SPELL.TOUCH_OF_THE_MAGI
                     or spellID == SPELL.ARCANE_SURGE then
                     state.castSequenceSerial = state.castSequenceSerial + 1
                     if spellID == SPELL.TOUCH_OF_THE_MAGI then
-                        state.touchCastAt = now()
                         state.touchCastStep = state.castSequenceSerial
                     else
                         state.surgeCastAt = now()
@@ -924,13 +786,7 @@ function Source.Initialize()
 
                 if spellID ~= SPELL.ARCANE_SURGE and state.burstStage then
                     if not burstSequenceCurrent() then return end
-                    if state.burstStage == BURST_STAGE.EXPECT_MISSILES
-                        and spellID == SPELL.ARCANE_MISSILES then
-                        setBurstStage(BURST_STAGE.EXPECT_BARRAGE)
-                    elseif state.burstStage == BURST_STAGE.EXPECT_BARRAGE
-                        and spellID == SPELL.ARCANE_BARRAGE then
-                        setBurstStage(BURST_STAGE.EXPECT_TOUCH)
-                    elseif state.burstStage == BURST_STAGE.EXPECT_TOUCH
+                    if state.burstStage == BURST_STAGE.EXPECT_TOUCH
                         and spellID == SPELL.TOUCH_OF_THE_MAGI then
                         cancelBurstSequence("sequence-complete")
                     elseif GCD_SPELLS[spellID] then
@@ -942,9 +798,7 @@ function Source.Initialize()
                 or event == "UNIT_SPELLCAST_INTERRUPTED" then
                 if state.burstStage and isPlain(spellID, "number") then
                     local expected = burstStepSpellID()
-                    if spellID == expected or spellID == SPELL.ARCANE_MISSILES
-                        or spellID == SPELL.ARCANE_BARRAGE
-                        or spellID == SPELL.TOUCH_OF_THE_MAGI then
+                    if spellID == expected or spellID == SPELL.TOUCH_OF_THE_MAGI then
                         cancelBurstSequence(event .. "-" .. tostring(spellID))
                     end
                 end
@@ -969,30 +823,12 @@ end
 
 function Source.GetQueue()
     local raw = rawQueue()
-    local selected = selectQueue(raw, false)
-    if state.usedFallback then
-        local adjusted = buildConservativeFallback(selected)
-        if adjusted ~= selected then
-            state.decision = state.decision
-                .. " conservativeFallback=blast-before-unproven-barrage"
-        end
-        return adjusted
-    end
-    return selected
+    return selectQueue(raw, false)
 end
 
 function Source.GetPreserveQueue()
     local raw = rawQueue()
-    local selected = selectQueue(raw, true)
-    if state.usedFallback then
-        local adjusted = buildConservativeFallback(selected)
-        if adjusted ~= selected then
-            state.decision = state.decision
-                .. " conservativeFallback=blast-before-unproven-barrage"
-        end
-        return adjusted
-    end
-    return selected
+    return selectQueue(raw, true)
 end
 
 function Source.GetDecisionTrace()
@@ -1005,8 +841,6 @@ Source._Test = {
     state = state,
     burstStage = BURST_STAGE,
     selectQueue = selectQueue,
-    buildConservativeFallback = buildConservativeFallback,
-    cooldownRemainingAbove = cooldownRemainingAbove,
 }
 
 Registry.Register("arcane121", Source)

@@ -31,19 +31,18 @@ APL、Method 与 Icy Veins 的交集为实现依据。
 - 保留现有 12.1 自有源与 M4/M5 特例，不把无法读取的动态优先级伪装成完整 APL。
 - 所有自有动作先由 `IsPlayerSpell`/`IsSpellKnown` 正面确认归属。
 - 对 API 返回值、光环持续时间和 JustAC 队列增加 `pcall` 与 secret/plain 校验。
-- JustAC 回退中的“奥冲排在未证明弹幕之前”也只在已确认拥有奥冲时执行。
+- 自有源无法完整证明更高优先级条件时原样保留 JustAC 剩余动作的相对顺序；不再注入
+  奥冲或把奥冲移动到 JustAC 推荐的弹幕之前。明确的合法性/安全过滤只能删除动作。
 - 大法师之触按当前 SimC `use_off_gcd=1` 标记；只在自有源已证明触分支后让对应 M5
   槽绕过 GCD 门控，读条/引导保护和 M4 保留不变。
 - 项目定制条件配对：涌动明确可用时先等待触也明确就绪，再先涌动、后触；触未就绪
   时从自有源和 JustAC 回退中跳过涌动。若涌动明确未学习、未绑定或不可用，合法的触
-  分支可以直接释放；若涌动在冷却，独立小触还必须通过 DurationObject 阈值正面证明
-  `cooldown.arcane_surge.remains>30`，阈值内或未知都不放。配对顺序只接受 10 秒内的
-  `UNIT_SPELLCAST_SUCCEEDED` 顺序证据。
-- Icy Veins 与 Wowhead 当前大爆发都给出
-  `Arcane Surge → Arcane Missiles → Arcane Barrage → Touch of the Magi`。M5 因此在
-  涌动成功后建立 10 秒短状态机，只由每一步的 `UNIT_SPELLCAST_SUCCEEDED` 推进；失败、
-  中断、意外 GCD、超时或无效目标立即取消。M4 不强制该序列，也不建立第二份状态。
-- 上述状态与弹幕/Bolt 后接触凭据保存当前敌对 `targetGUID`。`PLAYER_TARGET_CHANGED`、
+  分支可以直接释放；涌动在冷却时也直接放触，不再读取 DurationObject 阈值，不要求
+  上一弹幕/Bolt。配对顺序只接受 10 秒内的 `UNIT_SPELLCAST_SUCCEEDED` 顺序证据。
+- Icy Veins 与 Wowhead 的高级序列包含飞弹和弹幕，但项目按用户明确要求采用更可靠的
+  `Arcane Surge → Touch of the Magi` 配对：涌动成功后只建立 `EXPECT_TOUCH`，下一动作
+  直接优先触；失败、中断、意外 GCD、超时或无效目标立即取消。M4 不强制该序列。
+- 上述状态凭据保存当前敌对 `targetGUID`。`PLAYER_TARGET_CHANGED`、
   GUID 不一致、目标死亡或不可攻击会同时清除上一 GCD、涌动配对与短状态机凭据；切回
   原 GUID 不会恢复旧凭据。
 - 移动飞弹增加一次性实测兜底：浮光掠影和飞弹归属已确认、飞弹当前可用且确实位于

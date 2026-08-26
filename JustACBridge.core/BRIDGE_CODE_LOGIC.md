@@ -1,4 +1,4 @@
-# JustACBridge 2.12.35：代码路径与判定逻辑
+# JustACBridge 2.12.37：代码路径与判定逻辑
 
 > 本文是当前实现的代码级说明，不是面向玩家的职业循环翻译。伪代码保留真实函数名、
 > 分支顺序、三态返回值和 fail-open/fail-closed 语义，便于与其他 Bridge 实现逐函数对比。
@@ -510,9 +510,7 @@ context:Fallback(reason, raw)
 ```lua
 state = {
     cleanAuraBaseline,
-    liquidLusterCastAt,
     castSequenceSerial,
-    touchCastAt,
     touchCastStep,
     surgeCastAt,
     surgeCastStep,
@@ -520,7 +518,7 @@ state = {
     orbCastAt,
     lastGCDSpellID,
     lastGCDTargetGUID,
-    burstStage,          -- expect-missiles / expect-barrage / expect-touch
+    burstStage,          -- expect-touch
     burstStartedAt,
     burstTargetGUID,
     burstCancelReason,
@@ -552,37 +550,22 @@ if not preserve and burstStage exists then
     -- positively invalid => cancel + continue ordinary APL
 end
 
-if hero == spellslinger and first Orb not confirmed this combat then
-    if Ready(ARCANE_ORB) == true then choose ARCANE_ORB end
-    if Ready(...) == nil then fallback end
-end
-
 surgeReady = Ready(ARCANE_SURGE)
 touchReady = Ready(TOUCH)
 
-if not preserve and surgeReady and recentSuccessfulSurge(10s) then
-    raw = raw without ARCANE_SURGE  -- absorb one-frame cooldown-state lag
-elseif not preserve and surgeReady and not touchReady then
-    raw = raw without ARCANE_SURGE  -- Touch 未就绪，不能单开 Surge
-elseif not preserve and surgeReady and touchReady then
-    gate = lustrousGate()
-    if gate == true then choose ARCANE_SURGE end
-    if gate == false or gate == nil then fallback(raw without Surge) end
+if not preserve then
+    if surgeReady == unknown then fallback(raw without TOUCH) end
+    if touchReady == unknown then fallback(raw without SURGE) end
+    if touchReady and recentSuccessfulSurgeOnSameTarget(10s) then choose TOUCH end
+    if surgeReady and touchReady then choose SURGE end
+    if surgeReady and not touchReady then raw = raw without SURGE end
+    if not surgeReady and touchReady then choose TOUCH end
+    if not touchReady then raw = raw without TOUCH end
 end
 
-if not preserve
-    and previousGCD targetGUID == current hostile targetGUID
-    and previousGCD in {PRISMATIC_BOLT, 1295939, ARCANE_BARRAGE}
-    and touchReady
-    and recentSurgeAfterLastTouchOnSameTarget(10s) then
-    choose TOUCH
-end
-
-if same-target previous Bolt/Barrage and touchReady and Surge is on cooldown then
-    above = IsSpellCooldownRemainingAbove(ARCANE_SURGE, 30.1)
-    if above == true then choose TOUCH end
-    if above == nil then fallback(raw without TOUCH) end
-    if above == false then continue ordinary APL with TOUCH removed end
+if hero == spellslinger and first Orb not confirmed this combat then
+    if Ready(ARCANE_ORB) == true then choose ARCANE_ORB end
+    if Ready(...) == nil then fallback end
 end
 
 if hero == sunfury
@@ -604,41 +587,20 @@ return hero == spellslinger
 
 ```text
 Surge UNIT_SPELLCAST_SUCCEEDED on GUID A
-  -> EXPECT_MISSILES
-Missiles UNIT_SPELLCAST_SUCCEEDED on GUID A
-  -> EXPECT_BARRAGE
-Barrage UNIT_SPELLCAST_SUCCEEDED on GUID A
   -> EXPECT_TOUCH
 Touch UNIT_SPELLCAST_SUCCEEDED on GUID A
   -> NORMAL
 ```
 
 下列任一条件调用 `cancelBurstSequence()`：当前目标 GUID 不是 A、目标死亡或不可攻击、
-任一步失败/中断、出现非预期 GCD、步骤不可用、目标/持续时间变为 unknown，或从涌动
+触失败/中断、出现非预期 GCD、触不可用、目标状态变为 unknown，或从涌动
 成功起达到 10 秒。取消后同一刷新立即回到普通 APL；只有 unknown readiness 按高优先级
 未知规则回退 JustAC。
 
-策略层的 `pairedCastRules.targetBound=true` 为原始 JustAC 回退队列提供同一 GUID 门，
-`directFollowerMinLeaderCooldownRemainingSeconds=30.1` 则保证 raw Touch 也不能绕过小触
-冷却阈值。
+策略层的 `pairedCastRules.targetBound=true` 为原始 JustAC 回退队列提供同一 GUID 门。
+M5 不再要求上一弹幕/Bolt，也不再使用剩余冷却阈值；M4 仍过滤涌动和触。
 
-### 9.3 `lustrousGate()`
-
-```lua
-if Gleam >= 2 then return true,  "lustrous>=2" end
-if Gleam >= 1 and not Gleam >= 2 then return false, "lustrous=1" end
-if not Gleam >= 1 then return true, "lustrous-missing" end
-
-if LiquidLuster success age in [0, 61] then
-    return nil, "lustrous-secret-after-potion"
-end
-if cleanAuraBaseline then
-    return true, "lustrous-missing-observed"
-end
-return nil, "lustrous-unknown"
-```
-
-### 9.4 疾咒师普通表的代码顺序
+### 9.3 疾咒师普通表的代码顺序
 
 ```text
 Prismatic Bolt when Salvo >= 14
@@ -655,7 +617,7 @@ Arcane Pulse when charges < 3 and Surge aura proven absent
 Arcane Blast terminal
 ```
 
-### 9.5 日怒普通表的代码顺序
+### 9.4 日怒普通表的代码顺序
 
 ```text
 Prismatic Bolt when active and Arcane Soul is false
@@ -673,17 +635,19 @@ Arcane Pulse when charges < 1
 Arcane Blast terminal
 ```
 
-### 9.6 Arcane conservative fallback
+### 9.5 Arcane exact-order fallback
 
-只在 `Known(ARCANE_BLAST)` 时执行：
+`fallback=true` 不注入技能，也不改变 JustAC 剩余动作的相对顺序：
 
 ```lua
-if raw contains BARRAGE
-    and not (raw contains BLAST before BARRAGE) then
-    move existing BLAST before BARRAGE
-    or insert exactly one BLAST immediately before BARRAGE
-end
+selected = raw
+selected = removeOnlyExplicitSafetyViolations(selected)
+assert(relativeOrder(selected) == relativeOrderOfSameActions(raw))
 ```
+
+显式安全过滤包括 Touch 的同目标凭据、M4 保留、移动/引导、方向/地面技能以及技能
+归属/绑定。它们只能删除不合法动作；不得把 Blast 移到 Barrage 之前，也不得补入 raw
+中不存在的 Blast。只有 `selectQueue` 完整证明某条自有 APL 谓词时才能 `choose()` 覆盖。
 
 `GetQueue()` 调用 `selectQueue(raw, false)`；`GetPreserveQueue()` 调用
 `selectQueue(raw, true)`。`preserve=true` 只删除源内的 Surge/Touch 分支，其他普通分支

@@ -722,8 +722,18 @@ local function isCastSequenceSafeQueueValue(queueValue)
                     local usableOK, usable = sourceCall("IsSpellUsable", partnerSpellID)
                     local cooldownOK, onCooldown = sourceCall("IsSpellOnCooldown", partnerSpellID)
                     if not hotkeyOK or type(hotkey) ~= "string" or hotkey == "" then
-                        partnerReady = hotkeyOK and false or nil
-                        partnerReadyReason = hotkeyOK and "unbound" or "binding-unknown"
+                        -- Do not use `hotkeyOK and false or nil`: Lua's `and/or`
+                        -- idiom cannot preserve a false middle value. A known
+                        -- empty binding is positively unavailable and therefore
+                        -- permits a configured direct-follower path; only a
+                        -- failed capability call remains unknown/fail-closed.
+                        if hotkeyOK then
+                            partnerReady = false
+                            partnerReadyReason = "unbound"
+                        else
+                            partnerReady = nil
+                            partnerReadyReason = "binding-unknown"
+                        end
                     elseif not usableOK or type(usable) ~= "boolean"
                         or not cooldownOK or type(onCooldown) ~= "boolean" then
                         partnerReady = nil
@@ -1782,7 +1792,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.35", GetTime() - debugStartedAt,
+            reason, "2.12.37", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -2811,7 +2821,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.35", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.37", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
