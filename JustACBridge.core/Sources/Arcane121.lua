@@ -212,9 +212,23 @@ local function spellReady(spellID)
     -- positive ownership check.
     if not isKnown(spellID) then return false, "unlearned" end
     local usable = callBoolean("IsSpellUsable", spellID)
-    local cooldown = callBoolean("IsSpellOnCooldown", spellID)
-    if usable == nil or cooldown == nil then return nil, "readiness-unknown" end
-    if cooldown then return false, "cooldown" end
+    if usable == nil then return nil, "readiness-unknown" end
+
+    if spellID == SPELL.ARCANE_ORB then
+        -- Orb may have multiple charges. Its recharge DurationObject remains
+        -- active at 1/2, so IsSpellOnCooldown would incorrectly reserve the
+        -- final usable charge. JustAC's IsSpellReady uses its secret-safe local
+        -- charge tracker and returns true at 1/2, false only at 0/2. If that
+        -- evidence is unavailable, do not guess or fall back to the broken
+        -- duration predicate; delegate the decision to the raw JustAC queue.
+        local chargeReady = callBoolean("IsSpellReady", spellID)
+        if chargeReady == nil then return nil, "charge-readiness-unknown" end
+        if not chargeReady then return false, "cooldown" end
+    else
+        local cooldown = callBoolean("IsSpellOnCooldown", spellID)
+        if cooldown == nil then return nil, "readiness-unknown" end
+        if cooldown then return false, "cooldown" end
+    end
     if not usable then return false, "unusable" end
     return true, "ready"
 end

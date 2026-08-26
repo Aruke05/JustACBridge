@@ -37,7 +37,7 @@ assert(#arcane.priorityCues == 0)
 
 local arcane121 = assert(registry.Resolve("MAGE", 1, 120100))
 assert(arcane121.ruleset == "midnight-12.1")
-assert(arcane121.revision == 31)
+assert(arcane121.revision == 32)
 assert(#arcane121.reserveExclusions == 0)
 assert(arcane121.useDetectedBurstTriggers == false)
 assert(#arcane121.offGCD == 1 and arcane121.offGCD[1] == 321507)

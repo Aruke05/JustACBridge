@@ -1,4 +1,4 @@
-# JustACBridge 2.12.37：代码路径与判定逻辑
+# JustACBridge 2.12.38：代码路径与判定逻辑
 
 > 本文是当前实现的代码级说明，不是面向玩家的职业循环翻译。伪代码保留真实函数名、
 > 分支顺序、三态返回值和 fail-open/fail-closed 语义，便于与其他 Bridge 实现逐函数对比。
@@ -567,6 +567,10 @@ if hero == spellslinger and first Orb not confirmed this combat then
     if Ready(ARCANE_ORB) == true then choose ARCANE_ORB end
     if Ready(...) == nil then fallback end
 end
+
+-- Orb 是多充能特例：DurationObject 在 1/2 时仍 active。
+-- Ready(ARCANE_ORB) 使用 JustAC.IsSpellReady 的本地充能追踪：
+-- 1/2 => true，0/2 => false，unknown => fallback；绝不改用 IsSpellOnCooldown 猜测。
 
 if hero == sunfury
     and Procced(MISSILES) == true

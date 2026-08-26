@@ -11,6 +11,7 @@ local missilesProcced = false
 local salvoStacks
 local charges = 4
 local displayBlast = 30451
+local orbChargeReady = true
 local targetGUID = "Creature-0-0-0-0-100-0000000001"
 local targetExists = true
 local targetAttackable = true
@@ -68,6 +69,12 @@ C_Spell = {
 local bapi = {
     IsSpellUsable = function(id) return usable[id] ~= false end,
     IsSpellOnCooldown = function(id) return cooldowns[id] == true end,
+    -- Charge-aware readiness stays true at 1/2 even though the recharge
+    -- DurationObject (and therefore IsSpellOnCooldown) is active.
+    IsSpellReady = function(id)
+        if id == 153626 then return orbChargeReady end
+        return cooldowns[id] ~= true
+    end,
     GetAuraStackAtLeast = function(_, id, threshold)
         if id == 1295147 then
             if threshold == 1 then return lustrousOne end
@@ -294,6 +301,7 @@ hero = "spellslinger"
 missilesProcced, salvoStacks, charges = false, 20, 4
 queue = source.GetQueue()
 assert(queue[1] == 44425)
+
 assert(source.GetDecisionTrace():match("four%-charges%+salvo%-threshold"))
 
 salvoStacks, charges, missilesProcced = 10, 2, true
@@ -302,7 +310,7 @@ assert(queue[1] == 5143)
 assert(source.GetDecisionTrace():match("spellslinger.arcane_missiles"))
 
 salvoStacks, charges, missilesProcced = 0, 4, false
-cooldowns[153626] = true
+cooldowns[153626], orbChargeReady = true, false
 queue = source.GetQueue()
 assert(queue[1] == 30451)
 assert(source.GetDecisionTrace():match("spellslinger.arcane_blast"))
@@ -324,5 +332,46 @@ source._Test.state.surgeCastAt = now
 queue = source.GetQueue()
 assert(queue[1] == 44425)
 assert(source.GetDecisionTrace():match("four%-charges%+salvo=25"))
+
+-- Regression: Arcane Orb is a multi-charge spell. At 1/2 its recharge duration
+-- is active, but the remaining charge must still be treated as castable.
+hero = "spellslinger"
+source._Test.state.orbCastAt = now -- skip the once-per-combat opening line
+rawQueue = { 30451, 44425 }
+charges, salvoStacks, missilesProcced = 2, 0, false
+cooldowns[365350], cooldowns[321507] = true, true
+cooldowns[153626], orbChargeReady = true, true
+queue = source.GetQueue()
+assert(queue[1] == 153626)
+assert(source.GetDecisionTrace():match("spellslinger.arcane_orb"))
+preserve = source.GetPreserveQueue()
+assert(preserve[1] == 153626)
+
+-- At 0/2 the charge-aware reader is false, so the source must not inject Orb.
+orbChargeReady = false
+queue = source.GetQueue()
+assert(queue[1] ~= 153626)
+preserve = source.GetPreserveQueue()
+assert(preserve[1] ~= 153626)
+
+-- An unreadable charge state is unknown, not false and not a guessed cast.
+orbChargeReady = nil
+queue = source.GetQueue()
+assert(queue == rawQueue)
+assert(source.GetDecisionTrace():match("orb%-readiness%-unknown"))
+
+-- Sunfury uses the same charge-aware evidence: one remaining Orb is castable
+-- when Arcane Charges need rebuilding, while 0/2 and unknown never inject it.
+hero, charges, orbChargeReady = "sunfury", 0, true
+queue = source.GetQueue()
+assert(queue[1] == 153626)
+assert(source.GetDecisionTrace():match("sunfury.arcane_orb"))
+orbChargeReady = false
+queue = source.GetQueue()
+assert(queue[1] ~= 153626)
+orbChargeReady = nil
+queue = source.GetQueue()
+assert(queue == rawQueue)
+assert(source.GetDecisionTrace():match("orb%-readiness%-unknown"))
 
 print("arcane 12.1 source tests passed")

@@ -1,5 +1,5 @@
 -- Focused adversarial tests for Arcane 12.1 target credentials, the short
--- big-burn state machine and the independent Touch cooldown threshold.
+-- big-burn state machine and direct-Touch reliability rule.
 -- This file uses only mocks; it never starts or connects to the game client.
 
 local now = 100
@@ -69,6 +69,10 @@ local bapi = {
     IsSpellOnCooldown = function(id)
         if readinessUnknown[id] then return nil end
         return cooldowns[id] == true
+    end,
+    IsSpellReady = function(id)
+        if readinessUnknown[id] then return nil end
+        return cooldowns[id] ~= true
     end,
     GetAuraStackAtLeast = function() return false end,
     IsSpellProcced = function() return false end,

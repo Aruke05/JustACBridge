@@ -59,7 +59,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 31,
+            revision = 32,
             -- 12.1 M4 shares the owned Arcane priority with M5. Orb is no
             -- longer permanently excluded; both modes use the movement and
             -- stationary-resume rules below.

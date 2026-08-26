@@ -31,6 +31,9 @@ APL、Method 与 Icy Veins 的交集为实现依据。
 - 保留现有 12.1 自有源与 M4/M5 特例，不把无法读取的动态优先级伪装成完整 APL。
 - 所有自有动作先由 `IsPlayerSpell`/`IsSpellKnown` 正面确认归属。
 - 对 API 返回值、光环持续时间和 JustAC 队列增加 `pcall` 与 secret/plain 校验。
+- 奥术宝珠的 `spellReady()` 专门使用 JustAC `IsSpellReady` 的本地多充能追踪；不再用
+  充能恢复中的 DurationObject 把 `1/2` 误判为冷却。只取得“至少一层可用”的可靠
+  布尔证据，不伪称读取到秘密的精确层数；未知时回退 JustAC。
 - 自有源无法完整证明更高优先级条件时原样保留 JustAC 剩余动作的相对顺序；不再注入
   奥冲或把奥冲移动到 JustAC 推荐的弹幕之前。明确的合法性/安全过滤只能删除动作。
 - 大法师之触按当前 SimC `use_off_gcd=1` 标记；只在自有源已证明触分支后让对应 M5
