@@ -1,4 +1,4 @@
-# 法师三系 12.1 适配依据（2026-08-24）
+# 法师三系 12.1 适配依据（2026-08-26）
 
 本轮只实现 Bridge 能从普通布尔值、明确法术归属、成功施法事件或 JustAC 的安全封装
 可靠证明的规则。目标数量、光环层数、持续时间或投射物时序一旦不可读，就原样回退
@@ -10,7 +10,12 @@
 - NGA 火法 PTR/S2：[S2 火法循环变化 V1](https://bbs.nga.cn/read.php?tid=47171968)
 - NGA 团本实战：[英雄烈毒之渊/潮缚石窟法师心得](https://bbs.nga.cn/read.php?tid=47431968)
 - SimulationCraft Midnight 当前法师 APL：
+  [mage_arcane.simc](https://github.com/simulationcraft/simc/blob/midnight/ActionPriorityLists/default/mage_arcane.simc)、
   [mage.cpp](https://github.com/simulationcraft/simc/blob/midnight/engine/class_modules/apl/mage.cpp)
+- Icy Veins 当前奥法循环：
+  [Arcane Mage Rotation, Cooldowns, and Abilities](https://www.icy-veins.com/wow/arcane-mage-pve-dps-rotation-cooldowns-abilities)
+- Wowhead 当前奥法循环：
+  [Arcane Mage Rotation Guide](https://www.wowhead.com/guide/classes/mage/arcane/rotation-cooldowns-pve-dps)
 - Method 当前冰法循环：
   [Frost Mage Playstyle and Rotation](https://www.method.gg/guides/frost-mage/playstyle-and-rotation)
 - Icy Veins 当前冰法说明：
@@ -30,9 +35,17 @@ APL、Method 与 Icy Veins 的交集为实现依据。
 - 大法师之触按当前 SimC `use_off_gcd=1` 标记；只在自有源已证明触分支后让对应 M5
   槽绕过 GCD 门控，读条/引导保护和 M4 保留不变。
 - 项目定制条件配对：涌动明确可用时先等待触也明确就绪，再先涌动、后触；触未就绪
-  时从自有源和 JustAC 回退中跳过涌动。若涌动明确未学习、未绑定、不可用或在冷却，
-  合法的触分支可以直接释放；涌动可用性未知时两条路径都不猜。配对顺序只接受 10 秒内的
+  时从自有源和 JustAC 回退中跳过涌动。若涌动明确未学习、未绑定或不可用，合法的触
+  分支可以直接释放；若涌动在冷却，独立小触还必须通过 DurationObject 阈值正面证明
+  `cooldown.arcane_surge.remains>30`，阈值内或未知都不放。配对顺序只接受 10 秒内的
   `UNIT_SPELLCAST_SUCCEEDED` 顺序证据。
+- Icy Veins 与 Wowhead 当前大爆发都给出
+  `Arcane Surge → Arcane Missiles → Arcane Barrage → Touch of the Magi`。M5 因此在
+  涌动成功后建立 10 秒短状态机，只由每一步的 `UNIT_SPELLCAST_SUCCEEDED` 推进；失败、
+  中断、意外 GCD、超时或无效目标立即取消。M4 不强制该序列，也不建立第二份状态。
+- 上述状态与弹幕/Bolt 后接触凭据保存当前敌对 `targetGUID`。`PLAYER_TARGET_CHANGED`、
+  GUID 不一致、目标死亡或不可攻击会同时清除上一 GCD、涌动配对与短状态机凭据；切回
+  原 GUID 不会恢复旧凭据。
 - 移动飞弹增加一次性实测兜底：浮光掠影和飞弹归属已确认、飞弹当前可用且确实位于
   推荐队列，但节能施法光环不可读时，每次连续移动允许试放一次。失败事件立即锁掉
   后续尝试直到真实停步；成功则进入既有的完整飞弹引导保护。

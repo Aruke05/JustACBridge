@@ -59,7 +59,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 28,
+            revision = 29,
             -- 12.1 M4 shares the owned Arcane priority with M5. Orb is no
             -- longer permanently excluded; both modes use the movement and
             -- stationary-resume rules below.
@@ -78,14 +78,24 @@ Registry.RegisterSpec("MAGE", 1, {
             },
             -- Pairing contract: when Surge is currently available, hold it
             -- until Touch is also positively ready, then enforce Surge first
-            -- and Touch within ten seconds. If Surge is positively unavailable
-            -- (unlearned, unusable or on cooldown), Touch may fire directly.
+            -- and Touch within ten seconds. If Surge is unlearned, unbound or
+            -- positively unusable, Touch may fire directly; an active Surge
+            -- cooldown additionally needs the >30 s threshold configured below.
             -- Unknown readiness fails closed instead of guessing either path.
             pairedCastRules = {
                 {
                     leaderSpellID = 365350,   -- Arcane Surge
                     followerSpellID = 321507, -- Touch of the Magi
                     withinSeconds = 10,
+                    -- A target change invalidates the entire big-burn
+                    -- credential; a Surge/Barrage setup from enemy A may never
+                    -- release Touch on enemy B.
+                    targetBound = true,
+                    -- Current SimC permits the independent 45 s Touch only
+                    -- while Surge remains >30 s away. 30.1 preserves the strict
+                    -- inequality when the secret-safe predicate is a below/not-
+                    -- below split.
+                    directFollowerMinLeaderCooldownRemainingSeconds = 30.1,
                 },
             },
             -- Arcane M4 shares M5's proven owned actions minus Surge and Touch.

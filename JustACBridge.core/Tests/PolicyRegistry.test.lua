@@ -37,7 +37,7 @@ assert(#arcane.priorityCues == 0)
 
 local arcane121 = assert(registry.Resolve("MAGE", 1, 120100))
 assert(arcane121.ruleset == "midnight-12.1")
-assert(arcane121.revision == 28)
+assert(arcane121.revision == 29)
 assert(#arcane121.reserveExclusions == 0)
 assert(arcane121.useDetectedBurstTriggers == false)
 assert(#arcane121.offGCD == 1 and arcane121.offGCD[1] == 321507)
@@ -45,7 +45,10 @@ assert(#arcane121.castSequenceRules == 0)
 assert(#arcane121.pairedCastRules == 1)
 assert(arcane121.pairedCastRules[1].leaderSpellID == 365350
     and arcane121.pairedCastRules[1].followerSpellID == 321507
-    and arcane121.pairedCastRules[1].withinSeconds == 10)
+    and arcane121.pairedCastRules[1].withinSeconds == 10
+    and arcane121.pairedCastRules[1].targetBound == true
+    and arcane121.pairedCastRules[1]
+        .directFollowerMinLeaderCooldownRemainingSeconds == 30.1)
 assert(arcane121.preserveUsesCurrentSafety == true)
 assert(#arcane121.rotationExclusions == 0)
 assert(#arcane121.rotationEffectiveExclusions == 1

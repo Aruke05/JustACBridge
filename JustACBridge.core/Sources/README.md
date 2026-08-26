@@ -59,6 +59,8 @@ Bridge 会以 `SOURCE_DECISION` 写入诊断日志。
 - `GetEffectiveSpellID(spellID)`（推荐；先解析动态动作栏形态，再解析天赋替换）
 - `IsSpellUsable(spellID)`
 - `IsSpellOnCooldown(spellID)`（真实技能冷却，必须排除公共 GCD；未知返回 `nil`）
+- `IsSpellCooldownRemainingAbove(spellID, seconds)`（DurationObject 阈值比较；不读取
+  secret 剩余秒数，无法证明时返回 `nil`）
 - `IsSpellProcced(spellID)`
 - `IsChanneled(spellID)`
 - `IsConfirmedOutOfRange(spellID)`

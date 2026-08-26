@@ -66,6 +66,7 @@ local successfulCastResumeTriggerAt = {}
 local successfulCastSequenceSerial = 0
 local successfulCastSequenceStep = {}
 local successfulCastSequenceAt = {}
+local successfulCastSequenceTargetGUID = {}
 local pendingCastFollowups = {}
 local MOVEMENT_FLAP_WINDOW_SECONDS = 0.12
 local MOVEMENT_STOP_DEBOUNCE_SECONDS = 0.25
@@ -387,6 +388,25 @@ local function isSecret(value)
     return issecretvalue and issecretvalue(value) or false
 end
 
+local function getCurrentHostileTargetGUID()
+    if not (UnitExists and UnitCanAttack and UnitGUID) then return nil end
+    local okExists, exists = pcall(UnitExists, "target")
+    local okAttack, attackable = pcall(UnitCanAttack, "player", "target")
+    if not okExists or isSecret(exists) or exists ~= true
+        or not okAttack or isSecret(attackable) or attackable ~= true then
+        return nil
+    end
+    if UnitIsDeadOrGhost then
+        local okDead, dead = pcall(UnitIsDeadOrGhost, "target")
+        if not okDead or isSecret(dead) or dead ~= false then return nil end
+    end
+    local okGUID, guid = pcall(UnitGUID, "target")
+    if not okGUID or isSecret(guid) or type(guid) ~= "string" or guid == "" then
+        return nil
+    end
+    return guid
+end
+
 getEffectiveSpellID = function(spellID)
     spellID = tonumber(spellID)
     if not spellID then
@@ -623,7 +643,28 @@ local function resetSuccessfulCastSequences()
     successfulCastSequenceSerial = 0
     successfulCastSequenceStep = {}
     successfulCastSequenceAt = {}
+    successfulCastSequenceTargetGUID = {}
     pendingCastFollowups = {}
+end
+
+local function resetTargetBoundSuccessfulCastSequences()
+    local function clearRule(rule, firstField, secondField)
+        if type(rule) ~= "table" or rule.targetBound ~= true then return end
+        for _, field in ipairs({ firstField, secondField }) do
+            local spellID = tonumber(rule[field])
+            if spellID then
+                successfulCastSequenceStep[spellID] = nil
+                successfulCastSequenceAt[spellID] = nil
+                successfulCastSequenceTargetGUID[spellID] = nil
+            end
+        end
+    end
+    for _, rule in ipairs(currentPolicy and currentPolicy.castSequenceRules or {}) do
+        clearRule(rule, "spellID", "afterSpellID")
+    end
+    for _, rule in ipairs(currentPolicy and currentPolicy.pairedCastRules or {}) do
+        clearRule(rule, "leaderSpellID", "followerSpellID")
+    end
 end
 
 local function isCastSequenceSafeQueueValue(queueValue)
@@ -672,20 +713,30 @@ local function isCastSequenceSafeQueueValue(queueValue)
             if isLeader or isFollower then
                 local partnerSpellID = isLeader and followerSpellID or leaderSpellID
                 local partnerKnown = isSpellKnown and isSpellKnown(partnerSpellID) or false
-                local partnerReady
+                local partnerReady, partnerReadyReason
                 if not partnerKnown then
                     partnerReady = false
+                    partnerReadyReason = "unlearned"
                 else
                     local hotkeyOK, hotkey = sourceCall("GetSpellHotkey", partnerSpellID)
                     local usableOK, usable = sourceCall("IsSpellUsable", partnerSpellID)
                     local cooldownOK, onCooldown = sourceCall("IsSpellOnCooldown", partnerSpellID)
                     if not hotkeyOK or type(hotkey) ~= "string" or hotkey == "" then
                         partnerReady = hotkeyOK and false or nil
+                        partnerReadyReason = hotkeyOK and "unbound" or "binding-unknown"
                     elseif not usableOK or type(usable) ~= "boolean"
                         or not cooldownOK or type(onCooldown) ~= "boolean" then
                         partnerReady = nil
+                        partnerReadyReason = "readiness-unknown"
+                    elseif onCooldown then
+                        partnerReady = false
+                        partnerReadyReason = "cooldown"
+                    elseif not usable then
+                        partnerReady = false
+                        partnerReadyReason = "unusable"
                     else
-                        partnerReady = usable and not onCooldown
+                        partnerReady = true
+                        partnerReadyReason = "ready"
                     end
                 end
 
@@ -704,10 +755,26 @@ local function isCastSequenceSafeQueueValue(queueValue)
                         recentLeader = elapsed ~= nil and elapsed >= 0
                             and elapsed < withinSeconds
                     end
+                    if recentLeader and rule.targetBound == true then
+                        local credentialGUID = successfulCastSequenceTargetGUID[leaderSpellID]
+                        local currentGUID = getCurrentHostileTargetGUID()
+                        recentLeader = credentialGUID ~= nil and currentGUID ~= nil
+                            and credentialGUID == currentGUID
+                    end
                     -- A recent leader success proves the ordered path. Without
                     -- it, direct follower use is legal only when the leader is
-                    -- positively unavailable; ready or unknown both hold.
+                    -- positively unavailable; ready or unknown both hold. A
+                    -- policy may further restrict the active-cooldown case.
                     if not recentLeader and partnerReady ~= false then return false end
+                    if not recentLeader and partnerReadyReason == "cooldown" then
+                        local minimum = tonumber(
+                            rule.directFollowerMinLeaderCooldownRemainingSeconds)
+                        if minimum and minimum > 0 then
+                            local thresholdOK, remainsAbove = sourceCall(
+                                "IsSpellCooldownRemainingAbove", leaderSpellID, minimum)
+                            if not thresholdOK or remainsAbove ~= true then return false end
+                        end
+                    end
                 end
             end
         end
@@ -728,6 +795,10 @@ local function recordSuccessfulCastSequence(spellID)
                 successfulCastSequenceSerial = successfulCastSequenceSerial + 1
                 successfulCastSequenceStep[configuredID] = successfulCastSequenceSerial
                 successfulCastSequenceAt[configuredID] = GetTime()
+                if rule.targetBound == true then
+                    successfulCastSequenceTargetGUID[configuredID] =
+                        getCurrentHostileTargetGUID()
+                end
                 matched = true
             end
         end
@@ -741,6 +812,10 @@ local function recordSuccessfulCastSequence(spellID)
                 successfulCastSequenceSerial = successfulCastSequenceSerial + 1
                 successfulCastSequenceStep[configuredID] = successfulCastSequenceSerial
                 successfulCastSequenceAt[configuredID] = GetTime()
+                if rule.targetBound == true then
+                    successfulCastSequenceTargetGUID[configuredID] =
+                        getCurrentHostileTargetGUID()
+                end
                 matched = true
             end
         end
@@ -1707,7 +1782,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.34", GetTime() - debugStartedAt,
+            reason, "2.12.35", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -2653,6 +2728,7 @@ eventFrame:RegisterEvent("UI_SCALE_CHANGED")
 eventFrame:RegisterEvent("DISPLAY_SIZE_CHANGED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 eventFrame:RegisterEvent("PLAYER_TALENT_UPDATE")
 eventFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
@@ -2670,6 +2746,8 @@ eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED_QUIET", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+eventFrame:RegisterUnitEvent("UNIT_HEALTH", "target")
+eventFrame:RegisterUnitEvent("UNIT_FLAGS", "target")
 eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID)
     if event == "PLAYER_LOGIN" then
         JustACBridgeDB = JustACBridgeDB or {}
@@ -2733,7 +2811,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.34", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.35", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -2772,6 +2850,17 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
     elseif event == "PLAYER_REGEN_ENABLED" then
         resetSuccessfulCastSequences()
         lastSignature = nil
+    elseif event == "PLAYER_TARGET_CHANGED" then
+        -- Only policies which explicitly bind a cast credential to one target
+        -- are cleared. Other specialization sequences keep their historical
+        -- behavior and cannot be affected by this Arcane safety rule.
+        resetTargetBoundSuccessfulCastSequences()
+        lastSignature = nil
+    elseif event == "UNIT_HEALTH" or event == "UNIT_FLAGS" then
+        if not getCurrentHostileTargetGUID() then
+            resetTargetBoundSuccessfulCastSequences()
+            lastSignature = nil
+        end
     elseif event == "PLAYER_STARTED_MOVING" then
         local now = GetTime()
         local changed = not playerIsMoving

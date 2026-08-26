@@ -26,10 +26,15 @@ local targetWithin5
 local cooldownSpellID
 local cooldownEndsAt = 0
 local unknownCooldownSpells = {}
+local unknownCooldownThresholdSpells = {}
 local effectiveSpellOverrides = {}
 local unlearnedSpells = {}
 local unusableSpells = {}
 local unboundSpells = {}
+local targetGUID = "Creature-0-0-0-0-100-0000000001"
+local targetExists = true
+local targetAttackable = true
+local targetDead = false
 local playerAuras = {
     [11426] = {},  -- Ice Barrier
     [235450] = {}, -- Prismatic Barrier
@@ -114,6 +119,11 @@ C_VoiceChat = {
         spokenText = text
         voiceCount = voiceCount + 1
     end,
+    GetSpellCooldownDuration = function(id)
+        if id == cooldownSpellID and cooldownEndsAt > now then
+            return { remaining = cooldownEndsAt - now }
+        end
+    end,
 }
 C_Timer = {
     NewTimer = function(delay, callback)
@@ -136,6 +146,10 @@ function GetSpecialization() return specIndex end
 function GetBuildInfo() return "12.1.0", "", "", 120100 end
 function GetUnitSpeed() return speed end
 function UnitAffectingCombat() return inCombat end
+function UnitExists(unit) return unit == "target" and targetExists end
+function UnitCanAttack(_, unit) return unit == "target" and targetAttackable end
+function UnitIsDeadOrGhost(unit) return unit == "target" and targetDead end
+function UnitGUID(unit) return unit == "target" and targetExists and targetGUID or nil end
 function GetTime() return now end
 function time() return 100000 end
 function IsPlayerSpell(id) return unlearnedSpells[id] ~= true end
@@ -163,6 +177,12 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     IsSpellOnCooldown = function(id)
         if unknownCooldownSpells[id] then return nil end
         return id == cooldownSpellID and cooldownEndsAt > now
+    end,
+    IsSpellCooldownRemainingAbove = function(id, seconds)
+        if unknownCooldownThresholdSpells[id] then return nil end
+        if unknownCooldownSpells[id] then return nil end
+        if id ~= cooldownSpellID or cooldownEndsAt <= now then return false end
+        return cooldownEndsAt - now >= seconds
     end,
     IsSpellProcced = function() return false end,
     IsChanneled = function(id) return channeledSpells[id] == true end,
@@ -282,16 +302,65 @@ eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "touch-1", 
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
 assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)
+
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "surge-target-a", 365350)
+targetGUID = "Creature-0-0-0-0-200-0000000002"
+eventFrame.OnEvent(eventFrame, "PLAYER_TARGET_CHANGED")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+targetGUID = "Creature-0-0-0-0-100-0000000001"
+eventFrame.OnEvent(eventFrame, "PLAYER_TARGET_CHANGED")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "surge-same-guid-retarget", 365350)
+eventFrame.OnEvent(eventFrame, "PLAYER_TARGET_CHANGED")
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "surge-target-death", 365350)
+targetDead = true
+eventFrame.OnEvent(eventFrame, "UNIT_HEALTH", "target")
+targetDead = false
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "surge-target-unattackable", 365350)
+targetAttackable = false
+eventFrame.OnEvent(eventFrame, "UNIT_FLAGS", "target")
+targetAttackable = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "surge-target-missing", 365350)
+targetExists = false
+eventFrame.OnEvent(eventFrame, "UNIT_FLAGS", "target")
+targetExists = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "surge-expiry", 365350)
 now = now + 10.0
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
 assert(JustACBridge.GetLosslessRecommendation().sequenceFallback == true)
-now = now - 10.0
 
--- If Surge is positively unavailable, Touch is allowed directly. Conversely,
--- a ready Surge is held until Touch is learned, bound, usable and off cooldown.
-cooldownSpellID, cooldownEndsAt = 365350, now + 30
+-- A cooldown boolean alone cannot release the independent 45 s Touch. The
+-- current SimC >30 s gate must be positively proven through a duration-object
+-- threshold; a nearly-ready Surge holds Touch, while a safely distant one
+-- allows it. Conversely, a ready Surge waits for an executable Touch.
+cooldownSpellID, cooldownEndsAt = 365350, now + 4
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+cooldownEndsAt = now + 30.099
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+-- Avoid host floating-point subtraction at the exact representation boundary;
+-- the support-source unit test below covers an exact 30.1 DurationObject.
+cooldownEndsAt = now + 30.101
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
+cooldownEndsAt = now + 40
+unknownCooldownThresholdSpells[365350] = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
+unknownCooldownThresholdSpells[365350] = nil
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
 testQueue = { 365350, 30451 }
@@ -332,6 +401,7 @@ assert(JustACBridge.GetPreserveBurstRecommendation().offGCD == false)
 -- Addon load/reload starts a fresh observed-stationary interval. Neither key
 -- may export Orb until that initial interval reaches two complete seconds.
 testQueue = { 153626, 44425 }
+eventFrame.OnEvent(eventFrame, "PLAYER_ENTERING_WORLD")
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)

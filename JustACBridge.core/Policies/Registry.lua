@@ -283,7 +283,8 @@ end
 
 -- Two-action cooldown pairing. The leader is legal only while its follower is
 -- positively executable; the follower may bypass ordering only when the leader
--- is positively unavailable.
+-- is positively unavailable, and a policy may further restrict the active-
+-- cooldown case with a secret-safe remaining-time threshold.
 local function copyPairedCastRules(source)
     local result = {}
     for _, rule in ipairs(source or {}) do
@@ -293,6 +294,8 @@ local function copyPairedCastRules(source)
             and tonumber(rule.followerSpellID) or nil
         local withinSeconds = type(rule) == "table"
             and tonumber(rule.withinSeconds) or nil
+        local directFollowerMinimum = type(rule) == "table"
+            and tonumber(rule.directFollowerMinLeaderCooldownRemainingSeconds) or nil
         if leaderSpellID and leaderSpellID > 0
             and followerSpellID and followerSpellID > 0 then
             result[#result + 1] = {
@@ -300,6 +303,10 @@ local function copyPairedCastRules(source)
                 followerSpellID = followerSpellID,
                 withinSeconds = withinSeconds and withinSeconds > 0
                     and withinSeconds or nil,
+                targetBound = rule.targetBound == true,
+                directFollowerMinLeaderCooldownRemainingSeconds =
+                    directFollowerMinimum and directFollowerMinimum > 0
+                    and directFollowerMinimum or nil,
                 label = rule.label,
             }
         end

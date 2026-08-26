@@ -1,4 +1,4 @@
-# JustACBridge 2.12.34：代码路径与判定逻辑
+# JustACBridge 2.12.35：代码路径与判定逻辑
 
 > 本文是当前实现的代码级说明，不是面向玩家的职业循环翻译。伪代码保留真实函数名、
 > 分支顺序、三态返回值和 fail-open/fail-closed 语义，便于与其他 Bridge 实现逐函数对比。
@@ -516,15 +516,22 @@ state = {
     touchCastStep,
     surgeCastAt,
     surgeCastStep,
+    surgeTargetGUID,
     orbCastAt,
     lastGCDSpellID,
+    lastGCDTargetGUID,
+    burstStage,          -- expect-missiles / expect-barrage / expect-touch
+    burstStartedAt,
+    burstTargetGUID,
+    burstCancelReason,
     decision,
     selectedSpellID,
 }
 ```
 
-状态只由 `PLAYER_REGEN_*` 和 `UNIT_SPELLCAST_SUCCEEDED` 更新；不从 cooldown 推断
-“已经施放”。
+序列只由 `UNIT_SPELLCAST_SUCCEEDED` 推进；不从 cooldown 推断“已经施放”。
+`PLAYER_TARGET_CHANGED`、`UNIT_HEALTH/UNIT_FLAGS`、施法失败/中断和脱战负责撤销凭据。
+目标凭据必须来自仍存活、可攻击且 GUID 为 plain string 的当前目标。
 
 ### 9.2 `selectQueue(raw, preserve)` 外层顺序
 
@@ -536,6 +543,14 @@ hero = Known(SPLINTERING_SORCERY) ? spellslinger
 if not hero then fallback end
 
 if not combat then fallback("precombat-delegate-surge-first") end
+
+if not preserve and burstStage exists then
+    assert current hostile target GUID == burstTargetGUID
+    assert GetTime() - burstStartedAt < 10
+    choose expected spell for stage
+    -- readiness unknown => cancel + fallback
+    -- positively invalid => cancel + continue ordinary APL
+end
 
 if hero == spellslinger and first Orb not confirmed this combat then
     if Ready(ARCANE_ORB) == true then choose ARCANE_ORB end
@@ -556,10 +571,18 @@ elseif not preserve and surgeReady and touchReady then
 end
 
 if not preserve
+    and previousGCD targetGUID == current hostile targetGUID
     and previousGCD in {PRISMATIC_BOLT, 1295939, ARCANE_BARRAGE}
     and touchReady
-    and (recentSurgeAfterLastTouch(10s) or surgeReady == false) then
+    and recentSurgeAfterLastTouchOnSameTarget(10s) then
     choose TOUCH
+end
+
+if same-target previous Bolt/Barrage and touchReady and Surge is on cooldown then
+    above = IsSpellCooldownRemainingAbove(ARCANE_SURGE, 30.1)
+    if above == true then choose TOUCH end
+    if above == nil then fallback(raw without TOUCH) end
+    if above == false then continue ordinary APL with TOUCH removed end
 end
 
 if hero == sunfury
@@ -576,6 +599,28 @@ return hero == spellslinger
     ? select Spellslinger branches
     : select Sunfury branches
 ```
+
+### 9.2.1 大爆发短状态机与目标凭据
+
+```text
+Surge UNIT_SPELLCAST_SUCCEEDED on GUID A
+  -> EXPECT_MISSILES
+Missiles UNIT_SPELLCAST_SUCCEEDED on GUID A
+  -> EXPECT_BARRAGE
+Barrage UNIT_SPELLCAST_SUCCEEDED on GUID A
+  -> EXPECT_TOUCH
+Touch UNIT_SPELLCAST_SUCCEEDED on GUID A
+  -> NORMAL
+```
+
+下列任一条件调用 `cancelBurstSequence()`：当前目标 GUID 不是 A、目标死亡或不可攻击、
+任一步失败/中断、出现非预期 GCD、步骤不可用、目标/持续时间变为 unknown，或从涌动
+成功起达到 10 秒。取消后同一刷新立即回到普通 APL；只有 unknown readiness 按高优先级
+未知规则回退 JustAC。
+
+策略层的 `pairedCastRules.targetBound=true` 为原始 JustAC 回退队列提供同一 GUID 门，
+`directFollowerMinLeaderCooldownRemainingSeconds=30.1` 则保证 raw Touch 也不能绕过小触
+冷却阈值。
 
 ### 9.3 `lustrousGate()`
 

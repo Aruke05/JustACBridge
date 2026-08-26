@@ -145,6 +145,18 @@ WoW 能让 Bridge 在增益被消耗前稳定读取并绑定到本次引导。�
 返回原始 JustAC 队列并在日志写出 `SOURCE_DECISION ... fallback=true`。这仍是可验证
 切片加精确回退，不宣称已经复刻完整 SimC APL。
 
+12.1 当前 Icy Veins、Wowhead 与 SimC 冷却表共同支持以下可观测爆发规则：
+
+- M5 在涌动成功事件后建立一次最长 10 秒的
+  `飞弹成功 → 弹幕成功 → 触成功` 状态机；只有服务器成功事件推进，失败、中断、
+  意外 GCD、超时或无效目标都会取消并回到普通 APL。M4 不强制这条大爆发序列。
+- 所有涌动/弹幕/Bolt 后接触凭据绑定建立时的敌对目标 GUID。目标变化、死亡或变为
+  不可攻击会同时清除源层和核心配对层凭据，切回旧目标也不会恢复。
+- 独立小触沿用 SimC 的 `cooldown.arcane_surge.remains>30`，通过 DurationObject 与
+  `IsDurationBelowSeconds` 只读取阈值布尔值，不读取 secret 秒数。剩余冷却在 30 秒
+  内或阈值无法证明时，源和核心都跳过触；涌动未学习、未绑定或明确不可用时仍允许
+  合法的直接触分支。
+
 12.1 火法、冰法也分别由 `Sources/Fire121.lua`、`Sources/FrostMage121.lua` 独立决策：
 
 - 火法区分炎爆术瞬发 Hot Streak/Hyperthermia 与 Pyroclasm 读条形态，三目标且已学

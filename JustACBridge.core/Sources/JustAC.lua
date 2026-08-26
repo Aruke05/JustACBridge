@@ -81,6 +81,25 @@ function Source.IsSpellOnCooldown(spellID)
     return BlizzardAPI.IsSpellOnCooldown(spellID) == true
 end
 
+-- Secret-safe threshold query. The numeric remaining cooldown is intentionally
+-- never read; the engine DurationObject is compared against a constant through
+-- JustAC's verified curve helper and yields a plain boolean or nil.
+function Source.IsSpellCooldownRemainingAbove(spellID, seconds)
+    if not (spellID and type(seconds) == "number" and seconds > 0
+            and C_Spell and C_Spell.GetSpellCooldownDuration
+            and BlizzardAPI and BlizzardAPI.IsDurationBelowSeconds) then
+        return nil
+    end
+    local okDuration, duration = pcall(C_Spell.GetSpellCooldownDuration, spellID, true)
+    if not okDuration or not duration then return nil end
+    local okBelow, below = pcall(BlizzardAPI.IsDurationBelowSeconds, duration, seconds)
+    if not okBelow or type(below) ~= "boolean"
+        or (issecretvalue and issecretvalue(below)) then
+        return nil
+    end
+    return not below
+end
+
 function Source.IsSpellProcced(spellID)
     return BlizzardAPI and BlizzardAPI.IsSpellProcced
         and BlizzardAPI.IsSpellProcced(spellID) or false
