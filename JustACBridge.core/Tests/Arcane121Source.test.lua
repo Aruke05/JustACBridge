@@ -27,6 +27,7 @@ local knownSpells = {
     [1241462] = true,
 }
 local auraStacks = {}
+local unknownAuraThresholds = {}
 local rawQueue = { 30451, 44425 }
 local sourceFrame
 
@@ -76,6 +77,9 @@ local bapi = {
         return cooldowns[id] ~= true
     end,
     GetAuraStackAtLeast = function(_, id, threshold)
+        if unknownAuraThresholds[tostring(id) .. ":" .. tostring(threshold)] then
+            return nil
+        end
         if id == 1295147 then
             if threshold == 1 then return lustrousOne end
             if threshold == 2 then return lustrousTwo end
@@ -359,6 +363,65 @@ source._Test.state.surgeCastAt = now
 queue = source.GetQueue()
 assert(queue[1] == 44425)
 assert(source.GetDecisionTrace():match("four%-charges%+salvo=25"))
+
+-- Moving never creates a Barrage condition. The source proof hook reuses the
+-- exact ordinary APL predicates and fails closed for false, unknown, unusable,
+-- out-of-combat and unsupported states.
+source._Test.state.surgeCastAt = nil
+source._Test.state.lastGCDSpellID = nil
+auraStacks[453413], auraStacks[365350] = 0, 0
+cooldowns[321507], cooldowns[365350] = true, true
+charges, salvoStacks, missilesProcced = 4, 8, false
+local allowed, movementReason = source.IsMovementFallbackAllowed(44425)
+assert(allowed == false and movementReason:match("condition%-false"))
+
+salvoStacks = 25
+allowed, movementReason = source.IsMovementFallbackAllowed(44425)
+assert(allowed == true and movementReason:match("salvo=25"))
+
+salvoStacks, missilesProcced = 12, true
+allowed, movementReason = source.IsMovementFallbackAllowed(44425)
+assert(allowed == true and movementReason:match("clearcasting%+salvo>=12"))
+
+salvoStacks, missilesProcced = nil, false
+allowed, movementReason = source.IsMovementFallbackAllowed(44425)
+assert(allowed == false and movementReason:match("unknown"))
+
+auraStacks[453413], salvoStacks, charges = 1, 0, 0
+allowed, movementReason = source.IsMovementFallbackAllowed(44425)
+assert(allowed == true and movementReason == "arcane-soul")
+usable[44425] = false
+allowed, movementReason = source.IsMovementFallbackAllowed(44425)
+assert(allowed == false and movementReason:match("unusable"))
+usable[44425] = true
+local savedCooldownReader = bapi.IsSpellOnCooldown
+bapi.IsSpellOnCooldown = nil
+allowed, movementReason = source.IsMovementFallbackAllowed(44425)
+assert(allowed == false and movementReason == "barrage-readiness-unknown")
+bapi.IsSpellOnCooldown = savedCooldownReader
+combat = false
+allowed, movementReason = source.IsMovementFallbackAllowed(44425)
+assert(allowed == false and movementReason == "not-positively-in-combat")
+combat = true
+
+hero, charges, salvoStacks = "spellslinger", 4, 20
+source._Test.state.lastGCDSpellID = nil
+allowed, movementReason = source.IsMovementFallbackAllowed(44425)
+assert(allowed == true and movementReason == "four-charges+salvo-threshold")
+source._Test.state.lastGCDSpellID = 365350
+unknownAuraThresholds["1242974:10"] = true
+allowed, movementReason = source.IsMovementFallbackAllowed(44425)
+assert(allowed == true and movementReason == "four-charges+salvo-threshold")
+unknownAuraThresholds["1242974:10"] = nil
+salvoStacks = 19
+source._Test.state.lastGCDSpellID = nil
+allowed, movementReason = source.IsMovementFallbackAllowed(44425)
+assert(allowed == false and movementReason:match("condition%-false"))
+source._Test.state.lastGCDSpellID, salvoStacks = 365350, 10
+allowed, movementReason = source.IsMovementFallbackAllowed(44425)
+assert(allowed == true and movementReason == "prev-surge+salvo-threshold")
+source._Test.state.lastGCDSpellID = nil
+auraStacks[453413] = 0
 
 -- Regression: Arcane Orb is a multi-charge spell. At 1/2 its recharge duration
 -- is active, but the remaining charge must still be treated as castable.

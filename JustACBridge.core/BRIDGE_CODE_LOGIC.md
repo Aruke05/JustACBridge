@@ -1,4 +1,4 @@
-# JustACBridge 2.12.40：代码路径与判定逻辑
+# JustACBridge 2.12.41：代码路径与判定逻辑
 
 > 本文是当前实现的代码级说明，不是面向玩家的职业循环翻译。伪代码保留真实函数名、
 > 分支顺序、三态返回值和 fail-open/fail-closed 语义，便于与其他 Bridge 实现逐函数对比。
@@ -377,7 +377,10 @@ for i = 1, count do
         and isSafeQueueValue(v)
         and (v < 0 or isUsableNow(v)) then
         data = getSpellData(v, 1)
-        if data and data.plainHotkey ~= "" then
+        proof = moving and i > 1 and policy.movementFallbackProofSpells contains v
+            ? activeSource.IsMovementFallbackAllowed(v, 1) == true
+            : true
+        if data and data.plainHotkey ~= "" and proof then
             annotate fallback reason when i ~= 1
             return data
         end
@@ -396,6 +399,9 @@ for i = startIndex, min(#queue, 8) do
         and not isReserveExcludedQueueValue(v)
         and isUsableNow(v)
         and isPreserveSafeQueueValue(v)
+        and (not moving or i == 1
+            or v not in movementFallbackProofSpells
+            or activeSource.IsMovementFallbackAllowed(v, 2) == true)
         and bound(v) then
         return action(v, position=2)
     end
@@ -882,6 +888,7 @@ pairedCastRules = {
     { leaderSpellID = 365350, followerSpellID = 321507, withinSeconds = 10 },
 }
 preserveUsesCurrentSafety = true
+movementFallbackProofSpells = { 44425 }  -- tail Barrage needs exact source proof
 rotationEffectiveExclusions = { 1449 }
 protectedChannels = { 5143 }
 maintenanceBuffs = {

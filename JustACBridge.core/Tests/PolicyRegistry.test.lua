@@ -16,7 +16,7 @@ dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
 
 local registry = JustACBridgePolicyRegistry
-assert(registry.schemaVersion == 25)
+assert(registry.schemaVersion == 26)
 
 local arcane = assert(registry.Resolve("MAGE", 1, 120007))
 assert(arcane.storageKey == "MAGE_1" and arcane.id == "arcane")
@@ -37,7 +37,7 @@ assert(#arcane.priorityCues == 0)
 
 local arcane121 = assert(registry.Resolve("MAGE", 1, 120100))
 assert(arcane121.ruleset == "midnight-12.1")
-assert(arcane121.revision == 33)
+assert(arcane121.revision == 34)
 assert(#arcane121.reserveExclusions == 0)
 assert(arcane121.useDetectedBurstTriggers == false)
 assert(#arcane121.offGCD == 1 and arcane121.offGCD[1] == 321507)
@@ -50,6 +50,8 @@ assert(arcane121.pairedCastRules[1].leaderSpellID == 365350
     and arcane121.pairedCastRules[1]
         .directFollowerMinLeaderCooldownRemainingSeconds == nil)
 assert(arcane121.preserveUsesCurrentSafety == true)
+assert(#arcane121.movementFallbackProofSpells == 1
+    and arcane121.movementFallbackProofSpells[1] == 44425)
 assert(#arcane121.rotationExclusions == 0)
 assert(#arcane121.rotationEffectiveExclusions == 1
     and arcane121.rotationEffectiveExclusions[1] == 1449)

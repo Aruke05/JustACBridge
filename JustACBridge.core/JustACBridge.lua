@@ -81,6 +81,7 @@ local currentSpecKey
 local currentPolicy
 local getSpellData
 local getEffectiveSpellID
+local isMovementFallbackProofSatisfied
 local issecretvalue = issecretvalue
 local statusBaseText = ""
 local lastStatusText
@@ -100,6 +101,7 @@ local DEBUG_MAX_LINES = 12000
 local DEBUG_RETAIN_LINES = 9000
 local policyFallbackTraces = {}
 local policyPriorityCueTraces = {}
+local movementFallbackProofTraces = {}
 local failedMovementRecommendations = {}
 local cancelledMovementProbeForRefresh = {}
 local debugFailureLastLog = {}
@@ -1199,10 +1201,15 @@ local function findRangeSequenceRecommendation(queue, count)
                     and spellListContains(rule.prefer, queueValue)
                     and isSafeQueueValue(queueValue) and isUsableNow(queueValue) then
                     local data = getSpellData(queueValue, 1)
-                    if data and data.plainHotkey ~= "" then
+                    local proofOK, proofRequired, proofReason =
+                        isMovementFallbackProofSatisfied(queueValue, index, 1)
+                    if data and data.plainHotkey ~= "" and proofOK then
                         data.rangeFallback = true
                         data.sequenceFallback = true
                         data.sequenceReason = "confirmed-beyond-" .. tostring(distance)
+                        data.movementFallback = proofRequired
+                        data.movementFallbackProof = proofRequired
+                        data.movementFallbackProofReason = proofReason
                         return data
                     end
                 end
@@ -1265,6 +1272,43 @@ local function findPolicyCastFollowupRecommendation(position)
     return nil
 end
 
+-- Some resource spenders are legal while moving but must not become legal
+-- *because* of movement. For policy-listed spells, a later queue entry may be
+-- promoted during real movement only when the active source positively proves
+-- its ordinary APL condition. Missing hooks, errors, nil and secret-like values
+-- all fail closed. Queue position 1 is never queried: it remains the source's
+-- authoritative current recommendation rather than a Bridge-created fallback.
+isMovementFallbackProofSatisfied = function(spellID, queueIndex, position)
+    local numericIndex = tonumber(queueIndex)
+    local required = playerIsMoving
+        and JustACBridgeDB.movementFilter ~= false
+        and numericIndex and numericIndex > 1
+        and policyContains("movementFallbackProofSpells", spellID)
+        or false
+    if not required then return true, false, nil end
+
+    local fn = activeSource and activeSource.IsMovementFallbackAllowed
+    local ok, allowed, reason
+    if type(fn) == "function" then
+        ok, allowed, reason = pcall(fn, spellID, position)
+    else
+        ok, allowed, reason = false, nil, "source-proof-unavailable"
+    end
+    local approved = ok and allowed == true
+    local trace = {
+        position = position,
+        queueIndex = queueIndex,
+        spellID = spellID,
+        source = activeSource and activeSource.id,
+        callOK = ok == true,
+        allowed = allowed == true,
+        approved = approved,
+        reason = ok and reason or (reason or tostring(allowed)),
+    }
+    movementFallbackProofTraces[#movementFallbackProofTraces + 1] = trace
+    return approved, true, trace.reason
+end
+
 -- A recommendation source may explicitly mark a queue entry as its current
 -- burst cue. This is intentionally queried only on the active source rather
 -- than through sourceCall(): falling back to JustAC for a custom source would
@@ -1286,9 +1330,14 @@ local function findSourceBurstCueRecommendation(queue)
             if ok and cued == true
                 and isSafeQueueValue(queueValue) and isUsableNow(queueValue) then
                 local data = getSpellData(queueValue, 1)
-                if data and data.plainHotkey ~= "" then
+                local proofOK, proofRequired, proofReason =
+                    isMovementFallbackProofSatisfied(queueValue, index, 1)
+                if data and data.plainHotkey ~= "" and proofOK then
                     data.sourceBurstCue = true
                     data.sourceQueueIndex = index
+                    data.movementFallback = proofRequired
+                    data.movementFallbackProof = proofRequired
+                    data.movementFallbackProofReason = proofReason
                     return data
                 end
             end
@@ -1367,8 +1416,13 @@ local function findSafeRecommendation(queue)
             -- Every exported action, including position 1, must therefore be
             -- executable; otherwise continue to the next bound queue entry
             -- and finally the specialization's bound fallback.
-            if data and data.plainHotkey ~= "" then
-                data.movementFallback = index ~= 1 and primaryMovementBlocked
+            local proofOK, proofRequired, proofReason =
+                isMovementFallbackProofSatisfied(queueValue, index, 1)
+            if data and data.plainHotkey ~= "" and proofOK then
+                data.movementFallback = proofRequired
+                    or index ~= 1 and primaryMovementBlocked
+                data.movementFallbackProof = proofRequired
+                data.movementFallbackProofReason = proofReason
                 data.rangeFallback = index ~= 1 and primaryRangeBlocked
                 data.groundFallback = index ~= 1 and primaryGroundBlocked
                 data.failureFallback = index ~= 1 and primaryFailureBlocked
@@ -1410,9 +1464,14 @@ local function findAllowedSourceQueueRecommendation(queue, allow, position)
             and positionEligible and safe
             and isUsableNow(queueValue) then
             local data = getSpellData(queueValue, position)
-            if data and data.plainHotkey ~= "" then
+            local proofOK, proofRequired, proofReason =
+                isMovementFallbackProofSatisfied(queueValue, index, position)
+            if data and data.plainHotkey ~= "" and proofOK then
                 data.sourceQueueOnly = true
                 data.sourceQueueOnlyBeyond = true
+                data.movementFallback = proofRequired
+                data.movementFallbackProof = proofRequired
+                data.movementFallbackProofReason = proofReason
                 return data
             end
         end
@@ -1487,7 +1546,12 @@ local function findReserveRecommendation(queue, startIndex)
             and isUsableNow(queueValue)
             and isPreserveSafeQueueValue(queueValue) then
             local data = getSpellData(queueValue, 2)
-            if data and data.plainHotkey ~= "" then
+            local proofOK, proofRequired, proofReason =
+                isMovementFallbackProofSatisfied(queueValue, index, 2)
+            if data and data.plainHotkey ~= "" and proofOK then
+                data.movementFallback = proofRequired
+                data.movementFallbackProof = proofRequired
+                data.movementFallbackProofReason = proofReason
                 return data
             end
         end
@@ -1513,7 +1577,12 @@ local function findReserveRecommendation(queue, startIndex)
         and not isReserveExcludedQueueValue(spellID)
         and isUsableNow(spellID) and isPreserveSafeQueueValue(spellID) then
         local data = getSpellData(spellID, 2)
-        if data and data.plainHotkey ~= "" then
+        local proofOK, proofRequired, proofReason =
+            isMovementFallbackProofSatisfied(spellID, 2, 2)
+        if data and data.plainHotkey ~= "" and proofOK then
+            data.movementFallback = proofRequired
+            data.movementFallbackProof = proofRequired
+            data.movementFallbackProofReason = proofReason
             return data
         end
     end
@@ -1604,7 +1673,12 @@ local function findPolicyFinalFallback(position)
             local data = getSpellData(spellID, position)
             ruleTrace.data = data ~= nil
             ruleTrace.hotkey = data and data.plainHotkey or ""
-            if data and data.plainHotkey ~= "" then
+            local proofOK, proofRequired, proofReason =
+                isMovementFallbackProofSatisfied(spellID, 2, position)
+            ruleTrace.movementProofRequired = proofRequired
+            ruleTrace.movementProofOK = proofOK
+            ruleTrace.movementProofReason = proofReason
+            if data and data.plainHotkey ~= "" and proofOK then
                 data.finalFallback = true
                 data.finalFallbackLabel = rule.label
                 data.finalFallbackEnemyCount = enemyCount
@@ -1613,6 +1687,8 @@ local function findPolicyFinalFallback(position)
                 data.emergencyMovementFallback = true
                 data.emergencyFallbackLabel = rule.label
                 data.emergencyFallbackEnemyCount = enemyCount
+                data.movementFallbackProof = proofRequired
+                data.movementFallbackProofReason = proofReason
                 ruleTrace.selected = true
                 trace.selected = spellID
                 return data
@@ -1792,7 +1868,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.40", GetTime() - debugStartedAt,
+            reason, "2.12.41", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1859,6 +1935,15 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
         else
             appendDebug("Q" .. tostring(index) .. " value=" .. debugSafe(value))
         end
+    end
+
+    for _, trace in ipairs(movementFallbackProofTraces) do
+        appendDebug(("MOVE_PROOF slot=%s index=%s spell=%s source=%s call=%s allowed=%s approved=%s reason=%s")
+            :format(
+                debugSafe(trace.position), debugSafe(trace.queueIndex),
+                debugSafe(trace.spellID), debugSafe(trace.source),
+                tostring(trace.callOK), tostring(trace.allowed),
+                tostring(trace.approved), debugSafe(trace.reason)))
     end
 
     for position = 1, 2 do
@@ -2257,6 +2342,7 @@ local function refresh()
 
     policyFallbackTraces = {}
     policyPriorityCueTraces = {}
+    movementFallbackProofTraces = {}
     local lossless = findPolicyCastFollowupRecommendation(1)
     local losslessQueueOnlyRule = not lossless
         and getActiveSourceQueueOnlyBeyondRule(
@@ -2821,7 +2907,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.40", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.41", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 

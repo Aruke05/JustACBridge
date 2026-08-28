@@ -59,7 +59,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 33,
+            revision = 34,
             -- 12.1 M4 shares the owned Arcane priority with M5. Orb is no
             -- longer permanently excluded; both modes use the movement and
             -- stationary-resume rules below.
@@ -99,6 +99,16 @@ Registry.RegisterSpec("MAGE", 1, {
             -- M4 filter. Protected Missiles still lock both outputs until the
             -- real channel stop/interruption event.
             preserveUsesCurrentSafety = true,
+            -- Movement may delete an uncastable action, but it must never turn
+            -- a low-priority, low-Salvo Barrage into the rotation choice merely
+            -- because Barrage is instant. When Barrage is taken from any queue
+            -- position after the first while actually moving, the active source
+            -- must positively prove an ordinary APL Barrage condition. Missing,
+            -- false, secret or errored proof fails closed; a source/JustAC
+            -- Barrage already at queue position 1 remains authoritative.
+            movementFallbackProofSpells = {
+                44425, -- Arcane Barrage
+            },
             -- M4 is also the long-held mechanics key. Keep its defensive
             -- shield maintained without spending an M5 damage GCD: inject
             -- Prismatic Barrier only when the live aura is explicitly absent

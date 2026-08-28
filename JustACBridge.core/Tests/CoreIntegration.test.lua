@@ -21,6 +21,8 @@ local testQueue = { 43265, 47541 }
 local testPreserveQueue
 local burstTriggers = {}
 local burstCues = {}
+local movementFallbackProofs = {}
+local movementFallbackProofThrows = false
 local highlightSpellID
 local targetWithin5
 local cooldownSpellID
@@ -188,6 +190,11 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     IsChanneled = function(id) return channeledSpells[id] == true end,
     IsConfirmedOutOfRange = function() return false end,
     IsBurstCue = function(id) return burstCues[id] == true end,
+    IsMovementFallbackAllowed = function(id)
+        if movementFallbackProofThrows then error("movement proof unavailable") end
+        return movementFallbackProofs[id], movementFallbackProofs[id] == true
+            and "test-proof" or "test-not-proven"
+    end,
     GetHighlightCastSpell = function() return highlightSpellID end,
     IsTargetWithin = function(yards)
         if yards == 5 then return targetWithin5 end
@@ -410,6 +417,7 @@ assert(JustACBridge.GetPreserveBurstRecommendation().offGCD == false)
 
 -- Addon load/reload starts a fresh observed-stationary interval. Neither key
 -- may export Orb until that initial interval reaches 0.8 complete seconds.
+movementFallbackProofs[44425] = true
 testQueue = { 153626, 44425 }
 eventFrame.OnEvent(eventFrame, "PLAYER_ENTERING_WORLD")
 JustACBridge.Refresh()
@@ -555,25 +563,89 @@ JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 5143)
 
 -- Presence of Mind's player aura is sufficient and spell-specific evidence
--- that Arcane Blast is instant. Losing the aura immediately restores the
--- ordinary moving fallback without relying on an action-button glow.
+-- that Arcane Blast is instant. Losing the aura must not promote a later
+-- Barrage unless the source separately proves a real APL Barrage condition.
 testQueue = { 30451, 44425 }
 playerAuras[205025] = {}
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 30451)
 playerAuras[205025] = nil
+movementFallbackProofs[44425] = false
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
-assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+assert(JustACBridge.GetLosslessRecommendation() == nil)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+movementFallbackProofs[44425] = nil
 playerAuras[205025] = secretAuraValue
 auraSecret = true
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetLosslessRecommendation() == nil)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
 auraSecret = false
 playerAuras[205025] = nil
+movementFallbackProofs[44425] = 1 -- truthy is not a strict proof boolean
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation() == nil)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+
+-- Proof errors fail closed too. A positive proof releases both M5/M4 and is
+-- carried on the exported row for diagnostics. Queue position 1 remains the
+-- source's authoritative recommendation and never needs movement proof.
+movementFallbackProofThrows = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation() == nil)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+movementFallbackProofThrows = false
+movementFallbackProofs[44425] = true
+JustACBridge.Refresh()
+local provenMovingBarrage = JustACBridge.GetLosslessRecommendation()
+assert(provenMovingBarrage.spellID == 44425
+    and provenMovingBarrage.movementFallbackProof == true
+    and provenMovingBarrage.movementFallbackProofReason == "test-proof")
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+
+local testSource = assert(JustACBridgeRecommendationSources.Get("test"))
+local savedMovementProof = testSource.IsMovementFallbackAllowed
+testSource.IsMovementFallbackAllowed = nil
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation() == nil)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+testSource.IsMovementFallbackAllowed = savedMovementProof
+
+movementFallbackProofs[44425] = false
+burstCues[44425] = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation() == nil)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+burstCues[44425] = nil
+testQueue = { 30451, 44425, 1295924 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 1295924)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 1295924)
+testQueue = { 30451 }
+highlightSpellID = 44425
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation() == nil)
+assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+highlightSpellID = nil
+testQueue = { 44425, 30451 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+movementFallbackProofs[44425] = true
 speed = 0
 eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
+
+-- The proof requirement is strictly movement-scoped. Stationary binding
+-- fallback keeps the source queue semantics and does not consult this gate.
+movementFallbackProofs[44425] = false
+testQueue = { 30451, 44425 }
+unboundSpells[30451] = true
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
+unboundSpells[30451] = nil
+movementFallbackProofs[44425] = true
 
 -- JustAC Stage G keeps Blizzard's primary action at position 1 and surfaces an
 -- exact, called-for burst cue at position 2. M5 must honor that source-owned

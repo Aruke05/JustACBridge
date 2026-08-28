@@ -70,6 +70,9 @@ Bridge 会以 `SOURCE_DECISION` 写入诊断日志。
 其余可选能力：
 
 - `IsBurstCue(spellID)`（仅标记当前源已明确判定应执行的爆发提示）
+- `IsMovementFallbackAllowed(spellID, position)`（只在当前策略将法术登记到
+  `movementFallbackProofSpells`、玩家真实移动且该法术来自队列第 2 位及以后时调用；
+  必须以普通循环谓词正面证明，只有严格布尔 `true` 放行，可返回第二值作为诊断原因）
 - `GetHighlightCastSpell()`
 - `GetDetectedBurstTriggers()`
 - `GetEngagedEnemyCount()`

@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 25
+Registry.schemaVersion = 26
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -477,6 +477,8 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         moveCastBuffs = copyArray(classPolicy.moveCastBuffs),
         moveCastNever = copyArray(classPolicy.moveCastNever),
         moveCastInstantOnly = copyArray(classPolicy.moveCastInstantOnly),
+        movementFallbackProofSpells = copyArray(
+            classPolicy.movementFallbackProofSpells),
         moveCastConditions = copyMoveCastConditions(classPolicy.moveCastConditions),
         moveCastResumeDelays = copyMoveCastResumeDelays(classPolicy.moveCastResumeDelays),
         successfulCastResumeDelays = copySuccessfulCastResumeDelays(
@@ -502,6 +504,8 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
     addUniqueValues(result.moveCastBuffs, specPolicy.moveCastBuffs)
     addUniqueValues(result.moveCastNever, specPolicy.moveCastNever)
     addUniqueValues(result.moveCastInstantOnly, specPolicy.moveCastInstantOnly)
+    addUniqueValues(result.movementFallbackProofSpells,
+        specPolicy.movementFallbackProofSpells)
     appendMoveCastConditions(result.moveCastConditions, specPolicy.moveCastConditions)
     appendMoveCastResumeDelays(result.moveCastResumeDelays, specPolicy.moveCastResumeDelays)
     appendSuccessfulCastResumeDelays(result.successfulCastResumeDelays,
@@ -573,6 +577,10 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.moveCastInstantOnly then
             replaceArray(result.moveCastInstantOnly, patch.moveCastInstantOnly)
         end
+        if patch.movementFallbackProofSpells then
+            replaceArray(result.movementFallbackProofSpells,
+                patch.movementFallbackProofSpells)
+        end
         if patch.moveCastConditions then
             result.moveCastConditions = copyMoveCastConditions(patch.moveCastConditions)
         end
@@ -633,6 +641,10 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         addUniqueValues(result.moveCastNever, patch.addMoveCastNever)
         removeValues(result.moveCastInstantOnly, patch.removeMoveCastInstantOnly)
         addUniqueValues(result.moveCastInstantOnly, patch.addMoveCastInstantOnly)
+        removeValues(result.movementFallbackProofSpells,
+            patch.removeMovementFallbackProofSpells)
+        addUniqueValues(result.movementFallbackProofSpells,
+            patch.addMovementFallbackProofSpells)
         appendMoveCastConditions(result.moveCastConditions, patch.addMoveCastConditions)
         appendMoveCastResumeDelays(result.moveCastResumeDelays, patch.addMoveCastResumeDelays)
         appendSuccessfulCastResumeDelays(result.successfulCastResumeDelays,

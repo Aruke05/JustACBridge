@@ -63,6 +63,10 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
 - `fallbackActions`：仅在玩家移动且 JustAC 的前 8 项没有安全可执行动作时使用的
   有序兜底。支持 `spellID`、`minEnemies`、`maxEnemies`、`requireProc` 和显示用
   `label`；仍必须通过已学习、可用、射程、移动安全和快捷键检查。
+- `movementFallbackProofSpells`：真实移动时若列表中的法术位于队列第 2 位及以后，
+  必须由当前推荐源的 `IsMovementFallbackAllowed(spellID, position)` 明确返回 `true`
+  才能晋升；方法缺失、false、nil 或异常均失败关闭。队首动作和静止选择不受影响。
+  用于“技能可移动”但“移动不能创造其资源释放条件”的动作，例如 12.1 奥法弹幕。
 - `preserveSourceQueueOnly`：M4 只允许选择推荐源当前队列中真实存在的动作；禁用 M4
   的维护技能注入、M5 结果复用、高亮兜底和专精最终兜底。用于不能把 Proc/高亮近似
   当作推荐源已选择动作的专精；M5 不受影响。

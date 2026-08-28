@@ -434,6 +434,89 @@ local function selectBurstSequenceStep(raw)
     return nil
 end
 
+-- Return a strict three-state proof for the Barrage branches this source owns:
+-- true means an ordinary APL condition is fully proven, false means every
+-- owned condition is positively false, and nil means a still-relevant
+-- predicate is unknown. Readiness is deliberately checked by the caller so
+-- the same condition proof can protect movement promotion without duplicating
+-- or weakening the normal priority list.
+local function spellslingerBarrageCondition(charges)
+    local orbBarrage = isKnown(SPELL.ORB_BARRAGE)
+    local firstThreshold = orbBarrage and 19 or 20
+    local surgeThreshold = orbBarrage and 15 or 10
+    local salvoFirst = auraAtLeast(SPELL.ARCANE_SALVO, firstThreshold)
+    local salvoSurge = auraAtLeast(SPELL.ARCANE_SALVO, surgeThreshold)
+
+    local surgeBranch = false
+    if state.lastGCDSpellID == SPELL.ARCANE_SURGE then
+        surgeBranch = salvoSurge
+    end
+    if surgeBranch == true then
+        return true, "prev-surge+salvo-threshold"
+    end
+    if salvoFirst == true and charges == 4 then
+        return true, "four-charges+salvo-threshold"
+    elseif salvoFirst == nil or surgeBranch == nil then
+        return nil, "spellslinger-barrage-condition-unknown"
+    elseif salvoFirst == true then
+        -- Single-target and Orb Barrage variants can relax the charge
+        -- requirement. Enemy-count state is not part of this proven slice.
+        return nil, "spellslinger-barrage-enemy-count-unknown"
+    end
+    return false, "spellslinger-barrage-condition-false"
+end
+
+local function sunfuryBarrageCondition(charges, soul)
+    local salvo9 = auraAtLeast(SPELL.ARCANE_SALVO, 9)
+    local touchReady = spellReady(SPELL.TOUCH_OF_THE_MAGI)
+    local touchBranch
+    if salvo9 == true and touchReady == true then
+        touchBranch = true
+    elseif salvo9 == false or touchReady == false then
+        touchBranch = false
+    end
+
+    if soul == true then
+        return true, "arcane-soul"
+    elseif touchBranch == true then
+        return true, "salvo>8+touch-ready"
+    elseif touchBranch == nil then
+        return nil, "sunfury-barrage-condition-unknown"
+    end
+
+    if charges ~= 4 then
+        return false, "sunfury-barrage-requires-four-charges"
+    end
+
+    -- Current Sunfury APL has an independent capped-Salvo release even without
+    -- Clearcasting. Arcane Salvo caps at 25, so >=25 is exact.
+    local salvo25 = auraAtLeast(SPELL.ARCANE_SALVO, 25)
+    if salvo25 == nil then
+        return nil, "sunfury-salvo-25-state-unknown"
+    elseif salvo25 then
+        local surgeGate, detail = surgeDownOrSafelyAboveGCD()
+        if surgeGate == true then
+            return true, "four-charges+salvo=25+" .. detail
+        elseif surgeGate == nil then
+            return nil, detail
+        end
+    end
+
+    local salvo12 = auraAtLeast(SPELL.ARCANE_SALVO, 12)
+    if salvo12 == nil then
+        return nil, "sunfury-complex-barrage-unknown"
+    elseif salvo12 == true then
+        local clearcasting = callBoolean("IsSpellProcced", SPELL.ARCANE_MISSILES)
+        if clearcasting == true then
+            return true, "four-charges+clearcasting+salvo>=12"
+        end
+        -- The remaining AOE branch needs enemy count and fractional generator
+        -- charge state. Do not turn false/secret Clearcasting into permission.
+        return nil, "sunfury-complex-barrage-enemy-state"
+    end
+    return false, "sunfury-barrage-condition-false"
+end
+
 local function selectQueue(raw, preserve)
     if not isArcane121() then return fallback("outside-mage-arcane-12.1", raw) end
     local hero = heroTree()
@@ -565,27 +648,15 @@ local function selectQueue(raw, preserve)
         end
 
         -- Barrage branches that are independent of enemy count.
-        local orbBarrage = isKnown(SPELL.ORB_BARRAGE)
-        local firstThreshold = orbBarrage and 19 or 20
-        local surgeThreshold = orbBarrage and 15 or 10
-        local salvoFirst = auraAtLeast(SPELL.ARCANE_SALVO, firstThreshold)
-        local salvoSurge = auraAtLeast(SPELL.ARCANE_SALVO, surgeThreshold)
-        if state.lastGCDSpellID == SPELL.ARCANE_SURGE and salvoSurge == true then
+        local barrage, barrageDetail = spellslingerBarrageCondition(charges)
+        if barrage == true then
             local ready = spellReady(SPELL.ARCANE_BARRAGE)
             if ready == true then
                 return choose(SPELL.ARCANE_BARRAGE, "spellslinger.arcane_barrage",
-                    "prev-surge+salvo-threshold", raw)
+                    barrageDetail, raw)
             elseif ready == nil then return fallback("barrage-readiness-unknown", raw) end
-        elseif salvoFirst == true and charges == 4 then
-            local ready = spellReady(SPELL.ARCANE_BARRAGE)
-            if ready == true then
-                return choose(SPELL.ARCANE_BARRAGE, "spellslinger.arcane_barrage",
-                    "four-charges+salvo-threshold", raw)
-            elseif ready == nil then return fallback("barrage-readiness-unknown", raw) end
-        elseif salvoFirst == nil or (state.lastGCDSpellID == SPELL.ARCANE_SURGE and salvoSurge == nil) then
-            return fallback("spellslinger-barrage-condition-unknown", raw)
-        elseif salvoFirst == true and charges ~= 4 then
-            return fallback("spellslinger-barrage-enemy-count-unknown", raw)
+        elseif barrage == nil then
+            return fallback(barrageDetail, raw)
         end
 
         local clearcasting = callBoolean("IsSpellProcced", SPELL.ARCANE_MISSILES)
@@ -663,55 +734,15 @@ local function selectQueue(raw, preserve)
         end
     end
 
-    local salvo9 = auraAtLeast(SPELL.ARCANE_SALVO, 9)
-    local touchReady = spellReady(SPELL.TOUCH_OF_THE_MAGI)
-    local touchBranch
-    if salvo9 == true and touchReady == true then
-        touchBranch = true
-    elseif salvo9 == false or touchReady == false then
-        touchBranch = false
-    end
-    if soul == true or touchBranch == true then
+    local barrage, barrageDetail = sunfuryBarrageCondition(charges, soul)
+    if barrage == true then
         local ready = spellReady(SPELL.ARCANE_BARRAGE)
         if ready == true then
             return choose(SPELL.ARCANE_BARRAGE, "sunfury.arcane_barrage",
-                soul and "arcane-soul" or "salvo>8+touch-ready", raw)
+                barrageDetail, raw)
         elseif ready == nil then return fallback("barrage-readiness-unknown", raw) end
-    elseif touchBranch == nil then
-        return fallback("sunfury-barrage-condition-unknown", raw)
-    end
-
-    if charges == 4 then
-        -- Current Sunfury APL has an independent capped-Salvo release even
-        -- without Clearcasting. Arcane Salvo caps at 25, so >=25 is exact.
-        local salvo25 = auraAtLeast(SPELL.ARCANE_SALVO, 25)
-        if salvo25 == nil then return fallback("sunfury-salvo-25-state-unknown", raw) end
-        if salvo25 then
-            local surgeGate, detail = surgeDownOrSafelyAboveGCD()
-            if surgeGate == true then
-                local ready = spellReady(SPELL.ARCANE_BARRAGE)
-                if ready == true then
-                    return choose(SPELL.ARCANE_BARRAGE, "sunfury.arcane_barrage",
-                        "four-charges+salvo=25+" .. detail, raw)
-                elseif ready == nil then return fallback("barrage-readiness-unknown", raw) end
-            elseif surgeGate == nil then
-                return fallback(detail, raw)
-            end
-        end
-
-        local salvo12 = auraAtLeast(SPELL.ARCANE_SALVO, 12)
-        if salvo12 == nil then return fallback("sunfury-complex-barrage-unknown", raw) end
-        if salvo12 == true then
-            local clearcasting = callBoolean("IsSpellProcced", SPELL.ARCANE_MISSILES)
-            if clearcasting == true then
-                local ready = spellReady(SPELL.ARCANE_BARRAGE)
-                if ready == true then
-                    return choose(SPELL.ARCANE_BARRAGE, "sunfury.arcane_barrage",
-                        "four-charges+clearcasting+salvo>=12", raw)
-                elseif ready == nil then return fallback("barrage-readiness-unknown", raw) end
-            end
-            return fallback("sunfury-complex-barrage-enemy-state", raw)
-        end
+    elseif barrage == nil then
+        return fallback(barrageDetail, raw)
     end
 
     if bolt then
@@ -830,6 +861,46 @@ end
 
 function Source.IsAvailable()
     return SpellQueue ~= nil and BlizzardAPI ~= nil
+end
+
+-- The core calls this only when a policy-protected action would be promoted
+-- from a later queue position while the player is genuinely moving. Barrage is
+-- approved only from the exact same three-state predicates used by the normal
+-- selector; unknown state and readiness both fail closed. Movement itself is
+-- deliberately absent from these predicates and can never lower a threshold.
+function Source.IsMovementFallbackAllowed(spellID)
+    if tonumber(spellID) ~= SPELL.ARCANE_BARRAGE then
+        return false, "unsupported-movement-proof-spell"
+    end
+    if not isArcane121() then
+        return false, "outside-mage-arcane-12.1"
+    elseif not inCombat() then
+        return false, "not-positively-in-combat"
+    end
+
+    local hero = heroTree()
+    if not hero then return false, "hero-tree-unknown" end
+    local charges = classResource()
+    if charges == nil then return false, "arcane-charges-unknown" end
+
+    local eligible, detail
+    if hero == "spellslinger" then
+        eligible, detail = spellslingerBarrageCondition(charges)
+    else
+        local soul = arcaneSoulActive()
+        if soul == nil then return false, "arcane-soul-state-unknown" end
+        eligible, detail = sunfuryBarrageCondition(charges, soul)
+    end
+    if eligible ~= true then
+        return false, detail or "barrage-condition-not-proven"
+    end
+
+    local ready, readiness = spellReady(SPELL.ARCANE_BARRAGE)
+    if ready ~= true then
+        return false, ready == nil and "barrage-readiness-unknown"
+            or "barrage-" .. tostring(readiness)
+    end
+    return true, detail
 end
 
 local function rawQueue()
