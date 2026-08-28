@@ -322,6 +322,33 @@ queue = source.GetQueue()
 assert(queue[1] == 44425)
 assert(source.GetDecisionTrace():match("arcane%-soul"))
 
+-- The project always follows the Season 2 4pc priority without inspecting
+-- equipment. Below 8 Cumulative Power, the first Bolt line is false and the
+-- independently proven capped-Salvo Barrage remains ahead.
+auraStacks[453413] = 0
+auraStacks[1296930] = 0
+auraStacks[365350] = 0
+displayBlast = 1295924
+salvoStacks, charges, missilesProcced = 25, 4, false
+rawQueue = { 44425, 30451 }
+queue = source.GetQueue()
+assert(queue[1] == 44425)
+assert(source.GetDecisionTrace():match("sunfury.arcane_barrage"))
+
+-- Capped Cumulative Power restores the high Bolt line.
+auraStacks[1296930] = 8
+queue = source.GetQueue()
+assert(queue[1] == 1295924)
+assert(source.GetDecisionTrace():match("assume%-season2%-4pc%+cumulative=8"))
+
+-- Unreadable Cumulative Power remains a hard fallback barrier.
+auraStacks[1296930] = nil
+queue = source.GetQueue()
+assert(queue == rawQueue and queue[1] == 44425)
+assert(source.GetDecisionTrace():match("cumulative%-power%-unknown"))
+displayBlast = 30451
+rawQueue = { 30451, 44425 }
+
 -- Capped Salvo is an independent Sunfury Barrage branch. It does not require
 -- Clearcasting when four charges and the exact Surge timing gate are proven.
 auraStacks[453413] = nil

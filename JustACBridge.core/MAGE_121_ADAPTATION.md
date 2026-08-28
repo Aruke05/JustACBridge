@@ -1,4 +1,4 @@
-# 法师三系 12.1 适配依据（2026-08-26）
+# 法师三系 12.1 适配依据（2026-08-28）
 
 本轮只实现 Bridge 能从普通布尔值、明确法术归属、成功施法事件或 JustAC 的安全封装
 可靠证明的规则。目标数量、光环层数、持续时间或投射物时序一旦不可读，就原样回退
@@ -14,6 +14,8 @@
   [mage.cpp](https://github.com/simulationcraft/simc/blob/midnight/engine/class_modules/apl/mage.cpp)
 - Icy Veins 当前奥法循环：
   [Arcane Mage Rotation, Cooldowns, and Abilities](https://www.icy-veins.com/wow/arcane-mage-pve-dps-rotation-cooldowns-abilities)
+- Method 当前奥法循环：
+  [Arcane Mage Playstyle and Rotation](https://www.method.gg/guides/arcane-mage/playstyle-and-rotation)
 - Wowhead 当前奥法循环：
   [Arcane Mage Rotation Guide](https://www.wowhead.com/guide/classes/mage/arcane/rotation-cooldowns-pve-dps)
 - Method 当前冰法循环：
@@ -56,6 +58,9 @@ APL、Method 与 Icy Veins 的交集为实现依据。
   时整个 STOP 防抖窗口禁止重新建立试放，避免旧试放在第二帧重新出现。
 - 日怒补入四充能、齐射精确 25 层、涌动结束或剩余时间明确大于最大 GCD 时的独立
   弹幕分支，不把 25 层近似成普通 `>=12 + Clearcasting`。
+- 日怒统一按当前 S2 4 件套优先级运行，不读取或区分实际套装件数。节能飞弹 `<12`
+  分支之后，奥术之魂未激活且累计能量达到 8 层才走第一条棱彩飞弹；明确不足 8 层
+  继续判断弹幕，累计能量不可读时原样回退 JustAC。
 
 ### 火焰
 

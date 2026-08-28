@@ -647,15 +647,20 @@ local function selectQueue(raw, preserve)
     local soul = arcaneSoulActive()
     if soul == nil then return fallback("arcane-soul-state-unknown", raw) end
     if bolt then
-        local cumulative8 = auraAtLeast(SPELL.CUMULATIVE_POWER, 8)
-        if soul == false and cumulative8 == true then
-            return choose(SPELL.PRISMATIC_BOLT, "sunfury.prismatic_bolt",
-                "cumulative=8+soul-down", raw)
+        -- Project contract: always run the current Season 2 4pc priority and
+        -- do not branch on equipped tier state. After the <12-Salvo Missiles
+        -- line, the high Bolt line requires capped Cumulative Power while
+        -- Arcane Soul is down. A readable value below 8 proves this line false
+        -- and continues to Barrage; only an unreadable stack state delegates.
+        if soul == false then
+            local cumulative8 = auraAtLeast(SPELL.CUMULATIVE_POWER, 8)
+            if cumulative8 == true then
+                return choose(SPELL.PRISMATIC_BOLT, "sunfury.prismatic_bolt",
+                    "assume-season2-4pc+cumulative=8+soul-down", raw)
+            elseif cumulative8 == nil then
+                return fallback("sunfury-cumulative-power-unknown", raw)
+            end
         end
-        -- IsPlayerSpell(false) cannot distinguish "no 4pc" from an item-set
-        -- passive the spellbook API does not expose. The !set_bonus branch is
-        -- therefore unknown unless a separate exact equipment reader exists.
-        return fallback("sunfury-first-bolt-set-bonus-unknown", raw)
     end
 
     local salvo9 = auraAtLeast(SPELL.ARCANE_SALVO, 9)
