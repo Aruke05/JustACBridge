@@ -409,13 +409,13 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 5143)
 assert(JustACBridge.GetPreserveBurstRecommendation().offGCD == false)
 
 -- Addon load/reload starts a fresh observed-stationary interval. Neither key
--- may export Orb until that initial interval reaches two complete seconds.
+-- may export Orb until that initial interval reaches 0.8 complete seconds.
 testQueue = { 153626, 44425 }
 eventFrame.OnEvent(eventFrame, "PLAYER_ENTERING_WORLD")
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
-now = now + 1.99
+now = now + 0.79
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
@@ -425,7 +425,7 @@ assert(JustACBridge.GetLosslessRecommendation().spellID == 153626)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 153626)
 
 -- While moving, neither held key may guess the facing-dependent Orb. Both
--- skip it. After an ordinary stop both M5 and M4 require two continuous
+-- skip it. After an ordinary stop both M5 and M4 require 0.8 continuous
 -- stationary seconds.
 speed = 7
 eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
@@ -437,7 +437,7 @@ eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
-now = now + 1.99
+now = now + 0.79
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 44425)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)

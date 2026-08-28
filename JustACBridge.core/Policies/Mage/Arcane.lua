@@ -59,7 +59,7 @@ Registry.RegisterSpec("MAGE", 1, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 32,
+            revision = 33,
             -- 12.1 M4 shares the owned Arcane priority with M5. Orb is no
             -- longer permanently excluded; both modes use the movement and
             -- stationary-resume rules below.
@@ -138,15 +138,15 @@ Registry.RegisterSpec("MAGE", 1, {
             },
             -- Orb is instant but travels along the player's facing. While the
             -- player is moving neither held key may guess that direction. Both
-            -- M5 and M4 wait for two continuous stationary seconds after every
+            -- M5 and M4 wait for 0.8 continuous stationary seconds after every
             -- ordinary movement stop before Orb can be exported again.
             moveCastNever = {
                 153626, -- Arcane Orb
                 153640, -- Arcane Orb override/compatibility form
             },
             moveCastResumeDelays = {
-                { spellID = 153626, seconds = 2.0, lossless = true, preserve = true },
-                { spellID = 153640, seconds = 2.0, lossless = true, preserve = true },
+                { spellID = 153626, seconds = 0.8, lossless = true, preserve = true },
+                { spellID = 153640, seconds = 0.8, lossless = true, preserve = true },
             },
             -- A successful Blink/Shimmer changes facing without a trustworthy
             -- target-direction signal. Both M5 and M4 therefore hold Orb for

@@ -1,4 +1,4 @@
-# JustACBridge 2.12.38：代码路径与判定逻辑
+# JustACBridge 2.12.39：代码路径与判定逻辑
 
 > 本文是当前实现的代码级说明，不是面向玩家的职业循环翻译。伪代码保留真实函数名、
 > 分支顺序、三态返回值和 fail-open/fail-closed 语义，便于与其他 Bridge 实现逐函数对比。
@@ -897,7 +897,7 @@ moveCastConditions = {
     ArcaneBlast: requires PresenceOfMind aura,
 }
 moveCastNever = { ArcaneOrb raw/compat IDs }
-moveCastResumeDelays = { Orb: M5/M4 observed-stationary 2s, including load/reload }
+moveCastResumeDelays = { Orb: M5/M4 observed-stationary 0.8s, including load/reload }
 successfulCastResumeDelays = { Orb after Blink/Shimmer: M5/M4 2s }
 ```
 
