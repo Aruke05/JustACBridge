@@ -3,7 +3,7 @@
 JustACBridge 是一个由 **WoW 插件**和 **Windows/macOS M4/M5 映射器**组成的低延迟桥接工具。
 
 WoW 插件从可替换的推荐源读取队列并生成“无损版”和“保留爆发版”两个动作；
-12.1 会按当前专精自动为奥法、火法、冰法选择各自的内置自有决策源，死亡骑士和
+12.1 会按当前专精自动为法师三系和猎人三系选择各自的内置自有决策源，死亡骑士和
 其余专精使用 JustAC；也可接入其他插件或自写循环模块。结果通过屏幕左上角的像素
 矩阵实时导出。桌面客户端默认将 **M5** 映射为无损版、**M4** 映射为保留爆发版。
 
@@ -11,8 +11,17 @@ WoW 插件从可替换的推荐源读取队列并生成“无损版”和“保�
 
 - 每个渲染帧读取一次当前推荐源的缓存队列，不额外增加轮询等待
 - 推荐源采用注册接口；自写模块在 JustAC 已安装时最少只需实现 `GetQueue()`
-- 12.1 三个法师优化专精的 M5 由各自 `Sources/*121.lua` 按当前 SimC 顺序判断；已实现的动作必须
-  整条条件均可观测，遇到更高优先级的 secret/未知状态才原样回退 JustAC 队列
+- 12.1 法师三系和猎人三系的 M5 由各自 `Sources/*121.lua` 按当前 SimC 顺序判断；已实现的动作必须
+  整条条件均可观测，遇到更高优先级的 secret/未知状态便原样回退 JustAC 队列
+- 猎人三系以当前 SimC、Method、Icy Veins 与 Wowhead 技能数据交叉核验：兽王实现可证明的
+  BW/Barbed/Beast Cleave 切片；射击只接管可证明的单目标行，完整保护可移动 Rapid Fire；
+  生存按 Tip of the Spear、Twin Fangs、Takedown 与 Bomb 可见状态接管低目标数精确行
+- 猎人遇到 target_if、DungeonRoute、fight_remains、充能小数、冷却剩余阈值或 Rapid Fire
+  剩余 tick 等不可可靠观测条件时保持 JustAC；不会把部分切片冒充完整 APL
+- 猎人 M4 精确保留：兽王 Bestial Wrath；射击 Trueshot；生存 Takedown 与 Boomstick。
+  Volley 地面选点、Boomstick/Raptor Swipe 正面锥形技能不进入持续按住 M4
+- 猎人自动伤害循环无条件跳过 Disengage、Binding Shot、Counter Shot、Freezing/Tar Trap、
+  Muzzle 与 Harpoon，把位移、打断、控制、选点和主动贴近完整留给玩家
 - M4 可使用与 M5 完全不同的 `GetPreserveQueue()`；火法、冰法、冰 DK、邪 DK 的
   M4 读取原始 JustAC 队列。12.1 奥法是专属例外：M4 继续执行与 M5 相同的自有
   普通优先级，只跳过奥术涌动和大法师之触，不合并额外 JustAC Burst Trigger，
@@ -136,6 +145,9 @@ JustACBridge.core/       WoW 插件与像素协议文档
     FrostMage121.lua
     FrostDK121.lua
     UnholyDK121.lua
+    BeastMasteryHunter121.lua
+    MarksmanshipHunter121.lua
+    SurvivalHunter121.lua
   Trackers/
     GroundEffects.lua
     CooldownReady.lua
@@ -208,6 +220,11 @@ World of Warcraft\_retail_\Interface\AddOns\JustACBridge\
       Blood.lua
       Frost.lua
       Unholy.lua
+    Hunter.lua
+    Hunter\
+      BeastMastery.lua
+      Marksmanship.lua
+      Survival.lua
 ```
 
 ### 2. 启用像素输出

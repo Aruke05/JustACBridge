@@ -162,6 +162,9 @@ local AUTOMATIC_SOURCE_BY_SPEC = {
     MAGE_1 = "arcane121",
     MAGE_2 = "fire121",
     MAGE_3 = "frostmage121",
+    HUNTER_1 = "bmhunter121",
+    HUNTER_2 = "mmhunter121",
+    HUNTER_3 = "survivalhunter121",
 }
 
 local function automaticRecommendationSourceID()
@@ -2883,17 +2886,17 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         -- 2.12 makes source selection specialization-aware. Existing built-in
         -- defaults migrate once to auto; a genuinely custom/manual source ID
         -- remains explicit and is never rewritten on later logins. Auto uses
-        -- owned sources only for the three Mage specs; every Death Knight spec
-        -- deliberately resolves to JustAC unless the player explicitly opts
-        -- into an experimental DK source with /jacb source.
-        if JustACBridgeDB.optimized121SourceMigration ~= "2.12.0" then
+        -- owned sources for the three Mage and three Hunter specs. Every Death
+        -- Knight spec deliberately resolves to JustAC unless the player
+        -- explicitly opts into an experimental DK source with /jacb source.
+        if JustACBridgeDB.optimized121SourceMigration ~= "2.13.0" then
             local old = JustACBridgeDB.recommendationSource
             if old == nil or old == "justac" or old == "arcane121"
                 or old == "fire121" or old == "frostmage121"
                 or old == "frostdk121" or old == "unholydk121" then
                 JustACBridgeDB.recommendationSource = "auto"
             end
-            JustACBridgeDB.optimized121SourceMigration = "2.12.0"
+            JustACBridgeDB.optimized121SourceMigration = "2.13.0"
         end
         local sourceOK, sourceError = activateRecommendationSource(
             JustACBridgeDB.recommendationSource

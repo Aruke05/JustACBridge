@@ -14,6 +14,10 @@ dofile("JustACBridge.core/Policies/DeathKnight.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Blood.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
+dofile("JustACBridge.core/Policies/Hunter.lua")
+dofile("JustACBridge.core/Policies/Hunter/BeastMastery.lua")
+dofile("JustACBridge.core/Policies/Hunter/Marksmanship.lua")
+dofile("JustACBridge.core/Policies/Hunter/Survival.lua")
 
 local registry = JustACBridgePolicyRegistry
 assert(registry.schemaVersion == 26)
@@ -203,6 +207,50 @@ assert(#unholy121.reserve == 3)
 assert(unholy121.reserve[1] == 63560
     and unholy121.reserve[2] == 1233448
     and unholy121.reserve[3] == 42650)
+
+local beastMastery = assert(registry.Resolve("HUNTER", 1, 120100))
+assert(beastMastery.ruleset == "midnight-12.1" and beastMastery.revision == 1)
+assert(beastMastery.useDetectedBurstTriggers == false)
+assert(beastMastery.preserveSourceQueueOnly == true)
+assert(#beastMastery.reserve == 1 and beastMastery.reserve[1] == 19574)
+assert(#beastMastery.fallbackActions == 0)
+assert(#beastMastery.moveCastNever == 2)
+assert(beastMastery.moveCastNever[1] == 392060
+    and beastMastery.moveCastNever[2] == 355589)
+assert(#beastMastery.rotationExclusions == 7)
+assert(beastMastery.rotationExclusions[1] == 781
+    and beastMastery.rotationExclusions[7] == 190925)
+
+local marksmanship = assert(registry.Resolve("HUNTER", 2, 120100))
+assert(marksmanship.ruleset == "midnight-12.1" and marksmanship.revision == 1)
+assert(marksmanship.useDetectedBurstTriggers == false)
+assert(marksmanship.preserveSourceQueueOnly == true)
+assert(#marksmanship.reserve == 1 and marksmanship.reserve[1] == 288613)
+assert(#marksmanship.reserveExclusions == 1
+    and marksmanship.reserveExclusions[1] == 260243)
+assert(#marksmanship.moveCastAlways == 1
+    and marksmanship.moveCastAlways[1] == 257044)
+assert(#marksmanship.protectedChannels == 1
+    and marksmanship.protectedChannels[1] == 257044)
+assert(#marksmanship.moveCastNever == 2)
+assert(#marksmanship.fallbackActions == 0)
+
+local survival = assert(registry.Resolve("HUNTER", 3, 120100))
+assert(survival.ruleset == "midnight-12.1" and survival.revision == 1)
+assert(survival.useDetectedBurstTriggers == false)
+assert(survival.preserveSourceQueueOnly == true)
+assert(#survival.reserve == 2)
+assert(survival.reserve[1] == 1250646 and survival.reserve[2] == 1261193)
+assert(#survival.reserveExclusions == 2)
+assert(survival.reserveExclusions[1] == 1261193
+    and survival.reserveExclusions[2] == 1262343)
+assert(#survival.reserveEffectiveExclusions == 1
+    and survival.reserveEffectiveExclusions[1] == 1262343)
+assert(#survival.protectedChannels == 1
+    and survival.protectedChannels[1] == 1261193)
+assert(#survival.moveCastAlways == 1
+    and survival.moveCastAlways[1] == 1261193)
+assert(#survival.fallbackActions == 0)
 
 -- An unregistered class falls back to JustAC-only behavior in the bridge core.
 assert(registry.Resolve("WARRIOR", 1, 120007) == nil)

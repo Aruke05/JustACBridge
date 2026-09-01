@@ -214,6 +214,17 @@ for _, sourceID in ipairs({ "frostdk121", "unholydk121" }) do
     }))
 end
 
+-- Hunter 12.1 sources are automatic for all three specializations.
+for _, sourceID in ipairs({
+    "bmhunter121", "mmhunter121", "survivalhunter121",
+}) do
+    assert(JustACBridgeRecommendationSources.Register(sourceID, {
+        name = sourceID,
+        GetQueue = function() return testQueue end,
+        GetPreserveQueue = function() return testQueue end,
+    }))
+end
+
 dofile("JustACBridge.core/Policies/Registry.lua")
 dofile("JustACBridge.core/Policies/Mage.lua")
 dofile("JustACBridge.core/Policies/Mage/Arcane.lua")
@@ -223,6 +234,10 @@ dofile("JustACBridge.core/Policies/DeathKnight.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Blood.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
+dofile("JustACBridge.core/Policies/Hunter.lua")
+dofile("JustACBridge.core/Policies/Hunter/BeastMastery.lua")
+dofile("JustACBridge.core/Policies/Hunter/Marksmanship.lua")
+dofile("JustACBridge.core/Policies/Hunter/Survival.lua")
 dofile("JustACBridge.core/Trackers/GroundEffects.lua")
 dofile("JustACBridge.core/Trackers/CooldownReady.lua")
 dofile("JustACBridge.core/JustACBridge.lua")
@@ -232,6 +247,16 @@ assert(JustACBridge.GetRecommendationSource().id == "test")
 classFile, specIndex = "DEATHKNIGHT", 2
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 assert(JustACBridge.GetRecommendationSource().id == "test")
+classFile, specIndex = "DEATHKNIGHT", 3
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+assert(JustACBridge.GetRecommendationSource().id == "test")
+for index, sourceID in ipairs({
+    "bmhunter121", "mmhunter121", "survivalhunter121",
+}) do
+    classFile, specIndex = "HUNTER", index
+    eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+    assert(JustACBridge.GetRecommendationSource().id == sourceID)
+end
 classFile, specIndex = "DEATHKNIGHT", 3
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 assert(JustACBridge.GetRecommendationSource().id == "test")
