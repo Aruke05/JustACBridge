@@ -12,6 +12,8 @@ local salvoStacks
 local charges = 4
 local displayBlast = 30451
 local orbChargeReady = true
+local equippedTierPieces = 4
+local tierSlots = { [1] = 1, [3] = 2, [5] = 3, [7] = 4, [10] = 5 }
 local targetGUID = "Creature-0-0-0-0-100-0000000001"
 local targetExists = true
 local targetAttackable = true
@@ -40,6 +42,10 @@ function UnitGUID(unit) return unit == "target" and targetExists and targetGUID 
 function UnitClass() return "Mage", "MAGE" end
 function GetSpecialization() return 1 end
 function GetBuildInfo() return "12.1.0", "", "", 120100 end
+function GetInventoryItemID(_, slot)
+    local piece = tierSlots[slot]
+    return piece and piece <= equippedTierPieces and (100000 + piece) or nil
+end
 function IsPlayerSpell(id)
     if id == 443739 then return hero == "spellslinger" end
     if id == 448601 then return hero == "sunfury" end
@@ -63,6 +69,13 @@ C_Spell = {
     GetSpellCooldownDuration = function(id)
         if id == 365350 and cooldowns[id] == true then
             return { remaining = surgeCooldownRemaining }
+        end
+    end,
+}
+C_Item = {
+    GetSetBonusesForSpecializationByItemID = function(specID, itemID)
+        if specID == 62 and itemID >= 100001 and itemID <= 100005 then
+            return { 1296580, 1296582 }
         end
     end,
 }
@@ -326,9 +339,8 @@ queue = source.GetQueue()
 assert(queue[1] == 44425)
 assert(source.GetDecisionTrace():match("arcane%-soul"))
 
--- The project always follows the Season 2 4pc priority without inspecting
--- equipment. Below 8 Cumulative Power, the first Bolt line is false and the
--- independently proven capped-Salvo Barrage remains ahead.
+-- With four equipped Season 2 pieces, below 8 Cumulative Power the first Bolt
+-- line is false and the independently proven capped-Salvo Barrage remains ahead.
 auraStacks[453413] = 0
 auraStacks[1296930] = 0
 auraStacks[365350] = 0
@@ -343,7 +355,28 @@ assert(source.GetDecisionTrace():match("sunfury.arcane_barrage"))
 auraStacks[1296930] = 8
 queue = source.GetQueue()
 assert(queue[1] == 1295924)
-assert(source.GetDecisionTrace():match("assume%-season2%-4pc%+cumulative=8"))
+assert(source.GetDecisionTrace():match("season2%-4pc%+cumulative=8"))
+
+-- Without 4pc, the same live Bolt must be spent before another capped-Salvo
+-- Barrage. Otherwise the non-stacking proc can be overwritten and lost.
+equippedTierPieces = 2
+sourceFrame.OnEvent(sourceFrame, "PLAYER_EQUIPMENT_CHANGED", 7)
+auraStacks[1296930] = 0
+queue = source.GetQueue()
+assert(queue[1] == 1295924)
+assert(source.GetDecisionTrace():match("no%-season2%-4pc%+soul%-down"))
+
+-- Missing equipment evidence is unknown: preserve the raw JustAC order rather
+-- than guessing either the 2pc or 4pc priority.
+local savedSetReader = C_Item.GetSetBonusesForSpecializationByItemID
+C_Item.GetSetBonusesForSpecializationByItemID = nil
+sourceFrame.OnEvent(sourceFrame, "PLAYER_EQUIPMENT_CHANGED", 7)
+queue = source.GetQueue()
+assert(queue == rawQueue and queue[1] == 44425)
+assert(source.GetDecisionTrace():match("season2%-4pc%-state%-unknown"))
+C_Item.GetSetBonusesForSpecializationByItemID = savedSetReader
+equippedTierPieces = 4
+sourceFrame.OnEvent(sourceFrame, "PLAYER_EQUIPMENT_CHANGED", 7)
 
 -- Unreadable Cumulative Power remains a hard fallback barrier.
 auraStacks[1296930] = nil

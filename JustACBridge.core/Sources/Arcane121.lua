@@ -16,6 +16,9 @@ local SpellQueue
 local BlizzardAPI
 local TOUCH_AFTER_SURGE_SECONDS = 10
 local BURST_SEQUENCE_TIMEOUT_SECONDS = 10
+local ARCANE_SPEC_ID = 62
+local ARCANE_SEASON2_4PC = 1296582
+local TIER_SET_SLOTS = { 1, 3, 5, 7, 10 }
 
 local BURST_STAGE = {
     EXPECT_TOUCH = "expect-touch",
@@ -68,6 +71,8 @@ local state = {
     burstStageAt = nil,
     burstTargetGUID = nil,
     burstCancelReason = nil,
+    fourPieceChecked = false,
+    fourPieceActive = nil,
     decision = "uninitialized",
     selectedSpellID = nil,
 }
@@ -238,6 +243,47 @@ local function auraAtLeast(spellID, stacks)
     local ok, value = pcall(BlizzardAPI.GetAuraStackAtLeast, "player", spellID, stacks)
     if not ok or not isPlain(value, "boolean") then return nil end
     return value
+end
+
+local function equippedArcaneSeason2FourPiece()
+    if state.fourPieceChecked then return state.fourPieceActive end
+    if type(GetInventoryItemID) ~= "function"
+        or type(C_Item) ~= "table"
+        or type(C_Item.GetSetBonusesForSpecializationByItemID) ~= "function" then
+        return nil
+    end
+
+    local pieces = 0
+    for _, slot in ipairs(TIER_SET_SLOTS) do
+        local okItem, itemID = pcall(GetInventoryItemID, "player", slot)
+        if not okItem or (itemID ~= nil and not isPlain(itemID, "number")) then
+            return nil
+        end
+        if itemID then
+            local okBonuses, bonuses = pcall(
+                C_Item.GetSetBonusesForSpecializationByItemID,
+                ARCANE_SPEC_ID,
+                itemID)
+            if not okBonuses or (bonuses ~= nil and type(bonuses) ~= "table") then
+                return nil
+            end
+            if bonuses then
+                local okScan, belongs = pcall(function()
+                    for _, spellID in ipairs(bonuses) do
+                        if not isPlain(spellID, "number") then return nil end
+                        if spellID == ARCANE_SEASON2_4PC then return true end
+                    end
+                    return false
+                end)
+                if not okScan or belongs == nil then return nil end
+                if belongs then pieces = pieces + 1 end
+            end
+        end
+    end
+
+    state.fourPieceChecked = true
+    state.fourPieceActive = pieces >= 4
+    return state.fourPieceActive
 end
 
 local function classResource()
@@ -718,18 +764,25 @@ local function selectQueue(raw, preserve)
     local soul = arcaneSoulActive()
     if soul == nil then return fallback("arcane-soul-state-unknown", raw) end
     if bolt then
-        -- Project contract: always run the current Season 2 4pc priority and
-        -- do not branch on equipped tier state. After the <12-Salvo Missiles
-        -- line, the high Bolt line requires capped Cumulative Power while
-        -- Arcane Soul is down. A readable value below 8 proves this line false
-        -- and continues to Barrage; only an unreadable stack state delegates.
+        -- The current Sunfury APL releases Bolt immediately without 4pc, but
+        -- waits for capped Cumulative Power with 4pc. Count equipped tier items
+        -- by the set-bonus spell IDs exposed for Arcane; never infer equipment
+        -- from an absent aura, which is also the valid zero-stack 4pc state.
         if soul == false then
-            local cumulative8 = auraAtLeast(SPELL.CUMULATIVE_POWER, 8)
-            if cumulative8 == true then
+            local fourPiece = equippedArcaneSeason2FourPiece()
+            if fourPiece == false then
                 return choose(SPELL.PRISMATIC_BOLT, "sunfury.prismatic_bolt",
-                    "assume-season2-4pc+cumulative=8+soul-down", raw)
-            elseif cumulative8 == nil then
-                return fallback("sunfury-cumulative-power-unknown", raw)
+                    "no-season2-4pc+soul-down", raw)
+            elseif fourPiece == nil then
+                return fallback("sunfury-season2-4pc-state-unknown", raw)
+            else
+                local cumulative8 = auraAtLeast(SPELL.CUMULATIVE_POWER, 8)
+                if cumulative8 == true then
+                    return choose(SPELL.PRISMATIC_BOLT, "sunfury.prismatic_bolt",
+                        "season2-4pc+cumulative=8+soul-down", raw)
+                elseif cumulative8 == nil then
+                    return fallback("sunfury-cumulative-power-unknown", raw)
+                end
             end
         end
     end
@@ -789,6 +842,7 @@ function Source.Initialize()
         frame:RegisterEvent("PLAYER_REGEN_DISABLED")
         frame:RegisterEvent("PLAYER_REGEN_ENABLED")
         frame:RegisterEvent("PLAYER_TARGET_CHANGED")
+        frame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
         frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
         frame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
         frame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED_QUIET", "player")
@@ -812,6 +866,9 @@ function Source.Initialize()
                 -- evidence, even if WoW reports the same GUID again after a
                 -- rapid clear/re-target sequence. Credentials never resurrect.
                 clearTargetCredentials("target-changed-event")
+            elseif event == "PLAYER_EQUIPMENT_CHANGED" then
+                state.fourPieceChecked = false
+                state.fourPieceActive = nil
             elseif event == "UNIT_HEALTH" or event == "UNIT_FLAGS" then
                 validateTargetCredentials()
             elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
