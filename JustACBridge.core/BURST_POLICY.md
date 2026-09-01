@@ -186,7 +186,7 @@ WoW 能让 Bridge 在增益被消耗前稳定读取并绑定到本次引导。�
 
 已登记最终兜底的专精会为 M4/M5 提供非空保证：正常队列选不出动作时尝试专精兜底
 快捷键；M4 仍要求兜底本身可移动施放。射程和运行时 `usable` 结果只写入诊断日志，
-不再把合格兜底过滤成空动作。奥法未登记兜底，因此允许输出为空。
+不再把合格兜底过滤成空动作。奥法与 12.1 冰/邪 DK 未登记兜底，因此允许输出为空。
 
 普通推荐除 JustAC 的 `IsSpellUsable` 外还检查实际冷却/充能剩余时间。JustAC
 队列短暂滞留在刚释放、仍处于冷却的冰风暴等技能时，Bridge 会立即跳过该条目，
@@ -206,13 +206,18 @@ Bridge 通常先合并 JustAC 当前专精 `Burst Trigger` 配置，因此会自
 - 邪恶天赋：https://bbs.nga.cn/read.php?tid=46271972
 - 邪恶入门：https://bbs.nga.cn/read.php?tid=46372736
 
-12.1 冰霜参考：
+12.1 冰/邪参考（2026-09-01 复核）：
 
 - Method 总览：https://www.method.gg/guides/frost-death-knight
 - Method 天赋：https://www.method.gg/guides/frost-death-knight/talents
 - Method 手法与循环：https://www.method.gg/guides/frost-death-knight/playstyle-and-rotation
+- Method 邪恶手法与循环：https://www.method.gg/guides/unholy-death-knight/playstyle-and-rotation
+- Icy Veins 冰霜手法：https://www.icy-veins.com/wow/frost-death-knight-pve-dps-rotation-cooldowns-abilities
+- Icy Veins 邪恶手法：https://www.icy-veins.com/wow/unholy-death-knight-pve-dps-rotation-cooldowns-abilities
 - 湮灭削弱讨论：https://us.forums.blizzard.com/en/wow/t/121-frost-obliterate-25-nerf-what/2321138
-- 12.1 当前冰/邪 DK SimC APL：https://github.com/simulationcraft/simc/blob/midnight/engine/class_modules/apl/apl_death_knight.cpp
+- 12.1 当前冰 DK SimC APL：https://github.com/simulationcraft/simc/blob/midnight/ActionPriorityLists/default/deathknight_frost.simc
+- 12.1 当前邪 DK SimC APL：https://github.com/simulationcraft/simc/blob/midnight/ActionPriorityLists/default/deathknight_unholy.simc
+- Blizzard 12.1 热修：https://worldofwarcraft.blizzard.com/en-us/news/24296142
 
 | 专精 | 默认保留法术 |
 | --- | --- |
@@ -268,6 +273,8 @@ M5 只在 JustAC 的已知法术射程探针明确返回目标超过 5 码时采
 实验性冰/邪 DK 源的覆盖范围如下：
 冰 DK 已实现可证明的冰柱/吐息资源门槛、死神印记窗口、冰龙之怒增益门槛、白霜、
 杀戮机器双层/符文门槛、Razorice/Frostbane/Shattering Blade 与单体/AOE 消耗分支。
+AOE 前四项严格保持“二层杀戮冰镰 → Frostbane 冰打 → 三符文冰镰 → 湮灭”的当前
+SimC 相对顺序；冰镰不可用时不会越过中间的 Frostbane 冰打。
 吐息/死神使者的精确冷却剩余和资源池无法从布尔冷却证明时，立即回退 JustAC。
 
 邪 DK 已实现疾病高优先级兜底、成功施法确认真实 Festering Scythe 覆盖形态后才放大军、黑暗突变、
@@ -283,10 +290,10 @@ M4 另外排除冰 DK 冰川突进 `194913`、冰霜镰刀 `207230` 和邪 DK �
 策略将其登记在 `rotationExclusions`，鲜血、冰霜、邪恶的 M5/M4 都会无条件跳过，
 即使 JustAC 推荐队列或突进模块误注入也不会自动抓怪。
 
-DK 移动兜底：鲜血依次尝试血液沸腾 `50842`、死神的抚摸 `195292`，不擅自消耗
-本应用于灵界打击的符能；冰霜优先白霜触发的凛风冲击 `49184`，无触发但仍无安全
-队列动作时也用凛风冲击作为远程符文填充；邪恶在 5 个及以上交战目标时优先传染
-`207317`，否则使用凋零缠绕 `47541`。兜底不使用任何保留爆发技能。
+12.1 冰/邪 DK 不存在“移动时一定要找一个兜底法术”的规则。两系在 JustAC 原队列或
+实验源 `fallback=true` 队列过滤完后允许保持空动作，不再凭移动状态注入凛风冲击、
+传染或凋零缠绕。冰 DK 已有的远距离规则仍只允许原队列真实存在的凛风冲击；邪 DK
+的 M4 同样只使用原始 JustAC 队列。旧版本策略不在这条 12.1 约束范围内。
 
 ## DK 场地技能与冷却就绪
 
@@ -336,16 +343,18 @@ JustAC 队列用负数表示物品。保留版默认跳过所有物品，避免�
   推荐高亮或浮冰推断瞬发；只有当前有效法术形态被 API 明确报告为零读条时，
   才允许移动施放；
 - 无法确认是否可移动施放时保守跳过，不向动作队列发送该技能。
-- 只有原队列前 8 项全部没有安全、可用且已绑定动作时才进入职业兜底；M5/M4
-  共用兜底数据，M4 额外要求动作可移动施放，并排除爆发、药水和主动饰品。
+- 只有原队列前 8 项全部没有安全、可用且已绑定动作，且当前策略显式登记兜底时才进入
+  职业兜底；M5/M4 共用兜底数据，M4 额外要求动作可移动施放，并排除爆发、药水和
+  主动饰品。未登记兜底的专精保持空动作。
 - 若移动中某个当前推荐在 300 ms 内连续被游戏拒绝 3 次，则短暂跳过该动作并
-  继续扫描；没有其他可执行项时进入专精兜底，避免永久重复一个实际无法释放的技能。
+  继续扫描；没有其他可执行项时仅尝试策略显式登记的兜底，否则保持为空。
 - 战斗中速度属于受保护数据时，以移动事件为准；同帧开始/停止事件会防抖，移动
   意图可以打断本就无法移动维持的引导，不会让 M4/M5 永久停在引导保护。
 
 所有导出到 Windows M5 的动作都必须存在实际快捷键绑定，包括自有推荐源插入到队首的
-精确动作。若队首动作未绑定，核心会继续扫描后续已绑定动作，再进入专精最终兜底；绝不
-导出一个红色“未绑定”动作并吞掉 M5。冰法彗星风暴等自有源动作同样遵守此规则。
+精确动作。若队首动作未绑定，核心会继续扫描后续已绑定动作；策略登记了最终兜底才会
+继续尝试，否则保持为空。绝不导出一个红色“未绑定”动作并吞掉 M5。冰法彗星风暴等
+自有源动作同样遵守此规则。
 
 此外，可用性与冷却返回值不证明当前天赋实际拥有某法术。12.1 自有源在判断任何动作
 就绪前必须由 `IsPlayerSpell`/`IsSpellKnown` 正面确认技能归属；当前冰法构筑未学习

@@ -60,9 +60,10 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
 - `rangeSequenceRules`：只在目标被明确判定超过指定距离时调整技能先后；距离未知时
   不改 JustAC 原顺序。
 - `groundEffects`：成功放置后按持续时间跟踪的场地技能，可在仍有效时抑制重复推荐。
-- `fallbackActions`：仅在玩家移动且 JustAC 的前 8 项没有安全可执行动作时使用的
-  有序兜底。支持 `spellID`、`minEnemies`、`maxEnemies`、`requireProc` 和显示用
-  `label`；仍必须通过已学习、可用、射程、移动安全和快捷键检查。
+- `fallbackActions`：推荐队列前 8 项都没有安全可执行动作时，策略可显式选择启用的
+  历史兼容兜底；它不是“移动时必须找一个技能”的全局规则。支持 `spellID`、
+  `minEnemies`、`maxEnemies`、`requireProc` 和显示用 `label`。要求严格保留推荐源顺序的
+  专精应将其设为空，并允许本帧无动作。
 - `movementFallbackProofSpells`：真实移动时若列表中的法术位于队列第 2 位及以后，
   必须由当前推荐源的 `IsMovementFallbackAllowed(spellID, position)` 明确返回 `true`
   才能晋升；方法缺失、false、nil 或异常均失败关闭。队首动作和静止选择不受影响。

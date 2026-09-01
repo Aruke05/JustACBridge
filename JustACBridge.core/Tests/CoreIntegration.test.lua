@@ -858,8 +858,7 @@ assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
 
 testQueue = {}
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
-assert(JustACBridge.GetLosslessRecommendation().finalFallback == true)
+assert(JustACBridge.GetLosslessRecommendation() == nil)
 assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
 
 -- M5 uses the same "no JustAC Howling Blast, keep running" rule only after
@@ -887,8 +886,7 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
 testQueue = {}
 targetWithin5 = true
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
-assert(JustACBridge.GetLosslessRecommendation().finalFallback == true)
+assert(JustACBridge.GetLosslessRecommendation() == nil)
 
 testQueue = { 196770 }
 JustACBridge.Refresh()
@@ -968,15 +966,14 @@ assert(missilesAfterTriggeredStart.isChanneling == true
     and missilesAfterTriggeredStart.channelBlocksInput == true)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "missiles-1", 5143)
 
--- M5 keeps a bound specialization fallback when no normal recommendation
--- exists. Frost DK M4 deliberately opts out above because it is a literal
--- filtered JustAC queue and must not invent a ranged filler.
+-- Legacy policies may explicitly opt into a bound final fallback. Midnight
+-- 12.1 Frost/Unholy DK deliberately opt out for both outputs: an exhausted
+-- authoritative queue is allowed to remain empty rather than inventing a
+-- ranged filler merely to ensure that every held-key frame sends something.
 local fallbackCases = {
     { class = "MAGE", spec = 2, spell = 2948 },
     { class = "MAGE", spec = 3, spell = 30455 },
     { class = "DEATHKNIGHT", spec = 1, spell = 50842 },
-    { class = "DEATHKNIGHT", spec = 2, spell = 49184 },
-    { class = "DEATHKNIGHT", spec = 3, spell = 47541 },
 }
 for _, case in ipairs(fallbackCases) do
     classFile, specIndex = case.class, case.spec
@@ -988,6 +985,14 @@ for _, case in ipairs(fallbackCases) do
         and emptyQueueFallback.finalFallback == true,
         ("final fallback failed for %s/%s: got %s")
             :format(case.class, case.spec, tostring(emptyQueueFallback.spellID)))
+end
+for _, spec in ipairs({ 2, 3 }) do
+    classFile, specIndex = "DEATHKNIGHT", spec
+    eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+    testQueue = {}
+    JustACBridge.Refresh()
+    assert(JustACBridge.GetLosslessRecommendation() == nil)
+    assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
 end
 -- Arcane deliberately has no invented final fallback. With no source action
 -- and no missing barrier maintenance, both outputs remain empty.
@@ -1072,9 +1077,10 @@ assert(restored.spellID == 43265,
     ("primary not restored: spell=%s failureFallback=%s")
         :format(tostring(restored.spellID), tostring(restored.failureFallback)))
 
--- A specialization's final fallback must never enter the failure circuit
--- breaker.  It has no safer action to advance to, so repeated game-side
--- failures must leave it selected as the normal queue action.
+-- A real queue entry must not be granted final-fallback immunity merely
+-- because its spell appeared in an old specialization fallback list. Three
+-- distinct failures suppress it normally; with no second action, output is
+-- intentionally empty until the suppression window expires.
 testQueue = { 47541 }
 JustACBridge.Refresh()
 for index = 1, 3 do
@@ -1083,9 +1089,7 @@ for index = 1, 3 do
 end
 JustACBridge.Refresh()
 local finalFallback = JustACBridge.GetCurrentRecommendation()
-assert(finalFallback.spellID == 47541
-    and finalFallback.failureFallback ~= true
-    and finalFallback.emergencyMovementFallback ~= true)
+assert(finalFallback == nil)
 testQueue = { 43265, 47541 }
 
 -- Midnight can report speed as secret and emit START/STOP movement events in

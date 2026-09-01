@@ -1665,9 +1665,10 @@ local function findPolicyFinalFallback(position)
             usable = usable,
         }
         trace.rules[#trace.rules + 1] = ruleTrace
-        -- This is the final action, not another recommendation candidate.
-        -- Range/usability failures are deliberately diagnostic-only: when no
-        -- normal action exists, M4/M5 must still have a bound fallback to send.
+        -- This is an explicit policy opt-in, not a universal requirement to
+        -- produce an action. Specs whose source order must remain authoritative
+        -- leave fallbackActions empty and are allowed to export no action.
+        -- Historical fallback policies keep range/usability as diagnostics.
         if eligible and known and not reserved and not excluded
             and not rotationExcluded and movementSafe then
             local data = getSpellData(spellID, position)
@@ -1868,7 +1869,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
         :format(
-            reason, "2.12.42", GetTime() - debugStartedAt,
+            reason, "2.12.43", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -2907,7 +2908,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.12.42", PIXEL_PROTOCOL_VERSION,
+            :format("2.12.43", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 

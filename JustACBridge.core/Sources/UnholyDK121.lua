@@ -55,18 +55,28 @@ local GCD = {
 }
 
 local context = Runtime.New("unholydk121", "DEATHKNIGHT", 3, GCD)
-local opener = { festeringCasts = 0, scytheCast = false }
+local opener = { scytheCastAt = nil }
+
+local function now()
+    return GetTime and GetTime() or 0
+end
+
+local function hasRecentScytheCast()
+    local castAt = opener.scytheCastAt
+    if type(castAt) ~= "number" then return false end
+    local age = now() - castAt
+    -- This is only a one-refresh bridge while the authoritative tracker aura
+    -- propagates. It must never become a fight-long substitute for that aura.
+    return age >= 0 and age <= 2
+end
 
 local function onEvent(_, event, spellID)
     if event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
-        opener.festeringCasts, opener.scytheCast = 0, false
+        opener.scytheCastAt = nil
     elseif spellID == SPELL.FESTERING_SCYTHE then
-        opener.festeringCasts = math.min(2, opener.festeringCasts + 1)
-        opener.scytheCast = true
-    elseif spellID == SPELL.FESTERING_STRIKE then
-        opener.festeringCasts = math.min(2, opener.festeringCasts + 1)
+        opener.scytheCastAt = now()
     elseif spellID == SPELL.ARMY_OF_THE_DEAD then
-        opener.festeringCasts, opener.scytheCast = 0, false
+        opener.scytheCastAt = nil
     end
 end
 
@@ -173,13 +183,18 @@ local function selectQueue(raw)
     if armyReady then
         if context:Known(SPELL.FESTERING_SCYTHE) then
             local tracker = context:AuraUp("player", SPELL.FESTERING_SCYTHE_TRACKER)
-            if tracker ~= true and not opener.scytheCast then
+            if tracker ~= true and not hasRecentScytheCast() then
                 local action, ready = readyChoice(SPELL.FESTERING_STRIKE,
                     "cooldowns.army_setup", "awaiting-confirmed-scythe", raw)
                 if action then return action end
                 if ready == nil then
                     return context:Fallback("army-setup-readiness-unknown", raw)
                 end
+                -- Army's Festering Scythe tracker is a hard prerequisite in
+                -- the current APL. An unavailable builder does not make that
+                -- prerequisite true; delegate instead of incorrectly jumping
+                -- straight to Army.
+                return context:Fallback("army-setup-incomplete", raw)
             end
         end
         return context:Choose(SPELL.ARMY_OF_THE_DEAD,

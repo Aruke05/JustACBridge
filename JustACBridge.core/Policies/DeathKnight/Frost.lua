@@ -62,4 +62,17 @@ Registry.RegisterSpec("DEATHKNIGHT", 2, {
             label = "冰霜巨龙之怒后接亡者复生",
         },
     },
+    versions = {
+        {
+            id = "midnight-12.1",
+            minInterface = 120100,
+            maxInterface = 120199,
+            revision = 16,
+            -- A JustAC fallback or the experimental source's fallback=true
+            -- path may only delete unsafe entries while retaining source
+            -- order. It must not manufacture Howling Blast merely because
+            -- the player is moving or the queue is empty.
+            fallbackActions = {},
+        },
+    },
 })

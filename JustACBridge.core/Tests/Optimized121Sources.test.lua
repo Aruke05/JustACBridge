@@ -238,6 +238,25 @@ assert(queue[1] == 49020 and frostDK.GetDecisionTrace():match("obliterate"))
 ready(207230)
 queue = frostDK.GetQueue()
 assert(queue[1] == 207230 and frostDK.GetDecisionTrace():match("killing%-machine=2"))
+
+-- The current AoE APL places a live Frostbane Frost Strike between the first
+-- Frostscythe row and the later rune-gated Obliterate row. If Frostscythe is
+-- unavailable, Bridge must fall through to Frostbane rather than skip it.
+cooldowns[207230] = true
+auras[51714] = 5
+display[49143] = 1228433
+ready(49143)
+queue = frostDK.GetQueue()
+assert(queue[1] == 49143 and frostDK.GetDecisionTrace():match("razorice=5%+frostbane"))
+
+-- An unreadable KM stack count cannot be approximated as one stack while the
+-- higher two-stack Frostscythe row is otherwise executable.
+display[49143] = nil
+nilAuras[51124] = true
+ready(207230)
+queue = frostDK.GetQueue()
+assert(queue[1] == rawQueue[1]
+    and frostDK.GetDecisionTrace():match("killing%-machine%-two%-stack%-unknown"))
 preserve = frostDK.GetPreserveQueue()
 assert(preserve[1] == rawQueue[1])
 
@@ -254,6 +273,9 @@ assert(unholy.GetDecisionTrace():match("disease%-maintenance%-delegated"))
 auras[1240996], auras[191587] = true, true
 known[458128] = true
 ready(42650)
+queue = unholy.GetQueue()
+assert(queue[1] == rawQueue[1]
+    and unholy.GetDecisionTrace():match("army%-setup%-incomplete"))
 ready(85948)
 queue = unholy.GetQueue()
 assert(queue[1] == 85948 and unholy.GetDecisionTrace():match("army_setup"))
@@ -261,6 +283,15 @@ cast(unholyFrame, 85948)
 queue = unholy.GetQueue()
 assert(queue[1] == 85948)
 cast(unholyFrame, 458128)
+queue = unholy.GetQueue()
+assert(queue[1] == 42650 and unholy.GetDecisionTrace():match("army_of_the_dead"))
+
+-- The successful Scythe event only bridges immediate aura propagation. It
+-- cannot prove the tracker forever if Army is delayed.
+now = now + 1
+queue = unholy.GetQueue()
+assert(queue[1] == 85948 and unholy.GetDecisionTrace():match("army_setup"))
+auras[1241077] = true
 queue = unholy.GetQueue()
 assert(queue[1] == 42650 and unholy.GetDecisionTrace():match("army_of_the_dead"))
 cast(unholyFrame, 42650)

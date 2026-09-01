@@ -188,19 +188,27 @@ local function selectQueue(raw)
 
     local aoe = enemies >= 2
     if aoe then
-        -- These opening KM lines do not depend on either pooling variable.
-        if killing and (killingTwo == true or runes >= 3) then
-            local action, ready = readyChoice(SPELL.FROSTSCYTHE,
-                "aoe.frostscythe", killingTwo == true and "killing-machine=2"
-                    or "killing-machine+runes>=3", raw)
-            if action then return action end
-            if ready == nil then return context:Fallback("frostscythe-readiness-unknown", raw) end
-            action, ready = readyChoice(SPELL.OBLITERATE,
-                "aoe.obliterate", killingTwo == true and "killing-machine=2"
-                    or "killing-machine+runes>=3", raw)
-            if action then return action end
-            if ready == nil then return context:Fallback("obliterate-readiness-unknown", raw) end
-        elseif killing and killingTwo == nil and runes < 3 then
+        -- Preserve the exact first four SimC AoE rows. Frost Strike with a
+        -- live Frostbane proc sits between the two-stack Frostscythe row and
+        -- the later rune-gated Frostscythe/Obliterate rows. The previous
+        -- combined branch skipped that Frost Strike whenever Frostscythe was
+        -- unavailable, silently changing the APL instead of falling through
+        -- to the next row.
+        local frostscytheReady = false
+        if killing then
+            frostscytheReady = context:Ready(SPELL.FROSTSCYTHE)
+            if frostscytheReady == nil then
+                return context:Fallback("frostscythe-readiness-unknown", raw)
+            end
+        end
+        if killing and killingTwo == true and frostscytheReady then
+            return context:Choose(SPELL.FROSTSCYTHE, "aoe.frostscythe",
+                "killing-machine=2", raw)
+        end
+        -- If the stack count is unreadable, only an unavailable Frostscythe
+        -- proves the first row cannot win. A ready spell must be delegated;
+        -- guessing one stack would incorrectly promote Frostbane.
+        if killing and killingTwo == nil and frostscytheReady then
             return context:Fallback("killing-machine-two-stack-unknown", raw)
         end
 
@@ -213,6 +221,26 @@ local function selectQueue(raw)
             if ready == nil then return context:Fallback("frost-strike-readiness-unknown", raw) end
         elseif razoriceFive == true and frostbane == nil then
             return context:Fallback("frostbane-state-unknown", raw)
+        end
+
+        if killing and runes >= 3 and frostscytheReady then
+            return context:Choose(SPELL.FROSTSCYTHE, "aoe.frostscythe",
+                "killing-machine+runes>=3", raw)
+        end
+        if killing and (killingTwo == true or runes >= 3) then
+            local action, ready = readyChoice(SPELL.OBLITERATE,
+                "aoe.obliterate", killingTwo == true and "killing-machine=2"
+                    or "killing-machine+runes>=3", raw)
+            if action then return action end
+            if ready == nil then return context:Fallback("obliterate-readiness-unknown", raw) end
+        elseif killing and killingTwo == nil then
+            local obliterateReady = context:Ready(SPELL.OBLITERATE)
+            if obliterateReady == nil then
+                return context:Fallback("obliterate-readiness-unknown", raw)
+            end
+            if obliterateReady then
+                return context:Fallback("killing-machine-two-stack-unknown", raw)
+            end
         end
 
         -- Rime+Frostbound and missing Frost Fever are above the pooling lines.
