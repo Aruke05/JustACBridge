@@ -88,7 +88,6 @@ internal sealed class M5Hook : IDisposable
     private readonly ManualResetEventSlim _ready = new(false);
     private string _lastPulseState = "";
     private string _lastActionTrace = "";
-    private long _lastPulseLogTick;
     private readonly RepeatSendGate _repeatSendGate = new(SameBindingAcknowledgementMs);
     private readonly ProtectedChannelSendLatch _protectedChannelSendLatch = new(ProtectedChannelStartTimeoutMs);
 
@@ -420,7 +419,6 @@ internal sealed class M5Hook : IDisposable
                 TracePulseState("blocked-lossless-stability-delay");
                 return;
             }
-            TracePulseState("pulsing-lossless:" + actions.Lossless.Canonical);
             Pulse(actions.Lossless, actions.LosslessStartsProtectedChannel);
             return;
         }
@@ -428,7 +426,6 @@ internal sealed class M5Hook : IDisposable
         {
             if (!actions.PreserveCanPulse) { TracePulseState("blocked-preserve-queue-gate"); return; }
             if (actions.PreserveBurst is null) { TracePulseState("held-preserve-no-binding"); return; }
-            TracePulseState("pulsing-preserve:" + actions.PreserveBurst.Canonical);
             Pulse(actions.PreserveBurst, actions.PreserveStartsProtectedChannel);
             return;
         }
@@ -440,9 +437,11 @@ internal sealed class M5Hook : IDisposable
         long now = Environment.TickCount64;
         if (!_repeatSendGate.TryCommit(binding.Canonical, now))
         {
-            TracePulseState($"blocked-send-ack:{binding.Canonical}:{_repeatSendGate.RemainingMs(binding.Canonical, now)}ms");
+            // Log gate transitions, not a different countdown every 20ms.
+            TracePulseState($"blocked-send-ack:{binding.Canonical}");
             return;
         }
+        TracePulseState("pulsing:" + binding.Canonical);
         if (!DiagnosticLog.Enabled)
         {
             binding.Pulse();
@@ -451,11 +450,10 @@ internal sealed class M5Hook : IDisposable
         }
         bool ok = binding.Pulse(out string result);
         if (ok && startsProtectedChannel) _protectedChannelSendLatch.Arm(now);
-        if (!ok || now - _lastPulseLogTick >= 500)
-        {
-            _lastPulseLogTick = now;
-            DiagnosticLog.Write($"SEND binding={binding.Canonical} ok={ok} {result}");
-        }
+        // Every actual attempt matters for queue-gap diagnosis. Sampling at
+        // 500ms hid valid sends made by the 250ms same-binding gate. A true
+        // SendInput result confirms local injection only, not a successful cast.
+        DiagnosticLog.Write($"SEND binding={binding.Canonical} ok={ok} protectedStart={startsProtectedChannel} {result}");
     }
 
     private void TracePulseState(string state)

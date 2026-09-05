@@ -107,7 +107,9 @@ WoW 插件从可替换的推荐源读取队列并生成“无损版”和“保�
 - 像素矩阵从客户区 `(2, 7)` 开始，即向下偏移 `5px`，避开窗口顶边常见覆盖层
 - 使用协议头尾、Fletcher 双累加和独立滚动校验共同拒绝撕裂帧
 - 自动识别 WoW 窗口、矩阵位置和显示缩放
-- 按住任一功能键会在 GCD 空闲或最后约 120 ms 的最佳入队窗口连发，并持续跟随最新推荐，松开立即停止
+- 按住任一功能键会在 GCD 空闲或最后最多 120ms 的入队窗口发送；游戏 `SpellQueueWindow`
+  明确小于 120ms 时跟随缩小（包括 0），不可读时保持原 120ms，不修改游戏设置。
+  Windows 每 20ms 检查最新推荐，但同键仍有 250ms 防重复间隔；松开立即停止
 - 普通引导、读条或蓄力施法期间暂停连发；11.2 奥术飞弹按旧版明确规则允许在
   GCD 末截断，12.0/12.1 均保守完整引导，避免无法可靠识别强化飞弹时误截断
 - 默认识别玩家开始/停止移动；基础瞬发、当前 Proc 瞬发及职业策略确认可移动施放的技能仍可使用
@@ -189,6 +191,7 @@ JustACBridge.macOS/      macOS 原生客户端（Swift + AppKit）
    - `Sources` 文件夹
    - `Trackers` 文件夹
    - `Policies` 文件夹
+   - `Framework` 文件夹（2.13.1 起包含入队窗口读取模块）
 4. 启动游戏，并在插件列表中启用 JustACBridge。
 
 最终目录应类似：
@@ -197,6 +200,8 @@ JustACBridge.macOS/      macOS 原生客户端（Swift + AppKit）
 World of Warcraft\_retail_\Interface\AddOns\JustACBridge\
   JustACBridge.lua
   JustACBridge.toc
+  Framework\
+    QueueTiming.lua
   Sources\
     Registry.lua
     JustAC.lua
@@ -364,7 +369,7 @@ flowchart LR
 - 保留爆发版只在 JustAC 已计算出的可用队列中选可移动安全替代动作，不自行重写职业
   APL；它不承诺处理要求停手、反伤、免疫或特殊目标切换的 encounter。
 - 除 Windows M5 的魔爆术 `100ms` 稳定性观察外，GCD 空闲时首次按下及推荐变化立即
-  触发；GCD 尚早时先吞掉功能键并等待最后约 120 ms，再以 20 ms 周期补发，避免旧
-  推荐长期占用 WoW 动作队列。
+  触发（仍受同键防重复保护）；GCD 尚早时先吞掉功能键，进入最多 120ms 的窗口后
+  才允许发送，并尊重游戏明确设置的更小窗口，避免旧推荐长期占用 WoW 动作队列。
 - “零延迟”在实际系统中不可实现；额外延迟主要受屏幕捕获和桌面合成刷新影响。
 - `bin`、`obj` 和 `dist` 为本地构建产物，不纳入 Git 版本控制。

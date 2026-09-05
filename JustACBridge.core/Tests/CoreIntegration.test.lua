@@ -57,7 +57,13 @@ local channeledSpells = {
 local function makeWidget()
     local widget = {}
     local methods = {
-        CreateTexture = function() return makeWidget() end,
+        CreateTexture = function(self)
+            local child = makeWidget()
+            self.textures = rawget(self, "textures") or {}
+            self.textures[#self.textures + 1] = child
+            return child
+        end,
+        SetColorTexture = function(self, r) self.bit = r end,
         CreateFontString = function(self)
             local child = makeWidget()
             self.lastFontString = child
@@ -240,10 +246,90 @@ dofile("JustACBridge.core/Policies/Hunter/Marksmanship.lua")
 dofile("JustACBridge.core/Policies/Hunter/Survival.lua")
 dofile("JustACBridge.core/Trackers/GroundEffects.lua")
 dofile("JustACBridge.core/Trackers/CooldownReady.lua")
+dofile("JustACBridge.core/Framework/QueueTiming.lua")
 dofile("JustACBridge.core/JustACBridge.lua")
 
 eventFrame.OnEvent(eventFrame, "PLAYER_LOGIN")
 assert(JustACBridge.GetRecommendationSource().id == "test")
+
+-- Input timing must not change either recommendation, reservations or source.
+-- Read the current CVar each frame, including a change while the gate remains
+-- closed (it must still reach diagnostics/SavedVariables).
+do
+    local originalTime = now
+    local firstID = JustACBridgeExport.first.spellID
+    local secondID = JustACBridgeExport.reserveBurst.spellID
+    assert(firstID == 43265 and secondID == 47541)
+    local function checkPixel(ready, busyMask)
+        local cells = namedFrames.JustACBridgePixelFrame.textures
+        assert(#cells == 576)
+        local bytes = {}
+        for i = 1, 72 do
+            local value = 0
+            for bit = 1, 8 do value = value * 2 + cells[(i-1)*8 + bit].bit end
+            bytes[i] = value
+        end
+        assert(bytes[64] % 2 == (ready and 1 or 0))
+        assert(bytes[4] == 3 and bytes[70] == 69 and bytes[72] == 68)
+        if busyMask then assert(math.floor(bytes[7] / busyMask) % 2 == 1) end
+        local a, b, c = 0, 0, 0
+        for i = 1, 66 do
+            a = (a + bytes[i]) % 255
+            b = (b + a) % 255
+            c = (c * 33 + bytes[i]) % 256
+        end
+        assert(bytes[67] == a and bytes[68] == b and bytes[69] == c)
+    end
+    local gameWindow = "400"
+    C_CVar = { GetCVar = function() return gameWindow end }
+    cooldownSpellID, cooldownEndsAt = 61304, 101
+    now = 100.875 -- 125ms, outside old and new windows
+    JustACBridge.Refresh()
+    assert(not JustACBridgeExport.queueReady)
+    assert(JustACBridgeExport.queueCommitWindowMs == 120)
+    checkPixel(false)
+    assert(JustACBridgeExport.gameSpellQueueWindowMs == 400)
+    gameWindow = "80"
+    JustACBridge.Refresh()
+    assert(not JustACBridgeExport.queueReady)
+    assert(JustACBridgeExport.queueCommitWindowMs == 80)
+    assert(JustACBridgeExport.gameSpellQueueWindowMs == 80)
+    now = 100.9 -- 100ms: used to send too early with game SQW=80
+    JustACBridge.Refresh()
+    assert(not JustACBridgeExport.queueReady)
+    checkPixel(false)
+    now = 100.925 -- 75ms: fits game SQW
+    JustACBridge.Refresh()
+    assert(JustACBridgeExport.queueReady)
+    checkPixel(true)
+    assert(JustACBridgeExport.first.spellID == firstID)
+    assert(JustACBridgeExport.reserveBurst.spellID == secondID)
+    -- A narrower gate does not relax an existing channel/cast busy flag.
+    eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_START", "player", "cast-test", 30451)
+    JustACBridge.Refresh()
+    assert(JustACBridgeExport.isCasting and JustACBridgeExport.queueReady)
+    checkPixel(true, 128)
+    eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_STOP", "player", "cast-test", 30451)
+    eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "channel-test", 5143)
+    JustACBridge.Refresh()
+    assert(JustACBridgeExport.isChanneling)
+    checkPixel(true, 64)
+    eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "channel-test", 5143)
+    gameWindow = "0"
+    JustACBridge.Refresh()
+    assert(not JustACBridgeExport.queueReady and JustACBridgeExport.queueCommitWindowMs == 0)
+    checkPixel(false)
+    now = 101
+    JustACBridge.Refresh()
+    assert(JustACBridgeExport.queueReady)
+    checkPixel(true)
+    C_CVar, cooldownSpellID, cooldownEndsAt, now = nil, nil, 0, originalTime
+    JustACBridge.Refresh()
+    assert(JustACBridgeExport.queueCommitWindowMs == 120)
+    assert(JustACBridgeExport.gameSpellQueueWindowMs == nil)
+    assert(JustACBridgeExport.queueTimingReason == "cvar-unavailable")
+end
+
 classFile, specIndex = "DEATHKNIGHT", 2
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 assert(JustACBridge.GetRecommendationSource().id == "test")

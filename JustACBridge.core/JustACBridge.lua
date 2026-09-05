@@ -16,6 +16,8 @@ local PIXEL_PROTOCOL_VERSION = 3
 -- Do not fill WoW's spell queue for the whole SpellQueueWindow.  Waiting until
 -- the end of the GCD leaves late procs/target changes time to change JustAC's
 -- recommendation while retaining enough margin for the screen-capture bridge.
+-- This is a ceiling; a positively observed smaller game queue window wins.
+-- Spell readiness look-ahead below remains independent of the input gate.
 local QUEUE_COMMIT_WINDOW_MS = 120
 local PIXEL_BYTE_COUNT = 72
 local PIXEL_BIT_COUNT = PIXEL_BYTE_COUNT * 8
@@ -72,6 +74,7 @@ local MOVEMENT_FLAP_WINDOW_SECONDS = 0.12
 local MOVEMENT_STOP_DEBOUNCE_SECONDS = 0.25
 local queueReady = true
 local gcdRemainingMs = 0
+local queueTiming = { windowMs = QUEUE_COMMIT_WINDOW_MS, reason = "not-sampled" }
 local reservedSpellIDs = {}
 local reserveExcludedSpellIDs = {}
 local reserveEffectiveExcludedSpellIDs = {}
@@ -1861,6 +1864,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
         tostring(lossless and lossless.queueValue),
         tostring(preserve and preserve.queueValue), tostring(queueReady),
         tostring(playerIsCasting), tostring(playerIsChanneling),
+        tostring(queueTiming.windowMs), tostring(queueTiming.gameWindowMs), queueTiming.reason,
     }, ":")
     if snapshotKey == debugLastSnapshot
         and (not playerIsMoving or now - debugLastSnapshotAt < 1) then
@@ -1870,9 +1874,9 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     debugLastSnapshotAt = now
 
     local _, class = UnitClass("player")
-    appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
+    appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s commitMs=%s gameQueueMs=%s queueTiming=%s")
         :format(
-            reason, "2.12.43", GetTime() - debugStartedAt,
+            reason, "2.13.1", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1880,7 +1884,8 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
             tostring(JustACBridgeDB.movementFilter ~= false),
             tostring(playerIsMoving), debugSafe(speed), tostring(speedOK),
             tostring(playerIsCasting), tostring(playerIsChanneling),
-            debugSafe(playerChannelSpellID), tostring(queueReady), debugSafe(gcdRemainingMs)))
+            debugSafe(playerChannelSpellID), tostring(queueReady), debugSafe(gcdRemainingMs),
+            tostring(queueTiming.windowMs), tostring(queueTiming.gameWindowMs), queueTiming.reason))
 
     local queueParts = {}
     for index = 1, math.min(#queue, QUEUE_SCAN_COUNT) do
@@ -1974,6 +1979,8 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
 end
 
 local function getGcdState()
+    queueTiming.windowMs, queueTiming.gameWindowMs, queueTiming.reason =
+        JustACBridgeQueueTiming.ReadWindow(QUEUE_COMMIT_WINDOW_MS)
     local cooldown = C_Spell and C_Spell.GetSpellCooldown
         and C_Spell.GetSpellCooldown(61304)
     local startTime = type(cooldown) == "table" and tonumber(cooldown.startTime) or 0
@@ -1983,7 +1990,7 @@ local function getGcdState()
     end
 
     local remaining = math.max(0, math.ceil((startTime + duration - GetTime()) * 1000))
-    return remaining <= QUEUE_COMMIT_WINDOW_MS, remaining
+    return remaining <= queueTiming.windowMs, remaining
 end
 
 local function makeSignature(dataRows, canCommitQueue)
@@ -2010,6 +2017,8 @@ local function makeSignature(dataRows, canCommitQueue)
     parts[ROW_COUNT + 2] = playerIsCasting and "casting" or "not-casting"
     parts[ROW_COUNT + 3] = canCommitQueue and "queue-ready" or "queue-wait"
     parts[ROW_COUNT + 4] = playerIsMoving and "moving" or "stationary"
+    parts[ROW_COUNT + 5] = table.concat({ tostring(queueTiming.windowMs),
+        tostring(queueTiming.gameWindowMs), queueTiming.reason }, ":")
     return table.concat(parts, "\030")
 end
 
@@ -2201,6 +2210,9 @@ local function updateSavedExport(dataRows)
         and GroundEffectTracker.GetActive and GroundEffectTracker.GetActive() or {}
     JustACBridgeExport.queueReady = queueReady
     JustACBridgeExport.gcdRemainingMs = gcdRemainingMs
+    JustACBridgeExport.queueCommitWindowMs = queueTiming.windowMs
+    JustACBridgeExport.gameSpellQueueWindowMs = queueTiming.gameWindowMs
+    JustACBridgeExport.queueTimingReason = queueTiming.reason
     JustACBridgeExport.playerState = playerIsChanneling and "channeling"
         or (playerIsCasting and "casting" or "idle")
     JustACBridgeExport.policy = currentPolicy and {
