@@ -497,4 +497,181 @@ queue = source.GetQueue()
 assert(queue == rawQueue)
 assert(source.GetDecisionTrace():match("orb%-readiness%-unknown"))
 
+-- Sunfury's current low-charge Orb line is <3, not <1. Exercise both routes
+-- with and without Pulse, including an Orb already ahead of Blast in JustAC.
+do
+    local savedResourceReader = bapi.GetClassResourcePoints
+    local savedReadyReader = bapi.IsSpellReady
+    local savedUsableReader = bapi.IsSpellUsable
+    local savedSecretReader = issecretvalue
+
+    local function resetOrbCase()
+        hero, combat = "sunfury", true
+        charges, salvoStacks, missilesProcced = 2, 0, false
+        displayBlast, orbChargeReady = 30451, true
+        knownSpells[153626], knownSpells[1241462] = true, false
+        cooldowns[365350], cooldowns[321507] = true, true
+        cooldowns[153626], usable[153626] = true, true -- one usable charge
+        auraStacks[453413], auraStacks[365350] = 0, 0
+        source._Test.state.surgeCastAt = nil
+        source._Test.state.burstStage = nil
+        source._Test.state.cleanAuraBaseline = false
+        rawQueue = { 30451, 44425, 153626 }
+        bapi.GetClassResourcePoints = savedResourceReader
+        bapi.IsSpellReady = savedReadyReader
+        bapi.IsSpellUsable = savedUsableReader
+        issecretvalue = savedSecretReader
+    end
+
+    local function assertBoth(expected, rule)
+        for _, select in ipairs({ source.GetQueue, source.GetPreserveQueue }) do
+            local result = select()
+            assert(result[1] == expected, "Sunfury Orb charges=" .. tostring(charges)
+                .. " expected=" .. expected .. " got=" .. tostring(result[1]))
+            assert(source.GetDecisionTrace():find(rule, 1, true))
+        end
+    end
+
+    local function assertRawBoth(reason)
+        for _, select in ipairs({ source.GetQueue, source.GetPreserveQueue }) do
+            assert(select() == rawQueue, "unknown must preserve the original queue")
+            local trace = source.GetDecisionTrace()
+            assert(trace:find("fallback=true", 1, true))
+            assert(trace:find(reason, 1, true))
+        end
+        assert(rawQueue[1] == 30451 and rawQueue[2] == 44425 and rawQueue[3] == 153626)
+    end
+
+    for _, pulseKnown in ipairs({ false, true }) do
+        for _, orbFirst in ipairs({ false, true }) do
+            for _, n in ipairs({ 1, 2, 0, 3, 4 }) do
+                resetOrbCase()
+                knownSpells[1241462], charges = pulseKnown, n
+                if orbFirst then rawQueue = { 153626, 30451, 44425 } end
+                if n < 3 then
+                    assertBoth(153626, "rule=sunfury.arcane_orb detail=charges<3")
+                elseif pulseKnown then
+                    -- The later Pulse AOE predicate is unknown, not permission
+                    -- to reorder JustAC or infer a low-charge Orb decision.
+                    for _, select in ipairs({ source.GetQueue, source.GetPreserveQueue }) do
+                        assert(select() == rawQueue)
+                        assert(source.GetDecisionTrace():find(
+                            "sunfury-pulse-enemy-count-unknown", 1, true))
+                    end
+                else
+                    assertBoth(30451, "rule=sunfury.arcane_blast")
+                end
+            end
+        end
+    end
+
+    for _, n in ipairs({ 1, 2 }) do
+        resetOrbCase()
+        charges = n
+        orbChargeReady = false
+        rawQueue = { 30451, 44425 }
+        assertBoth(30451, "rule=sunfury.arcane_blast")
+        orbChargeReady, usable[153626] = true, false
+        assertBoth(30451, "rule=sunfury.arcane_blast")
+        usable[153626], knownSpells[153626] = true, false
+        assertBoth(30451, "rule=sunfury.arcane_blast")
+
+        -- Exact low charges never leapfrog higher normal-list actions.
+        resetOrbCase()
+        charges, missilesProcced, salvoStacks = n, true, 11
+        assertBoth(5143, "rule=sunfury.arcane_missiles")
+        missilesProcced, displayBlast, auraStacks[1296930] = false, 1295924, 8
+        assertBoth(1295924, "rule=sunfury.prismatic_bolt")
+        displayBlast, auraStacks[453413] = 30451, 1
+        assertBoth(44425, "rule=sunfury.arcane_barrage")
+    end
+
+    -- Fault injection: no stale low-charge/readiness value may survive an
+    -- unavailable, malformed, throwing, or secret result on the next refresh.
+    for _, fault in ipairs({ "nil", "wrong-type", "throw", "missing", "secret" }) do
+        resetOrbCase()
+        assertBoth(153626, "rule=sunfury.arcane_orb")
+        if fault == "missing" then
+            bapi.GetClassResourcePoints = nil
+        else
+            bapi.GetClassResourcePoints = function()
+                if fault == "throw" then error("resource unavailable") end
+                if fault == "nil" then return nil, 4, "arcane_charges" end
+                if fault == "wrong-type" then return "2", 4, "arcane_charges" end
+                return 2, 4, "arcane_charges"
+            end
+            if fault == "secret" then issecretvalue = function(v) return v == 2 end end
+        end
+        assertRawBoth("arcane-charges-unknown")
+
+        resetOrbCase()
+        assertBoth(153626, "rule=sunfury.arcane_orb")
+        if fault == "missing" then
+            bapi.IsSpellReady = nil
+        else
+            local secretReadyPending = false
+            bapi.IsSpellReady = function()
+                if fault == "throw" then error("charge readiness unavailable") end
+                if fault == "nil" then return nil end
+                if fault == "wrong-type" then return 1 end
+                secretReadyPending = fault == "secret"
+                return true
+            end
+            if fault == "secret" then
+                issecretvalue = function()
+                    local secret = secretReadyPending
+                    secretReadyPending = false
+                    return secret
+                end
+            end
+        end
+        assertRawBoth("orb-readiness-unknown")
+
+        resetOrbCase()
+        assertBoth(153626, "rule=sunfury.arcane_orb")
+        local secretUsablePending = false
+        if fault == "missing" then
+            bapi.IsSpellUsable = nil
+        else
+            bapi.IsSpellUsable = function(id)
+                if id ~= 153626 then return savedUsableReader(id) end
+                if fault == "throw" then error("Orb usability unavailable") end
+                if fault == "nil" then return nil end
+                if fault == "wrong-type" then return 1 end
+                secretUsablePending = true
+                return true
+            end
+        end
+        if fault == "secret" then
+            issecretvalue = function()
+                local secret = secretUsablePending
+                secretUsablePending = false
+                return secret
+            end
+        end
+        assertRawBoth("readiness-unknown")
+    end
+
+    resetOrbCase()
+    unknownAuraThresholds["453413:1"] = true
+    assertRawBoth("arcane-soul-state-unknown")
+    unknownAuraThresholds["453413:1"] = nil
+    missilesProcced = true
+    unknownAuraThresholds["1242974:12"] = true
+    assertRawBoth("arcane-salvo<12-unknown")
+    unknownAuraThresholds["1242974:12"] = nil
+    resetOrbCase()
+
+    -- Low charges do not override M5's hard Surge/Touch pair. M4 continues to
+    -- reserve both cooldowns and may independently select its normal Orb.
+    cooldowns[365350], cooldowns[321507] = false, false
+    assert(source.GetQueue()[1] == 365350)
+    assert(source.GetPreserveQueue()[1] == 153626)
+    sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "orb-test-surge", 365350)
+    assert(source.GetQueue()[1] == 321507)
+    assert(source.GetPreserveQueue()[1] == 153626)
+    sourceFrame.OnEvent(sourceFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "orb-test-touch", 321507)
+    resetOrbCase()
+end
+
 print("arcane 12.1 source tests passed")

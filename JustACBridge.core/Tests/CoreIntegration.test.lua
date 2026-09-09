@@ -1253,4 +1253,129 @@ assert(reloadCount == 1)
 assert(type(JustACBridgeExport.debugLog) == "string"
     and JustACBridgeExport.debugLog:find("DEBUG enabled=true", 1, true))
 
+-- End-to-end Sunfury Orb regression: real arcane121 -> real JustAC capability
+-- adapter -> policy/core -> both exports, not a hand-built recommendation.
+-- This isolated final block continues to use only the mock runtime above.
+do
+    now, speed, speedSecret, auraSecret = 2000, 0, false, false
+    classFile, specIndex, inCombat = "MAGE", 1, true
+    targetExists, targetAttackable, targetDead = true, true, false
+    unlearnedSpells, unusableSpells, unboundSpells = {}, {}, {}
+    effectiveSpellOverrides, burstTriggers, burstCues = {}, {}, {}
+    cooldownSpellID, cooldownEndsAt = nil, 0
+    -- Only Sunfury is owned; Pulse is deliberately absent to reproduce the
+    -- old terminal-Blast path without a later unknown Pulse predicate.
+    unlearnedSpells[443739], unlearnedSpells[1241462] = true, true
+    playerAuras[235450] = {}
+    testQueue = { 30451, 44425 }
+    local arcaneCharges, orbReady, missilesProc = 1, true, false
+    local api = {
+        IsSpellUsable = function(id) return unusableSpells[id] ~= true end,
+        IsSpellOnCooldown = function(id) return id == 365350 or id == 321507 end,
+        IsSpellReady = function(id) return id == 153626 and orbReady end,
+        GetClassResourcePoints = function() return arcaneCharges, 4, "arcane_charges" end,
+        GetAuraStackAtLeast = function() return false end,
+        IsSpellProcced = function(id) return id == 5143 and missilesProc end,
+        GetDisplaySpellID = function(id) return id end,
+        AreAurasSecret = function() return true end,
+    }
+    local scanner = {
+        GetSpellHotkey = function(id)
+            if unboundSpells[id] then return "" end
+            return id == 153626 and "E" or "2"
+        end,
+    }
+    local queueAPI = { GetCurrentSpellQueue = function() return testQueue end }
+    LibStub = function(name)
+        if name == "JustAC-BlizzardAPI" then return api end
+        if name == "JustAC-ActionBarScanner" then return scanner end
+        if name == "JustAC-SpellQueue" then return queueAPI end
+        if name == "JustAC-SpellDB" then
+            return { IsChanneled = function(id) return channeledSpells[id] == true end }
+        end
+    end
+    dofile("JustACBridge.core/Sources/JustAC.lua")
+    dofile("JustACBridge.core/Sources/Arcane121.lua")
+    SlashCmdList.JUSTACBRIDGE("source auto")
+    eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+    eventFrame.OnEvent(eventFrame, "PLAYER_ENTERING_WORLD")
+    local arcane = assert(JustACBridgeRecommendationSources.Get("arcane121"))
+    assert(JustACBridge.GetRecommendationSource().id == "arcane121")
+
+    local function assertExports(expected)
+        JustACBridge.Refresh()
+        for _, result in ipairs({ JustACBridgeExport.first, JustACBridgeExport.reserveBurst }) do
+            assert(result and result.spellID == expected,
+                "Sunfury core expected=" .. expected .. " got=" .. tostring(result and result.spellID))
+            if expected == 153626 then assert(result.hotkey == "E") end
+        end
+        assert(JustACBridge.GetLosslessRecommendation().spellID == expected)
+        assert(JustACBridge.GetPreserveBurstRecommendation().spellID == expected)
+    end
+
+    -- Even a newly proven source-owned Orb must observe the startup delay.
+    assert(arcane.GetQueue()[1] == 153626, "low-charge source must select Orb before core filtering")
+    assertExports(30451)
+    now = now + 0.81
+    for _, n in ipairs({ 0, 1, 2 }) do
+        arcaneCharges = n
+        assertExports(153626)
+    end
+    for _, n in ipairs({ 3, 4 }) do
+        arcaneCharges = n
+        assertExports(30451)
+    end
+    arcaneCharges = 2
+    unboundSpells[153626] = true
+    assertExports(30451)
+    unboundSpells[153626], unlearnedSpells[153626] = nil, true
+    assertExports(30451)
+    unlearnedSpells[153626], unusableSpells[153626] = nil, true
+    assertExports(30451)
+    unusableSpells[153626], orbReady = nil, false
+    assertExports(30451)
+    orbReady = nil
+    assertExports(30451)
+    assert(arcane.GetQueue() == testQueue)
+    orbReady = true
+    assertExports(153626)
+
+    -- A higher priority proc still wins, and any current Missiles channel
+    -- keeps both protocol outputs busy even when Orb becomes the next action.
+    missilesProc = true
+    assertExports(5143)
+    eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_START", "player", "orb-test-channel", 5143)
+    missilesProc = false
+    JustACBridge.Refresh()
+    assert(JustACBridge.GetPlayerCastState().channelBlocksInput == true)
+    local cells = namedFrames.JustACBridgePixelFrame.textures
+    local flags = 0
+    for bit = 1, 8 do flags = flags * 2 + cells[48 + bit].bit end
+    assert(math.floor(flags / 64) % 2 == 1,
+        "protected channel must set the shared input-blocking protocol bit")
+    eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_CHANNEL_STOP", "player", "orb-test-channel", 5143)
+    assertExports(153626)
+    assert(JustACBridge.GetPlayerCastState().channelBlocksInput == false)
+
+    speed = 7
+    eventFrame.OnEvent(eventFrame, "PLAYER_STARTED_MOVING")
+    JustACBridge.Refresh()
+    assert(JustACBridge.GetLosslessRecommendation() == nil)
+    assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+    -- Neither unsafe Orb/Blast nor an unproven later Barrage may be sent.
+    speed = 0
+    eventFrame.OnEvent(eventFrame, "PLAYER_STOPPED_MOVING")
+    assertExports(30451)
+    now = now + 0.79
+    assertExports(30451)
+    now = now + 0.02
+    assertExports(153626)
+    eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "orb-test-blink", 1953)
+    assertExports(30451)
+    now = now + 1.99
+    assertExports(30451)
+    now = now + 0.02
+    assertExports(153626)
+end
+
 print("core integration tests passed")

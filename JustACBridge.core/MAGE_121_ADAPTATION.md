@@ -6,6 +6,8 @@
 
 ## 当前推荐源
 
+- NGA 当前 S2 正式服：[凛冽寒风《至暗之夜 S2 奥法 PVE 指南》](https://bbs.nga.cn/read.php?tid=46253462)
+  （2026-09-10 通过浏览器核对，主楼最后修改于 2026-09-04）。
 - NGA 奥法 PTR/S2：[S2 奥法循环变化 V1](https://bbs.nga.cn/read.php?tid=47085132)
 - NGA 火法 PTR/S2：[S2 火法循环变化 V1](https://bbs.nga.cn/read.php?tid=47171968)
 - NGA 团本实战：[英雄烈毒之渊/潮缚石窟法师心得](https://bbs.nga.cn/read.php?tid=47431968)
@@ -25,6 +27,55 @@
 
 NGA 法师区在调研日置顶的冰法链接已失效，因此没有猜测帖子编号；冰法以当前 SimC
 APL、Method 与 Icy Veins 的交集为实现依据。
+
+## 2026-09-10：日怒宝珠低充能修复
+
+- 插件发布版本为 `2.13.2`，TOC 与诊断版本同步；Windows 客户端无需变更。
+- NGA 当前日怒优先级与当日核对的 SimC `actions.sunfury` 均把宝珠补充能条件写为
+  `buff.arcane_charge.stack<3`，且排在普通奥冲之前。原代码只判断 `<1`，漏掉角色
+  1、2 层奥术充能；这不是宝珠按钮自身的冷却充能数。
+- 仅修改 `Arcane121.lua` 日怒普通列表的该阈值及诊断文字。0/1/2 层可以选择宝珠，
+  3/4 层不因本次改动强制选择。所有更高优先级、JustAC 未知状态回退、技能归属、
+  快捷键、移动、停步 0.8 秒、闪现 2 秒和读条/引导保护保持原有实现。
+- 不增加敌人数量估算，不强制 AOE 卡 CD 宝珠，不修改疾咒、其他专精、策略注册、
+  公共核心行为或客户端生产代码。M4/M5 继续共用此普通动作规则。
+
+验证结果：
+
+- 新增日怒源测试覆盖 0～4 层、是否学习脉冲、宝珠在原队列前/后、宝珠仍有一层可用、
+  耗尽/不可用/未学习、更高优先级飞弹/棱彩/弹幕以及 M5 涌动→触配对。
+- 充能与可用性 API 的 nil、错误类型、异常、缺失及模拟 secret 均保留原队列；
+  上一帧已知状态不跨越未知帧使用。
+- 核心集成测试实际加载 `arcane121` 和 JustAC 能力适配器，再经过专精策略与核心，
+  检查两路导出 ID、真实绑定要求、移动过滤、停步/闪现延迟和引导共享阻塞位。
+- 在内存中重放修复前源码：上述源测试与核心集成测试均准确失败；不回写旧源码。
+- 10 个 Lua 测试套件在 Lua 5.1、5.5 各自独立环境中全部通过；38 个 Lua 文件的
+  Lua 5.1 语法检查通过；Windows 客户端协议自测及无原生输入 Hook 测试通过。
+
+从仓库根目录复现离线验证（Python 已安装 `lupa`）：
+
+```powershell
+@'
+import importlib
+from pathlib import Path
+for version in ('lua51', 'lua55'):
+    LuaRuntime = importlib.import_module('lupa.' + version).LuaRuntime
+    for path in sorted(Path('JustACBridge.core/Tests').glob('*.test.lua')):
+        LuaRuntime().execute(path.read_text(encoding='utf-8-sig'))
+lua = importlib.import_module('lupa.lua51').LuaRuntime()
+check = lua.eval('function(s, n) local f, e = loadstring(s, n); assert(f, e) end')
+for path in Path('JustACBridge.core').rglob('*.lua'):
+    check(path.read_text(encoding='utf-8-sig'), str(path))
+'@ | python -B -
+dotnet run --project JustACBridge.M5 -c Release --no-restore -- --self-test
+dotnet run --project JustACBridge.M5.Tests -c Release --no-restore
+git diff --check -- JustACBridge.core
+```
+
+本节记录发布前的离线验证；部署另以逐文件 SHA-256 清单核对已测试源码与安装文件。
+验证没有启动或连接 WoW，没有读取游戏进程或发送真实输入；模拟 secret 与事件顺序
+测试不能替代实际服务器和 JustAC API 行为的实战验证，也不证明此前那一场多目标
+战斗的全部漏放均由此分支造成。
 
 ## 落地范围
 

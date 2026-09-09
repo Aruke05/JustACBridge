@@ -804,8 +804,11 @@ local function selectQueue(raw, preserve)
 
     local orbReady = spellReady(SPELL.ARCANE_ORB)
     if orbReady == nil then return fallback("orb-readiness-unknown", raw) end
-    if charges < 1 and orbReady then
-        return choose(SPELL.ARCANE_ORB, "sunfury.arcane_orb", "charges<1", raw)
+    -- Sunfury replenishes at 0/1/2 Arcane Charges (NGA S2 / current SimC).
+    -- This is not an unconditional AOE priority: all higher predicates above
+    -- must still be proven, and the core retains binding/movement/cast gates.
+    if charges < 3 and orbReady then
+        return choose(SPELL.ARCANE_ORB, "sunfury.arcane_orb", "charges<3", raw)
     end
 
     local pulseReady = spellReady(SPELL.ARCANE_PULSE)
