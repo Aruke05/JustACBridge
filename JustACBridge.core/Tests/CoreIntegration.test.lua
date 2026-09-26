@@ -1,3 +1,6 @@
+dofile("JustACBridge.core/Framework/ActionSequence.lua")
+dofile("JustACBridge.core/Framework/TargetLease.lua")
+dofile("JustACBridge.core/Framework/ResourcePreparation.lua")
 -- Lightweight WoW-runtime integration smoke test.
 -- Run from repository root with a Lua-compatible CLI.
 
@@ -180,12 +183,15 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     GetQueue = function() return testQueue end,
     GetPreserveQueue = function() return testPreserveQueue or testQueue end,
     GetSpellHotkey = function(id)
-        if unboundSpells[id] then return nil end
+        if unboundSpells[id] then return "" end
         return id == 43265 and "1" or "2"
     end,
     GetDisplaySpellID = function(id) return id end,
     GetEffectiveSpellID = function(id) return effectiveSpellOverrides[id] or id end,
     IsSpellUsable = function(id) return unusableSpells[id] ~= true end,
+    IsSpellUsableStrict = function(id)
+        return JustACBridgeRecommendationSources.Get("justac", false).IsSpellUsableStrict(id)
+    end,
     IsSpellOnCooldown = function(id)
         if unknownCooldownSpells[id] then return nil end
         return id == cooldownSpellID and cooldownEndsAt > now
@@ -426,6 +432,20 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 44425)
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "surge-1", 365350)
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 321507)
+
+-- Frost's target-epoch opt-in must NOT loosen Arcane's GUID-bound Touch.
+do
+    local originalGUID=UnitGUID
+    auraSecret=true
+    UnitGUID=function() return secretAuraValue end
+    eventFrame.OnEvent(eventFrame,"UNIT_FLAGS","target")
+    JustACBridge.Refresh()
+    assert(JustACBridge.GetLosslessRecommendation().spellID==30451)
+    UnitGUID=originalGUID; auraSecret=false
+    eventFrame.OnEvent(eventFrame,"UNIT_SPELLCAST_SUCCEEDED","player","surge-readable",365350)
+    JustACBridge.Refresh()
+    assert(JustACBridge.GetLosslessRecommendation().spellID==321507)
+end
 eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "touch-1", 321507)
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
@@ -872,226 +892,575 @@ end
 classFile, specIndex = "DEATHKNIGHT", 2
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 
--- Bounded 12.1 repair: the raw source omits Breath entirely. Only an actual
--- player Pillar success may insert the learned, bound, usable Breath into M5.
+-- Real core replay: all three CDs ready, but no Breath in the source queue.
+-- Precombat must pool FIRST; no amount of repeated recommendation means success.
 do
     local savedTime, savedCombat, savedGUID = now, inCombat, targetGUID
     local savedAPIs = { power = UnitPower, maxPower = UnitPowerMax,
         duration = C_Spell.GetSpellCooldownDuration, usable = C_Spell.IsSpellUsable,
-        secrets = C_Secrets }
-    local rp, maxRP = 60, 100
+        cost = C_Spell.GetSpellPowerCost, runes = GetRuneCooldown,
+        debug = JustACBridgeDB.debugEnabled }
+    JustACBridgeDB.debugEnabled = true
+    local rp, maxRP, cds, remaining, cost = 42, 100, {}, {}, 35
+    local runes, markCost, howlingCost, runeSecret, runeReadyBit = 6, 2, 1, false, false
+    GetRuneCooldown = function(index)
+        runeReadyBit=index<=runes
+        return 0, 10, runeSecret and secretAuraValue or runeReadyBit
+    end
     UnitPower = function() return rp end
     UnitPowerMax = function() return maxRP end
     C_Spell.GetSpellCooldownDuration = function(id)
         if unknownCooldownSpells[id] then return nil end
-        return { active = id == cooldownSpellID and cooldownEndsAt > now }
+        return { active = cds[id] == true,
+            GetRemainingDuration = function() return remaining[id] end }
+    end
+    C_Spell.GetSpellPowerCost = function(id)
+        if id==439843 then return {{type=5,cost=markCost,minCost=markCost}} end
+        if id==49020 then return {{type=5,cost=2,minCost=2}} end
+        if id==49184 then return {{type=5,cost=howlingCost,minCost=howlingCost}} end
+        return {{type=6,cost=cost,minCost=cost}}
     end
     C_Spell.IsSpellUsable = function(id)
-        if (id == 1249658 or id == 152279) and rp < 60 then return false, true end
+        if id==439843 and runes<markCost then return false,true end
+        if not issecretvalue(rp) and (id == 1249658 or id == 152279)
+            and rp < 60 then return false, true end
         return unusableSpells[id] ~= true, false
     end
-    C_Secrets = { ShouldAurasBeSecret = function() return false end }
-    inCombat, now = true, 100
-    local function success(id, unit)
-        eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", unit or "player", "frost-test", id)
+    local function event(name, id, unit)
+        eventFrame.OnEvent(eventFrame, name, unit or "player", "frost-gate-test", id)
     end
+    local function success(id, unit) event("UNIT_SPELLCAST_SUCCEEDED", id, unit) end
     local function reset()
         eventFrame.OnEvent(eventFrame, "PLAYER_REGEN_ENABLED")
-        now, inCombat = 100, true
-        rp, maxRP = 60, 100
+        now, inCombat, rp, maxRP, cds = 100, false, 42, 100, {}
+        remaining, cost = {}, 35
+        runes, markCost, howlingCost, runeSecret = 6, 2, 1, false
         targetGUID, targetWithin5 = savedGUID, nil
-        targetDead, targetAttackable = false, true
+        targetDead, targetAttackable, auraSecret = false, true, false
         cooldownSpellID, cooldownEndsAt = nil, 0
-        unlearnedSpells[1249658], unboundSpells[1249658] = nil, nil
-        unusableSpells[1249658], unknownCooldownSpells[1249658] = nil, nil
-        testQueue = {279302, 49184}
+        for _, id in ipairs({439843,51271,1249658,279302,47568}) do
+            unlearnedSpells[id], unboundSpells[id], unusableSpells[id] = nil, nil, nil
+            unknownCooldownSpells[id], effectiveSpellOverrides[id] = nil, nil
+        end
+        testQueue = {51271,49143,439843,194913,279302,49998,47568,49020,49184}
     end
     local function selected(id)
         JustACBridge.Refresh()
         local actual = JustACBridge.GetLosslessRecommendation()
-        assert(actual and actual.spellID == id, "frost expected " .. id)
-        assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
+        assert((actual and actual.spellID) == id,
+            "frost expected " .. tostring(id) .. " got " .. tostring(actual and actual.spellID))
         return actual
     end
     reset()
-    selected(49184) -- no timer guesses before Pillar
-    success(51271, "target")
-    selected(49184) -- other units cannot open the window
-    success(51271)
-    assert(selected(1249658).policyCastFollowup == true)
-    assert(testQueue[1] == 279302 and #testQueue == 2) -- never mutate source
-    for _ = 1, 3 do selected(1249658) end -- recommendation is NOT success
-    success(1249658)
-    selected(279302)
-    success(279302)
-    selected(46585) -- retain existing Raise Dead follow-up
+    assert(selected(47568).policyBurstGateReason:find("POOL_BREATH:rp-below-60",1,true)==1)
+    assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49143)
+    assert(#testQueue == 9 and testQueue[1] == 51271 and testQueue[2] == 49143)
+    success(47568); selected(47568) -- no inferred resource gain; still no Pillar
+    testQueue = {51271,49143,439843,279302,49020,49184}
+    for _, amount in ipairs({42,52,59}) do rp = amount; selected(49020) end
+    rp = 60; assert(selected(439843).policyBurstGateReason:find("EXPECT_MARK:ready:", 1, true) == 1)
+    for _ = 1, 3 do selected(439843) end
+    success(439843, "target"); selected(439843)
+    success(439843); cds[439843] = true; selected(51271)
+    success(51271); cds[51271] = true; selected(1249658)
+    success(1249658); cds[1249658] = true; selected(279302)
+    success(279302); cds[279302] = true; selected(46585)
     success(46585)
-    selected(49184)
-
-    -- Base and current cast events both consume the one follow-up.
-    reset(); success(51271); selected(1249658); success(152279); selected(279302)
-    reset(); effectiveSpellOverrides[1249658] = 152279
-    unlearnedSpells[1249658] = true
-    success(51271); selected(152279); success(152279); selected(279302)
-    effectiveSpellOverrides[1249658] = nil
-    -- Mark and Pillar remain source-owned: this repair completes their real
-    -- queue order, it does not inject/reapply a target debuff on guessed data.
-    reset(); testQueue = {439843, 51271, 279302, 49184}; selected(439843)
-    success(439843); testQueue = {51271, 279302, 49184}; selected(51271)
-    success(51271); testQueue = {279302, 49184}; selected(1249658)
-    success(1249658); selected(279302)
-    -- Never cast Breath out of the Pillar window, even if JustAC queues it.
-    for _, id in ipairs({152279, 1249658}) do
-        reset(); testQueue = {id, 49184}; selected(49184)
-        success(51271); selected(1249658)
-        now = 111; selected(49184)
+    -- Same-frame resource loss AFTER Pillar must not abandon the Breath window.
+    reset(); rp = 60; selected(439843); success(439843); selected(51271)
+    success(51271); cds[51271] = true; rp = 42; selected(47568)
+    now = 101; rp = 60; selected(1249658); success(152279); selected(279302)
+    -- Cooldown update before the event does not substitute for it or lose it.
+    reset(); rp = 60; selected(439843); success(439843); selected(51271)
+    cds[51271] = true; selected(47568); success(51271); selected(1249658)
+    -- No hidden fallback may resurrect a burst or spender from an empty pool.
+    reset(); testQueue = {51271,49143,439843,279302,194913,49998}; selected(nil)
+    assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49143)
+    -- Stop waiting at the actual 60 threshold, not at a full bar.
+    for _, amount in ipairs({60,85,90,100}) do reset(); rp = amount; selected(439843) end
+    -- One cooldown missing (e.g. Breath still 35 seconds away): normal queue.
+    for _, id in ipairs({51271,1249658,279302}) do
+        reset(); cds[id] = true; testQueue = {49143,49020}; selected(49143)
     end
-    -- The small window does not wait 45 seconds for Breath.
-    reset(); cooldownSpellID, cooldownEndsAt = 1249658, 190
-    testQueue = {51271, 49184}; selected(51271)
-    success(51271); testQueue = {279302, 49184}; selected(279302)
-    cooldownSpellID = nil; selected(279302) -- abandoned, never resurrected
-
-    for _, flags in ipairs({unlearnedSpells, unboundSpells,
-        unusableSpells, unknownCooldownSpells}) do
-        reset(); flags[1249658] = true; success(51271); selected(279302)
-        flags[1249658] = nil; selected(279302)
+    reset(); cds[1249658] = true; testQueue = {51271,49184}; selected(49184)
+    success(51271); testQueue = {279302,49184}; selected(49184) -- manual Pillar cannot license half-group
+    for _, flags in ipairs({unlearnedSpells,unboundSpells,unknownCooldownSpells}) do
+        for _, id in ipairs({51271,1249658,279302}) do
+            reset(); flags[id] = true; testQueue = {49143,49020}; selected(49143)
+        end
     end
+    for _, flags in ipairs({unlearnedSpells,unboundSpells}) do
+        reset(); rp = 60
+        flags[439843] = true; selected(49143)
+    end
+    -- Regression of the observed EXPECT_PILLAR_NO_MARK: a ready trio never
+    -- authorizes skipping a learned/bound predecessor just because it is on CD.
+    reset(); rp = 60; cds[439843] = true; selected(49143)
+    testQueue = {51271,279302,47568,49184}; selected(47568)
+    cds[439843] = false; selected(439843); success(439843); selected(51271)
+    success(51271); selected(1249658); success(1249658); selected(279302)
+    reset(); rp = 60; unusableSpells[439843] = true; selected(nil)
+    unusableSpells[439843] = nil; selected(439843)
+    reset(); effectiveSpellOverrides[279302] = 1265384
+    testQueue = {279302,49184}; selected(1265384) -- recall source-owned
+    reset(); testQueue = {1228433,49020}; selected(49020)
+    -- A source's fail-open usability must not stand in for ownership/binding.
     local source = JustACBridgeRecommendationSources.Get("test")
-    local known = IsPlayerSpell
+    local originalKnown, originalHotkey = IsPlayerSpell, source.GetSpellHotkey
     for _, mode in ipairs({"nil", "secret", "throw"}) do
-        reset()
+        reset(); rp = 60; auraSecret = true
         IsPlayerSpell = function(id)
-            if id ~= 1249658 then return known(id) end
+            if id ~= 439843 then return originalKnown(id) end
+            if mode == "throw" then error("unknown predecessor ownership") end
+            if mode == "secret" then return secretAuraValue end
+            return nil
+        end
+        selected(nil) -- unknown Mark is NOT an absent optional predecessor
+        IsPlayerSpell = originalKnown
+        source.GetSpellHotkey = function(id)
+            if id ~= 439843 then return originalHotkey(id) end
+            if mode == "throw" then error("unknown predecessor binding") end
+            if mode == "secret" then return secretAuraValue end
+            return nil
+        end
+        selected(nil)
+        source.GetSpellHotkey = originalHotkey
+        selected(439843); success(439843); selected(51271)
+    end
+    -- Positive ownership from either authoritative API works end to end,
+    -- including the final common-core legality check for an injected action.
+    reset(); rp = 60
+    IsPlayerSpell = function(id) return id ~= 439843 and originalKnown(id) end
+    local savedKnown = IsSpellKnown
+    IsSpellKnown = function(id) return id == 439843 end
+    selected(439843); success(439843); selected(51271)
+    IsPlayerSpell, IsSpellKnown = originalKnown, savedKnown
+    for _, mode in ipairs({"nil","secret","throw"}) do
+        reset(); rp = 60; auraSecret = true; testQueue = {49143,49020}
+        IsPlayerSpell = function(id)
+            if id ~= 1249658 then return originalKnown(id) end
             if mode == "throw" then error("unknown ownership") end
             if mode == "secret" then return secretAuraValue end
             return nil
         end
-        auraSecret = true
-        success(51271); selected(279302)
-        IsPlayerSpell, auraSecret = known, false
-        selected(279302)
-    end
-    for _, method in ipairs({"IsSpellUsable", "IsSpellOnCooldown", "GetSpellHotkey"}) do
-        local original = source[method]
-        for _, mode in ipairs({"nil", "secret", "throw"}) do
-            reset()
-            source[method] = function(id)
-                if id ~= 1249658 then return original(id) end
-                if mode == "throw" then error("injected API failure") end
-                if mode == "secret" then return secretAuraValue end
-                return nil
-            end
-            auraSecret = true
-            success(51271); selected(279302)
-            source[method], auraSecret = original, false
-            selected(279302)
+        selected(49143); IsPlayerSpell = originalKnown
+        source.GetSpellHotkey = function(id)
+            if id ~= 1249658 then return originalHotkey(id) end
+            if mode == "throw" then error("unknown binding") end
+            if mode == "secret" then return secretAuraValue end
+            return nil
         end
+        selected(49143); source.GetSpellHotkey = originalHotkey
     end
-    for _, event in ipairs({"UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_FAILED_QUIET",
-        "UNIT_SPELLCAST_INTERRUPTED"}) do
-        reset(); success(51271); selected(1249658)
-        eventFrame.OnEvent(eventFrame, event, "player", "breath-failed", 1249658)
-        selected(279302)
+    -- Fresh strict usability, not the upstream fail-open boolean.
+    local originalUsable = C_Spell.IsSpellUsable
+    for _, mode in ipairs({"missing","nil","secret","throw"}) do
+        reset(); rp = 60; auraSecret = true
+        if mode == "missing" then C_Spell.IsSpellUsable = nil
+        else C_Spell.IsSpellUsable = function()
+            if mode == "throw" then error("injected strict failure") end
+            if mode == "secret" then return secretAuraValue, secretAuraValue end
+            return nil
+        end end
+        selected(49143) -- cannot prove complete group usable: don't pre-pool
+        C_Spell.IsSpellUsable = originalUsable; selected(439843)
     end
-    for _, event in ipairs({"PLAYER_TARGET_CHANGED", "PLAYER_REGEN_ENABLED",
-        "PLAYER_ENTERING_WORLD", "PLAYER_TALENT_UPDATE", "TRAIT_CONFIG_UPDATED"}) do
-        reset(); success(51271); selected(1249658)
-        eventFrame.OnEvent(eventFrame, event)
+    reset(); rp, auraSecret = secretAuraValue, true; selected(439843)
+    success(439843); selected(51271); success(51271); selected(1249658)
+    success(1249658); selected(279302)
+    -- Spammed M5 failures during GCD/resources must never skip Breath.
+    for _, name in ipairs({"UNIT_SPELLCAST_FAILED","UNIT_SPELLCAST_FAILED_QUIET","UNIT_SPELLCAST_INTERRUPTED"}) do
+        reset(); rp = 60; selected(439843); success(439843); selected(51271)
+        success(51271); cds[51271] = true; selected(1249658)
+        event(name,1249658); rp = 42; selected(47568)
+        rp = 60; selected(1249658); success(1249658); selected(279302)
+    end
+    for _, name in ipairs({"PLAYER_TARGET_CHANGED","PLAYER_REGEN_ENABLED",
+        "PLAYER_ENTERING_WORLD","PLAYER_TALENT_UPDATE","TRAIT_CONFIG_UPDATED"}) do
+        reset(); rp = 60; selected(439843); success(439843); selected(51271)
+        success(51271); cds[51271] = true; selected(1249658)
+        eventFrame.OnEvent(eventFrame, name); testQueue = {49184}; selected(49184)
+    end
+    reset(); rp = 60; selected(439843); success(439843); selected(51271)
+    success(51271); cds[51271] = true; now = 110
+    testQueue = {49184}; selected(49184)
+    reset(); rp = 60; selected(439843); success(439843); selected(51271)
+    success(51271); cds[51271] = true; targetGUID = "changed-target"
+    testQueue = {49184}; selected(49184); targetGUID = savedGUID; selected(49184)
+    for _, invalid in ipairs({"dead", "unattackable"}) do
+        reset(); rp = 60; selected(439843); success(439843); selected(51271)
+        success(51271); cds[51271] = true
+        targetDead, targetAttackable = invalid == "dead", invalid ~= "unattackable"
         testQueue = {49184}; selected(49184)
+        targetDead, targetAttackable = false, true; selected(49184)
     end
-    reset(); success(51271); targetGUID = "different-target"; selected(279302)
-    targetGUID = savedGUID; selected(279302) -- switching back cannot revive
-    reset(); success(51271); targetDead = true; selected(279302)
-    targetDead = false; selected(279302)
-    reset(); success(51271); targetAttackable = false; selected(279302)
-    targetAttackable = true; selected(279302)
-    reset(); success(51271); inCombat = false; selected(279302)
-    inCombat = true; selected(279302)
-    reset(); success(51271); now = 104; selected(279302) -- exact timeout
-    reset(); success(51271); now = 99; testQueue = {49184}; selected(49184)
-    reset(); success(51271); success(279302); selected(46585)
-    success(46585); selected(49184) -- manually spent Fury cancels late Breath
-    reset(); success(51271); success(1265384); selected(279302)
-    reset(); success(51271); targetWithin5 = false; selected(49184)
-    testQueue = {}; JustACBridge.Refresh()
-    assert(JustACBridge.GetLosslessRecommendation() == nil)
-    assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
-    reset(); success(51271); classFile, specIndex = "DEATHKNIGHT", 3
+    reset(); targetWithin5 = false; testQueue = {51271,47568,49184}; selected(49184)
+    testQueue = {}; selected(nil)
+    reset(); rp = 60; selected(439843); success(439843); selected(51271)
+    success(51271); cds[51271] = true
+    classFile, specIndex = "DEATHKNIGHT", 3
     eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
     testQueue = {49184}; selected(49184)
     classFile, specIndex = "DEATHKNIGHT", 2
     eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
     selected(49184)
-    -- Exact preparation only replaces an already selected Pillar/Breath.
-    -- The ordinary queue and M4 never inherit this priority.
-    reset(); testQueue = {51271, 49184}; rp = 42; spellCharges[47568] = 1
-    assert(selected(47568).policyBurstPreparation == true)
-    assert(testQueue[1] == 51271 and #testQueue == 2)
-    success(47568, "target"); selected(47568)
-    success(47568); selected(51271) -- stale RP/charge frame cannot double-use ERW
-    rp = 82; spellCharges[47568] = 0
-    success(51271); testQueue = {279302, 49184}; selected(1249658)
-    success(1249658); selected(279302)
-    -- A real observed partner cooldown rearms preparation, not a timer.
-    cooldownSpellID, cooldownEndsAt = 1249658, 190; selected(279302)
-    reset(); testQueue = {51271, 49184}; spellCharges[47568] = 2
-    selected(47568) -- 60+40 == 100; one charge made available for Breath refund
-    rp = 61; selected(51271) -- do not manufacture RP overflow
-    rp = 90; maxRP = 130; selected(47568) -- actual max, not a percentage
-    playerAuras[51124] = {applications = 1}; selected(51271)
-    playerAuras[51124] = nil
-    C_Secrets.ShouldAurasBeSecret = function() return true end; selected(51271)
-    C_Secrets.ShouldAurasBeSecret = function() return false end
-    spellCharges[47568] = 1; selected(51271) -- no full-charge loss, already >=60
-    rp = 42; unboundSpells[47568] = true; selected(51271)
-    unboundSpells[47568] = nil
-    unlearnedSpells[47568] = true; selected(51271)
-    unlearnedSpells[47568] = nil
-    unboundSpells[1249658] = true; selected(51271)
-    unboundSpells[1249658] = nil
-    testQueue = {49184, 51271}; selected(49184) -- never steal an ordinary priority
-    testQueue = {51271, 49184}; targetWithin5 = false; selected(49184)
-    targetWithin5 = nil; cooldownSpellID, cooldownEndsAt = 1249658, 135
-    selected(51271) -- 35-second small window never waits for Breath
-    cooldownSpellID = nil
-    selected(47568)
-    eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player", "erw-failed", 47568)
-    selected(51271) -- failed preparation also cannot loop indefinitely
-    cooldownSpellID, cooldownEndsAt = 1249658, 190; selected(51271)
-    spellCharges[47568] = nil
-    -- A fail-open source boolean cannot override the fresh absolute RP guard.
-    reset(); rp = 59; success(51271); selected(279302)
-    rp = 60; selected(279302) -- cancelled opportunity is not resurrected
-    -- Upstream still reports true/false readiness throughout. The independent
-    -- direct predicate must reject its fail-open result, not just propagate a
-    -- mocked source nil (which would miss the deployed JustAC failure mode).
-    for _, api in ipairs({
-        {C_Spell, "IsSpellUsable"}, {C_Spell, "GetSpellCooldownDuration"},
-        {_G, "UnitPower"}, {_G, "UnitPowerMax"},
-    }) do
-        local original = api[1][api[2]]
-        for _, fault in ipairs({"missing", "nil", "secret", "throw"}) do
-            reset()
-            if fault == "missing" then api[1][api[2]] = nil
-            else api[1][api[2]] = function()
-                if fault == "throw" then error("direct proof failed") end
-                if fault == "secret" then return secretAuraValue end
-                return nil
-            end end
-            auraSecret = true
-            success(51271); selected(279302)
-            api[1][api[2]], auraSecret = original, false
-            selected(279302)
+    -- Near-window preparation must reach actual exported M5, retain source
+    -- order, never inject burst/fallback, and leave M4 completely unchanged.
+    local function upcoming()
+        reset(); inCombat=true
+        for _, id in ipairs({51271,1249658,279302}) do cds[id],remaining[id]=true,2 end
+    end
+    upcoming(); testQueue={49143,49020,49184}
+    assert(selected(49020).policyBurstGateReason:find("PREP_BREATH_WITHIN_6S:",1,true)==1)
+    assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49143)
+    for _, amount in ipairs({42,52,59,60,85,90,94.999}) do rp=amount; selected(49020) end
+    rp=95; selected(49143); rp=94; selected(49020)
+    rp=85; cost=25; selected(49143); cost=35; selected(49020)
+    rp=100; cost=nil; selected(49020) -- unknown cost doesn't authorize spending
+    cost=35; selected(49143)
+    testQueue={51271,49143,439843,279302}; rp=42; selected(nil)
+    assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49143)
+    testQueue={1249658,49143,49020}; rp=60; selected(49020)
+    cds={}; selected(439843); success(439843); selected(51271)
+    success(51271); selected(1249658); success(1249658); selected(279302)
+    upcoming(); testQueue={49143,49020}; remaining[1249658]=35; selected(49143)
+    testQueue={51271,49184}; cds[51271]=false; selected(49184)
+    success(51271); testQueue={279302,49184}; cds[279302]=false; selected(49184)
+    upcoming(); testQueue={49143,49020}; unknownCooldownSpells[1249658]=true; selected(49143)
+    upcoming(); targetWithin5=false; testQueue={49143,49020}; selected(nil)
+    testQueue={49143,49184}; selected(49184)
+    upcoming(); testQueue={49143,49020}; selected(49020)
+    remaining[1249658]=35; eventFrame.OnEvent(eventFrame,"PLAYER_TARGET_CHANGED"); selected(49143)
+    -- Same complete core pipeline when numeric RP/CD are opaque: use fresh
+    -- native step predicates, never stringify/compare the hidden numbers.
+    do
+        local previousCurve,previousEnum,previousPercent=C_CurveUtil,Enum,UnitPowerPercent
+        local previousDuration,previousPower=C_Spell.GetSpellCooldownDuration,UnitPower
+        local previousGUID=UnitGUID
+        local previousBinary=source.ReadBinaryPredicate
+        local hiddenResult, curveBroken, adapterBroken=false,false,false
+        Enum={LuaCurveType={Step=1}}
+        C_CurveUtil={CreateCurve=function()
+            local curve={points={}}
+            function curve:SetType(t) assert(t==1) end
+            function curve:AddPoint(x,y) self.points[#self.points+1]={x,y} end
+            function curve:Evaluate(x)
+                if curveBroken then return 37 end
+                local value=0
+                for _, point in ipairs(self.points) do if x>=point[1] then value=point[2] end end
+                return value
+            end
+            return curve
+        end}
+        source.ReadBinaryPredicate=function(value)
+            assert(rawequal(value,secretAuraValue))
+            if adapterBroken then return nil end
+            return hiddenResult
         end
+        C_Spell.GetSpellCooldownDuration=function(id)
+            return {active=cds[id]==true,
+                GetRemainingDuration=function() return secretAuraValue end,
+                EvaluateRemainingDuration=function(_,curve)
+                    hiddenResult=curve:Evaluate(remaining[id] or 0)==100
+                    return secretAuraValue
+                end}
+        end
+        UnitPower=function() return secretAuraValue end
+        UnitGUID=function() return secretAuraValue end
+        UnitPowerPercent=function(_,powerType,unmodified,curve)
+            assert(powerType==6 and unmodified==false)
+            hiddenResult=curve:Evaluate(rp/maxRP)==100
+            return secretAuraValue
+        end
+        upcoming(); auraSecret=true; testQueue={49143,49020}
+        selected(49020); rp=95; selected(49143); rp=94.999; selected(49020)
+        rp=60; selected(49020)
+        remaining[1249658]=35; selected(49143) -- hidden CD is NOT always near
+        remaining[1249658]=2; selected(49020)
+        cds={}; selected(439843); success(439843); selected(51271)
+        success(51271); selected(1249658); success(1249658); selected(279302)
+        upcoming(); auraSecret=true; testQueue={49143,49020}; adapterBroken=true
+        selected(49143) -- unknown horizon delegates, doesn't latch last prep
+        adapterBroken=false
+        upcoming(); auraSecret=true; rp=0; cds[51271]=false
+        remaining[1249658],remaining[279302]=18,18
+        testQueue={51271,1249658,279302,439843,49143,49020}; selected(49143)
+        remaining[1249658]=35; selected(49143) -- one long is still NOT both long
+        remaining[279302]=35; selected(439843); success(439843); selected(51271)
+        success(51271); cds[51271]=true; selected(49143)
+        -- All restricted values together: target GUID, CD, RP and rune
+        -- readiness. Both independent native predicates must reach export.
+        C_CurveUtil.EvaluateColorValueFromBoolean=function(value,yes,no)
+            assert(yes==1 and no==0)
+            if rawequal(value,secretAuraValue) then hiddenResult=runeReadyBit; return secretAuraValue end
+            return value and yes or no
+        end
+        upcoming(); auraSecret=true; runeSecret=true; runes=2; rp=42
+        testQueue={49020,49143,49184,47568}; selected(47568)
+        runes=4; selected(49020)
+        runes=2; rp=95; selected(49143)
+        rp=60; cds={}; selected(439843); success(439843); runes=0
+        selected(51271); success(51271); selected(1249658); success(1249658); selected(279302)
+        C_CurveUtil,Enum,UnitPowerPercent=previousCurve,previousEnum,previousPercent
+        C_Spell.GetSpellCooldownDuration,UnitPower=previousDuration,previousPower
+        UnitGUID=previousGUID
+        source.ReadBinaryPredicate=previousBinary
+    end
+    -- Dungeon regression: hidden identity must not disable the whole gate.
+    -- Unknown target VALIDITY must hold downstream burst, never fail open.
+    do
+        local originalGUID = UnitGUID
+        for _, mode in ipairs({"secret", "nil", "throw", "missing"}) do
+            reset(); auraSecret = true; rp = 42
+            UnitGUID = mode ~= "missing" and function()
+                if mode == "secret" then return secretAuraValue end
+                if mode == "throw" then error("identity restricted") end
+                return nil
+            end or nil
+            testQueue = {51271,279302,49143,49020}
+            selected(49020)
+            rp = 60; selected(439843); success(439843)
+            eventFrame.OnEvent(eventFrame, "UNIT_HEALTH", "target")
+            eventFrame.OnEvent(eventFrame, "UNIT_FLAGS", "target")
+            selected(51271); success(51271); selected(1249658)
+            success(1249658); selected(279302)
+            UnitGUID = originalGUID
+        end
+        for _, name in ipairs({"UnitExists", "UnitCanAttack", "UnitIsDeadOrGhost"}) do
+            local original = _G[name]
+            for _, mode in ipairs({"secret", "nil", "throw", "missing"}) do
+                reset(); auraSecret = true; rp = 60
+                _G[name] = mode ~= "missing" and function()
+                    if mode == "secret" then return secretAuraValue end
+                    if mode == "throw" then error("validity restricted") end
+                    return nil
+                end or nil
+                testQueue = {51271,279302,1249658,439843,49143,49020}
+                selected(49020)
+                testQueue = {51271,279302,1249658,439843,49143}; selected(nil)
+                _G[name] = original
+                selected(439843)
+            end
+        end
+        -- Simultaneously hidden GUID, cooldown numbers and RP follows the
+        -- engine affordability path; UNIT_HEALTH cannot wipe the receipt.
+        reset(); auraSecret=true; rp=secretAuraValue
+        UnitGUID=function() return secretAuraValue end
+        selected(439843); success(439843)
+        eventFrame.OnEvent(eventFrame,"UNIT_HEALTH","target"); selected(51271)
+        success(51271); selected(1249658); success(1249658); selected(279302)
+        -- Unknown target validity during an already-proposed player cast:
+        -- hold downstream actions; accept ONLY its actual success event in
+        -- the same epoch, then resume once validity is freshly proven.
+        reset(); auraSecret=true; rp=60; selected(439843)
+        local originalAttack=UnitCanAttack
+        UnitCanAttack=function() return secretAuraValue end
+        success(439843); cds[439843]=true
+        eventFrame.OnEvent(eventFrame,"UNIT_FLAGS","target")
+        testQueue={51271,279302,1249658,49143,49020}; selected(49020)
+        UnitCanAttack=originalAttack; selected(51271)
+        success(51271); selected(1249658)
+        -- Actual target changes (including changing away and back), resets
+        -- and explicit invalidity kill the epoch even though GUID is hidden.
+        for _, name in ipairs({"PLAYER_TARGET_CHANGED","PLAYER_REGEN_ENABLED",
+            "PLAYER_ENTERING_WORLD","PLAYER_TALENT_UPDATE","TRAIT_CONFIG_UPDATED"}) do
+            reset(); auraSecret=true; rp=60; selected(439843); success(439843)
+            selected(51271); success(51271); cds[51271]=true; selected(1249658)
+            eventFrame.OnEvent(eventFrame,name)
+            eventFrame.OnEvent(eventFrame,"PLAYER_TARGET_CHANGED")
+            testQueue={49184}; selected(49184) -- no old BREATH receipt
+            success(1249658); selected(49184)
+        end
+        for _, invalid in ipairs({"dead","friendly","absent"}) do
+            reset(); auraSecret=true; rp=60; selected(439843); success(439843)
+            selected(51271); success(51271); cds[51271]=true
+            targetDead=invalid=="dead"; targetAttackable=invalid~="friendly"; targetExists=invalid~="absent"
+            eventFrame.OnEvent(eventFrame,"UNIT_HEALTH","target")
+            targetDead,targetAttackable,targetExists=false,true,true
+            testQueue={49184}; selected(49184)
+        end
+        -- Empty WAIT is authoritative; M4 still reads the original source.
+        reset(); auraSecret=true; rp=60
+        UnitCanAttack=function() return secretAuraValue end
+        testQueue={51271,279302,1249658,439843,49143}; selected(nil)
+        assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49143)
+        UnitCanAttack=originalAttack
+        -- Confirmed range remains authoritative, not overridden by the epoch.
+        reset(); auraSecret=true; targetWithin5=false
+        testQueue={51271,279302,49143}; selected(nil)
+        testQueue={51271,49184}; selected(49184)
+        UnitGUID=originalGUID
+    end
+    -- Long CDs on BOTH dragons: source can put Pillar first and omit Mark,
+    -- yet the small window must wait and execute Mark -> Pillar without 60 RP.
+    do
+        local originalGUID=UnitGUID
+        local function smallWindow()
+            reset(); rp=0; inCombat=true; auraSecret=true
+            UnitGUID=function() return secretAuraValue end
+            cds[1249658],cds[279302]=true,true
+            remaining[1249658],remaining[279302]=35,35
+            testQueue={51271,279302,1249658,49143,49020}
+        end
+        smallWindow(); cds[439843]=true
+        assert(selected(49143).policyBurstGateReason:find("WAIT_SMALL_MARK",1,true)==1)
+        assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49143)
+        cds[439843]=false; cds[51271]=true; selected(49143)
+        cds[51271]=false
+        assert(selected(439843).policyBurstGateReason:find("SMALL_EXPECT_MARK",1,true)==1)
+        event("UNIT_SPELLCAST_FAILED",439843); selected(439843)
+        cds[439843]=true
+        assert(selected(49143).policyBurstGateReason=="WAIT_SMALL_CAST_CONFIRM")
+        success(439843); eventFrame.OnEvent(eventFrame,"UNIT_HEALTH","target")
+        assert(selected(51271).policyBurstGateReason=="SMALL_EXPECT_PILLAR")
+        event("UNIT_SPELLCAST_FAILED",51271); selected(51271)
+        cds[51271]=true; selected(49143); success(51271); selected(49143)
+        -- Empty filtered queue cannot invoke fallback or a source burst cue.
+        smallWindow(); cds[439843]=true; testQueue={51271,279302,1249658,439843}; selected(nil)
+        cds[439843]=false; selected(439843); success(439843); cds[439843]=true
+        selected(51271)
+        eventFrame.OnEvent(eventFrame,"PLAYER_TARGET_CHANGED")
+        selected(nil) -- changed target cannot reuse the previous Mark receipt
+        cds[439843]=false; selected(439843); success(439843); selected(51271)
+        success(51271); cds[51271]=true
+        testQueue={49143,49020}; selected(49143)
+        -- A later full window still starts by pooling, then the four steps.
+        cds={}; rp=42; testQueue={51271,279302,1249658,49143,49020}; selected(49020)
+        rp=60; selected(439843); success(439843); selected(51271)
+        success(51271); selected(1249658); success(1249658); selected(279302)
+        -- No interpretation of missing duration data as a long cooldown.
+        smallWindow(); remaining[279302]=nil; testQueue={49143,49020}; selected(49143)
+        assert(JustACBridge.GetLosslessRecommendation().policyBurstGate)
+        UnitGUID=originalGUID
+    end
+    -- Mark's rune preparation from the real selector/export, with separate
+    -- small/full group horizons and no M4 resource reservation.
+    do
+        local function markUpcoming(markSeconds,pillarSeconds)
+            reset(); auraSecret=true; runes=2
+            cds[1249658],cds[279302]=true,true
+            remaining[1249658],remaining[279302]=35,35
+            cds[439843],cds[51271]=markSeconds>0,pillarSeconds>0
+            remaining[439843],remaining[51271]=markSeconds,pillarSeconds
+            testQueue={51271,439843,49020,49184,49143,47568}
+        end
+        for _, pair in ipairs({{2,2},{0,2},{2,0}}) do
+            markUpcoming(pair[1],pair[2])
+            assert(selected(49143).policyBurstGateReason:find("PREP_MARK_WITHIN_6S:reserve=2",1,true))
+            assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49020)
+            runes=3; selected(49184); runes=4; selected(49020)
+            runes=2; testQueue={49020,49184,51271,439843}; selected(nil)
+        end
+        markUpcoming(2,2); remaining[51271]=6; selected(49020)
+        remaining[51271]=5.999999; selected(49143)
+        remaining[51271]=35; selected(49020)
+        markUpcoming(2,2); runes=1; howlingCost=0; selected(49184)
+        howlingCost=1; selected(49143)
+        cds[439843],cds[51271]=false,false; selected(49143) -- low-rune recovery, NOT all-M5 pause
+        success(47568); selected(49143) -- no inferred resource grant
+        runes=2; selected(439843); success(439843); cds[439843]=true; remaining[439843]=45
+        runes=0; selected(51271)
+        success(51271); cds[51271]=true; remaining[51271]=45; selected(49020) -- reserve ends on actual Mark success
+        upcoming(); auraSecret=true; runes=2; rp=42
+        testQueue={49020,49143,49184,47568}; selected(47568)
+        assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49020)
+        runes=4; selected(49020)
+        runes=2; rp=95; selected(49143); rp=94.999; selected(47568)
+        cds={}; runes=1; rp=60; selected(47568)
+        howlingCost=0; selected(49184)
+        howlingCost=1; runes=2; selected(439843); success(439843); runes=0
+        selected(51271); success(51271); selected(1249658); success(1249658); selected(279302)
+        -- The hidden readiness path uses current native boolean evaluation;
+        -- no numeric rune counts, UnitPower(5), prior events, or UI bar cache.
+        local originalCurve,originalBinary=C_CurveUtil,source.ReadBinaryPredicate
+        local binaryBit,broken=false,false
+        C_CurveUtil={EvaluateColorValueFromBoolean=function(value,yes,no)
+            assert(yes==1 and no==0)
+            if broken then return 0.5 end
+            if rawequal(value,secretAuraValue) then binaryBit=runeReadyBit; return secretAuraValue end
+            return value and yes or no
+        end}
+        source.ReadBinaryPredicate=function(value)
+            assert(rawequal(value,secretAuraValue)); return binaryBit
+        end
+        markUpcoming(2,2); runeSecret=true; runes=4; selected(49020)
+        runes=3; selected(49184); runes=2; selected(49143)
+        runes=6; broken=true; selected(49143) -- broken engine cannot authorize a spender
+        howlingCost=0; selected(49184) -- zero-cost needs no hidden resource comparison
+        C_CurveUtil,source.ReadBinaryPredicate=originalCurve,originalBinary
+        -- No preparation retained across target/phase/CD changes.
+        markUpcoming(2,2); selected(49143)
+        eventFrame.OnEvent(eventFrame,"PLAYER_TARGET_CHANGED")
+        remaining[439843]=35; selected(49020)
+        markUpcoming(2,2); remaining[1249658]=18; selected(49020)
+        remaining[1249658]=nil; selected(49020)
+        markUpcoming(2,2); unboundSpells[439843]=true; selected(49020)
+        markUpcoming(2,2); targetWithin5=false; selected(49184)
+    end
+    -- Latest user rule, through actual SELECT/export: both long (>18) may
+    -- use the pair; any near/ready/unknown dragon holds ALL four burst IDs.
+    for _, times in ipairs({{0,35},{35,0},{18,18},{18,35},{35,18},{17.999,17.999}}) do
+        reset(); rp=60; auraSecret=true
+        cds[1249658],cds[279302]=times[1]>0,times[2]>0
+        remaining[1249658],remaining[279302]=times[1],times[2]
+        testQueue={1249658,279302,51271,439843,49143,49020}
+        selected(49143)
+        assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49143)
+        testQueue={279302,1249658,51271,439843}; selected(nil)
+        success(51271); playerAuras[51271]={}; selected(nil)
+        playerAuras[51271]=nil -- a manual aura cannot license a half-group
+    end
+    reset(); rp=0; cds[1249658],cds[279302]=true,true
+    remaining[1249658],remaining[279302]=18+2^-48,18+2^-48
+    testQueue={51271,279302,1249658,49020}
+    selected(439843); success(439843); selected(51271); success(51271)
+    cds[51271]=true; selected(49020)
+    -- Generic fail-closed ownership even if an opt-in selector disappears,
+    -- returns nil, throws, or mistakenly returns unfiltered ordinary queue.
+    do
+        local definition=JustACBridgePolicyRegistry.classes.DEATHKNIGHT.specs[2].versions[1]
+        local originalSelector=definition.selectLossless
+        for _, mode in ipairs({"missing","nil","throw","queue"}) do
+            reset(); rp=60; auraSecret=true
+            definition.selectLossless=mode~="missing" and function(queue)
+                if mode=="throw" then error("injected sequence gate failure") end
+                if mode=="queue" then return {queue=queue,reason="bad-upstream-queue"} end
+                return nil
+            end or nil
+            burstCues[51271],burstCues[1249658],burstCues[279302]=true,true,true
+            eventFrame.OnEvent(eventFrame,"PLAYER_SPECIALIZATION_CHANGED","player")
+            testQueue={51271,1249658,279302,439843,49143,49020}; selected(49143)
+            testQueue={51271,1249658,279302,439843}; selected(nil)
+            testQueue={}; selected(nil)
+            testQueue={51271,1249658,439843,279302,49143}
+            effectiveSpellOverrides[279302]=1265384; selected(1265384)
+            effectiveSpellOverrides[279302]=nil
+        end
+        definition.selectLossless=originalSelector
+        burstCues[51271],burstCues[1249658],burstCues[279302]=nil,nil,nil
+        eventFrame.OnEvent(eventFrame,"PLAYER_SPECIALIZATION_CHANGED","player")
+    end
+    -- Exported diagnostics distinguish the pool and each ordered next action.
+    reset(); selected(47568); rp = 60; selected(439843); success(439843)
+    selected(51271); success(51271); selected(1249658); success(1249658); selected(279302)
+    eventFrame.OnEvent(eventFrame, "PLAYER_LOGOUT")
+    for _, reason in ipairs({"SMALL_EXPECT_MARK","SMALL_EXPECT_PILLAR","PREP_BREATH_WITHIN_6S:","POOL_BREATH:rp-below-60","EXPECT_MARK","EXPECT_PILLAR","EXPECT_BREATH","EXPECT_FURY"}) do
+        assert(JustACBridgeExport.debugLog:find("preparationReason=" .. reason, 1, true), reason)
     end
     reset()
     now, inCombat, targetGUID = savedTime, savedCombat, savedGUID
     UnitPower, UnitPowerMax = savedAPIs.power, savedAPIs.maxPower
     C_Spell.GetSpellCooldownDuration, C_Spell.IsSpellUsable = savedAPIs.duration, savedAPIs.usable
-    C_Secrets = savedAPIs.secrets
+    C_Spell.GetSpellPowerCost = savedAPIs.cost
+    GetRuneCooldown = savedAPIs.runes
+    JustACBridgeDB.debugEnabled = savedAPIs.debug
 end
 
+-- Legacy ordering guard remains unchanged; 12.1 requires the full sequence
+-- and cannot use a manually cast Pillar/aura as a Breath/Fury bypass.
+local currentBuildInfo = GetBuildInfo
+GetBuildInfo = function() return "12.0.0", "", "", 120007 end
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 -- Frostwyrm's Fury is never allowed to precede Pillar of Frost. The strict
 -- sequence gate uses successful player casts, not cooldown guesses. It also
 -- consumes the proof after Fury and clears it when combat ends.
@@ -1172,6 +1541,8 @@ JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 279302)
 playerAuras[51271] = nil
 
+GetBuildInfo = currentBuildInfo
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 -- Frost M4 treats JustAC's actual queue as the only authority for ranged
 -- movement filler. A queued Howling Blast passes through, but highlight/proc
 -- data and the specialization fallback cannot invent one when it is absent.
@@ -1182,13 +1553,13 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
 
 testQueue = { 51271, 49184 }
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 51271)
+assert(JustACBridge.GetLosslessRecommendation().spellID == 49184)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
 
 highlightSpellID = 49184
 testQueue = { 51271 }
 JustACBridge.Refresh()
-assert(JustACBridge.GetLosslessRecommendation().spellID == 51271)
+assert(JustACBridge.GetLosslessRecommendation() == nil)
 assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
 
 testQueue = {}

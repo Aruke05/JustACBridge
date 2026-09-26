@@ -71,6 +71,14 @@ Bridge 会以 `SOURCE_DECISION` 写入诊断日志。
 
 其余可选能力：
 
+- `ReadBinaryPredicate(value)`：仅供资源准备框架读取通过自检的原生 Step 曲线 0/100
+  二值结果，返回严格布尔或 nil。禁止输入原始 secret 资源/秒数。接口缺失或异常不
+  代表满足阈值，也不能借此复用上一帧答案。详见 `Framework/README.md`。
+- `IsSpellUsableStrict(spellID)`：返回两个严格布尔值 `usable, insufficientPower`，
+  缺失/secret/异常返回未知。用于需要正面资源证据的策略，不得调用 fail-open 包装。
+  JustAC 适配器先读原生法术可用性；不可读时验证动作栏槽位仍是同一法术，再实时查询
+  `C_ActionBar.IsUsableAction`，不接受宏、辅助战斗按钮或旧事件缓存。此能力不代替
+  技能归属、真实绑定和冷却检查。
 - `IsBurstCue(spellID)`（仅标记当前源已明确判定应执行的爆发提示）
 - `IsMovementFallbackAllowed(spellID, position)`（只在当前策略将法术登记到
   `movementFallbackProofSpells`、玩家真实移动且该法术来自队列第 2 位及以后时调用；
@@ -83,3 +91,10 @@ Bridge 会以 `SOURCE_DECISION` 写入诊断日志。
 所有方法都是无 `self` 的普通函数。Bridge 对调用使用 `pcall`；未知或 secret
 状态遵循现有 fail-open/fail-closed 策略。自定义源未实现 `GetEffectiveSpellID`
 时会回退到 `GetDisplaySpellID`，因此旧源保持兼容。
+
+### 前置序列的证据契约
+
+`GetSpellHotkey`：非空字符串表示绑定，空字符串表示明确未绑定，nil/缺失/异常表示未知。
+适配层不可把缺失或 nil 转为空字符串，避免把前置状态未知误判成可选步骤缺席。
+需要资源准备/技能前置的规则请复用 `Framework/ActionSequence.lua`，并阅读
+`Framework/README.md`；可用性与是否可跳过是不同判断。

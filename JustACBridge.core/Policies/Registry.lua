@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 27
+Registry.schemaVersion = 32
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -606,8 +606,18 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.castFollowups then
             result.castFollowups = copyCastFollowups(patch.castFollowups)
         end
-        if type(patch.prepareLossless) == "function" then
-            result.prepareLossless = patch.prepareLossless
+        if type(patch.selectLossless) == "function" then
+            result.selectLossless = patch.selectLossless
+        end
+        if patch.losslessSelectionFallbackBlock then
+            result.losslessSelectionFallbackBlock = copyArray(patch.losslessSelectionFallbackBlock)
+            result.losslessSelectionPassthrough = copyArray(patch.losslessSelectionPassthrough)
+        end
+        if patch.selectionTargetScope == "target-epoch" then
+            result.selectionTargetScope = "target-epoch"
+        end
+        if type(patch.resetLosslessSelection) == "function" then
+            result.resetLosslessSelection = patch.resetLosslessSelection
         end
         if type(patch.observePlayerSpellcast) == "function" then
             result.observePlayerSpellcast = patch.observePlayerSpellcast

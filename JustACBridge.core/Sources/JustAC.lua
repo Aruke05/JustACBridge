@@ -38,8 +38,8 @@ function Source.GetQueue()
 end
 
 function Source.GetSpellHotkey(spellID)
-    return ActionBarScanner and ActionBarScanner.GetSpellHotkey
-        and ActionBarScanner.GetSpellHotkey(spellID) or ""
+    if not ActionBarScanner or type(ActionBarScanner.GetSpellHotkey) ~= "function" then return nil end
+    return ActionBarScanner.GetSpellHotkey(spellID)
 end
 
 function Source.GetItemHotkey(itemID)
@@ -72,6 +72,49 @@ function Source.IsSpellUsable(spellID)
     if ok and type(usable) == "boolean"
         and not (issecretvalue and issecretvalue(usable)) then return usable end
     return nil
+end
+
+-- Input is ONLY a framework-validated binary (0/100 step or 0/1 boolean), never raw
+-- power or time. IsSecretZero's integer conversion cannot blur this boundary.
+function Source.ReadBinaryPredicate(value)
+    if not (issecretvalue and issecretvalue(value)) then
+        if value == 100 then return true end
+        if value == 0 then return false end
+        return nil
+    end
+    if not (BlizzardAPI and type(BlizzardAPI.IsSecretZero) == "function") then return nil end
+    local ok, zero = pcall(BlizzardAPI.IsSecretZero, value)
+    if ok and not (issecretvalue and issecretvalue(zero)) and type(zero) == "boolean" then
+        return not zero
+    end
+end
+
+-- Positive, current affordability evidence; never the upstream fail-open or
+-- event-cache result. Ownership and a real hotkey remain caller requirements.
+function Source.IsSpellUsableStrict(spellID)
+    local function plain(value, kind)
+        return not (issecretvalue and issecretvalue(value)) and type(value) == kind
+    end
+    if C_Spell and type(C_Spell.IsSpellUsable) == "function" then
+        local ok, usable, noPower = pcall(C_Spell.IsSpellUsable, spellID)
+        if ok and plain(usable, "boolean") and plain(noPower, "boolean") then
+            return usable, noPower
+        end
+    end
+    if not (ActionBarScanner and type(ActionBarScanner.GetSlotForSpell) == "function"
+        and type(GetActionInfo) == "function" and C_ActionBar
+        and type(C_ActionBar.IsUsableAction) == "function") then return nil end
+    local slotOK, slot = pcall(ActionBarScanner.GetSlotForSpell, spellID)
+    if not slotOK or not plain(slot, "number") or slot <= 0 or slot % 1 ~= 0 then return nil end
+    local infoOK, actionType, actionID = pcall(GetActionInfo, slot)
+    -- No macro, assisted-combat placeholder or stale scanner slot may prove
+    -- affordability for a different action. Only the exact physical spell.
+    if not infoOK or not plain(actionType, "string") or actionType ~= "spell"
+        or not plain(actionID, "number") or actionID ~= spellID then return nil end
+    local usableOK, usable, noPower = pcall(C_ActionBar.IsUsableAction, slot)
+    if usableOK and plain(usable, "boolean") and plain(noPower, "boolean") then
+        return usable, noPower
+    end
 end
 
 -- Preserve the upstream queue API's semantics for existing consumers. Some

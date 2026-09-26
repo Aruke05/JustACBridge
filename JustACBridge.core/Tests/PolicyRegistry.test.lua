@@ -1,3 +1,5 @@
+dofile("JustACBridge.core/Framework/ActionSequence.lua")
+dofile("JustACBridge.core/Framework/ResourcePreparation.lua")
 -- Run from the repository root with any Lua-compatible CLI:
 --   lua JustACBridge.core/Tests/PolicyRegistry.test.lua
 
@@ -20,7 +22,7 @@ dofile("JustACBridge.core/Policies/Hunter/Marksmanship.lua")
 dofile("JustACBridge.core/Policies/Hunter/Survival.lua")
 
 local registry = JustACBridgePolicyRegistry
-assert(registry.schemaVersion == 27)
+assert(registry.schemaVersion == 32)
 
 local arcane = assert(registry.Resolve("MAGE", 1, 120007))
 assert(arcane.storageKey == "MAGE_1" and arcane.id == "arcane")
@@ -155,10 +157,23 @@ assert(frostDK.fallbackActions[1].spellID == 49184 and frostDK.fallbackActions[1
 assert(#frostDK.rotationExclusions == 1 and frostDK.rotationExclusions[1] == 49576)
 
 local frostDK121 = assert(registry.Resolve("DEATHKNIGHT", 2, 120100))
-assert(frostDK121.ruleset == "midnight-12.1" and frostDK121.revision == 18)
-assert(type(frostDK121.prepareLossless) == "function")
+assert(frostDK121.ruleset == "midnight-12.1" and frostDK121.revision == 26)
+assert(type(frostDK121.selectLossless) == "function")
+assert(frostDK121.selectionTargetScope == "target-epoch")
+assert(registry.Resolve("DEATHKNIGHT", 2, 110200).selectionTargetScope == nil)
+assert(registry.Resolve("DEATHKNIGHT", 3, 120100).selectionTargetScope == nil)
+assert(registry.Resolve("MAGE", 1, 120100).selectionTargetScope == nil)
+assert(#frostDK121.losslessSelectionFallbackBlock==5)
+assert(frostDK121.losslessSelectionPassthrough[1]==1265384)
+for _, pair in ipairs({{"DEATHKNIGHT",1},{"DEATHKNIGHT",3},{"MAGE",1},{"MAGE",2},{"MAGE",3}}) do
+    assert(registry.Resolve(pair[1],pair[2],120100).losslessSelectionFallbackBlock==nil)
+end
+assert(frostDK.losslessSelectionFallbackBlock==nil)
+frostDK121.losslessSelectionFallbackBlock[1]=0
+assert(registry.Resolve("DEATHKNIGHT",2,120100).losslessSelectionFallbackBlock[1]==439843)
+frostDK121.losslessSelectionFallbackBlock[1]=439843
 assert(type(frostDK121.observePlayerSpellcast) == "function")
-assert(frostDK.prepareLossless == nil and frostDK.observePlayerSpellcast == nil)
+assert(frostDK.selectLossless == nil and frostDK.observePlayerSpellcast == nil)
 assert(frostDK121.useDetectedBurstTriggers == false)
 assert(frostDK121.preserveSourceQueueOnly == true)
 assert(#frostDK121.fallbackActions == 0)
@@ -186,14 +201,8 @@ assert(frostDK121.castSequenceRules[1].spellID == 279302
     and frostDK121.castSequenceRules[1].withinSeconds == 10)
 assert(#frostDK121.castSequenceRules[1].passthroughEffectiveSpellIDs == 1
     and frostDK121.castSequenceRules[1].passthroughEffectiveSpellIDs[1] == 1265384)
-assert(#frostDK121.castFollowups == 2)
-local breathFollowup = frostDK121.castFollowups[2]
-assert(type(breathFollowup.readyPredicate) == "function")
-assert(breathFollowup.spellID == 1249658 and breathFollowup.triggerSpells[1] == 51271)
-assert(breathFollowup.withinSeconds == 4 and breathFollowup.lossless
-    and not breathFollowup.preserve and breathFollowup.targetBound
-    and breathFollowup.requiresCombat and breathFollowup.cancelOnUnusable
-    and breathFollowup.cancelOnFailure and #breathFollowup.cancelSpells == 4)
+assert(#frostDK121.castFollowups == 1)
+assert(type(frostDK121.resetLosslessSelection) == "function")
 assert(frostDK121.castFollowups[1].spellID == 46585
     and frostDK121.castFollowups[1].triggerSpells[1] == 279302
     and frostDK121.castFollowups[1].withinSeconds == 4

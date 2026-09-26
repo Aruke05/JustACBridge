@@ -64,6 +64,17 @@ C_Spell = {
 LibStub = function(name) return fakeLibraries[name] end
 dofile("JustACBridge.core/Sources/JustAC.lua")
 local justac = assert(registry.Get("justac"))
+assert(justac.GetSpellHotkey(439843) == nil) -- missing scanner is unknown, not unbound
+do
+    local scanner = fakeLibraries["JustAC-ActionBarScanner"]
+    scanner.GetSpellHotkey = function() return "" end
+    assert(justac.GetSpellHotkey(439843) == "") -- explicit unbound proof
+    scanner.GetSpellHotkey = function() return "C5" end
+    assert(justac.GetSpellHotkey(439843) == "C5")
+    scanner.GetSpellHotkey = function() return nil end
+    assert(justac.GetSpellHotkey(439843) == nil)
+    scanner.GetSpellHotkey = nil
+end
 assert(justac.GetEffectiveSpellID(30451) == 1295939)
 assert(justac.GetEffectiveSpellID(1449) == 1241462)
 assert(justac.GetEffectiveSpellID(44425) == 44425)
@@ -111,4 +122,80 @@ do
     end
 end
 
+-- Strict affordability must bypass BOTH upstream fail-open and cached action
+-- usability, while verifying the live physical slot belongs to this spell.
+do
+    local secret = {}
+    issecretvalue = function(v) return v == secret end
+    C_Spell.IsSpellUsable = function() return true, false end
+    local usable, short = justac.IsSpellUsableStrict(1249658)
+    assert(usable == true and short == false)
+    C_Spell.IsSpellUsable = function() return false, true end
+    usable, short = justac.IsSpellUsableStrict(1249658)
+    assert(usable == false and short == true)
+    C_Spell.IsSpellUsable = function() return secret, secret end
+    local scanner = fakeLibraries["JustAC-ActionBarScanner"]
+    scanner.GetSlotForSpell = function() return 9 end
+    local actionUsable, actionShort, reads = true, false, 0
+    GetActionInfo = function(slot) assert(slot == 9); return "spell", 1249658 end
+    C_ActionBar = {IsUsableAction = function(slot)
+        assert(slot == 9); reads = reads + 1; return actionUsable, actionShort
+    end}
+    fakeLibraries["JustAC-BlizzardAPI"].GetActionBarUsability = function()
+        error("must not read cached slot usability")
+    end
+    fakeLibraries["JustAC-BlizzardAPI"].IsSpellUsable = function()
+        error("must not use fail-open usability")
+    end
+    assert(justac.IsSpellUsableStrict(1249658) == true)
+    actionUsable, actionShort = false, true
+    usable, short = justac.IsSpellUsableStrict(1249658)
+    assert(usable == false and short == true and reads == 2)
+    actionUsable, actionShort = true, false
+    for _, info in ipairs({{"macro", 1249658}, {"spell", 49020}, {secret, 1249658}, {"spell", secret}}) do
+        GetActionInfo = function() return info[1], info[2] end
+        assert(justac.IsSpellUsableStrict(1249658) == nil)
+    end
+    GetActionInfo = function() return "spell", 1249658 end
+    for _, entry in ipairs({{scanner, "GetSlotForSpell"}, {_G, "GetActionInfo"}, {C_ActionBar, "IsUsableAction"}}) do
+        local original = entry[1][entry[2]]
+        for _, fault in ipairs({"missing", "secret", "throw", "nil"}) do
+            entry[1][entry[2]] = fault ~= "missing" and function()
+                if fault == "throw" then error("unknown action") end
+                if fault == "secret" then return secret, secret end
+                return nil
+            end or nil
+            assert(justac.IsSpellUsableStrict(1249658) == nil)
+        end
+        entry[1][entry[2]] = original
+    end
+    actionUsable, actionShort = true, secret
+    assert(justac.IsSpellUsableStrict(1249658) == nil)
+    actionUsable, actionShort = secret, false
+    assert(justac.IsSpellUsableStrict(1249658) == nil)
+    issecretvalue = nil
+end
+-- Only the binary engine predicate may cross the secret-safe adapter. Missing
+-- helpers, nil and secret booleans must remain unknown, not become true.
+do
+    local opaque={}
+    issecretvalue=function(v) return rawequal(v,opaque) end
+    local api=fakeLibraries["JustAC-BlizzardAPI"]
+    assert(justac.ReadBinaryPredicate(100)==true)
+    assert(justac.ReadBinaryPredicate(0)==false)
+    assert(justac.ReadBinaryPredicate(37)==nil)
+    assert(justac.ReadBinaryPredicate(nil)==nil)
+    assert(justac.ReadBinaryPredicate(opaque)==nil)
+    api.IsSecretZero=function(v) assert(rawequal(v,opaque)); return true end
+    assert(justac.ReadBinaryPredicate(opaque)==false)
+    api.IsSecretZero=function() return false end
+    assert(justac.ReadBinaryPredicate(opaque)==true)
+    api.IsSecretZero=function() return opaque end
+    assert(justac.ReadBinaryPredicate(opaque)==nil)
+    api.IsSecretZero=function() return nil end
+    assert(justac.ReadBinaryPredicate(opaque)==nil)
+    api.IsSecretZero=function() error("unavailable") end
+    assert(justac.ReadBinaryPredicate(opaque)==nil)
+    issecretvalue=nil
+end
 print("source registry tests passed")

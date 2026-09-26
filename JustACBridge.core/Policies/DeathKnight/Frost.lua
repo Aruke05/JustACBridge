@@ -1,9 +1,11 @@
 local Registry = _G.JustACBridgePolicyRegistry
 if not Registry then return end
+local Sequence = assert(_G.JustACBridgeActionSequence, "ActionSequence must load before Frost policy")
+local Preparation = assert(_G.JustACBridgeResourcePreparation, "ResourcePreparation must load before Frost policy")
 
 -- These helpers deliberately do not use JustAC's fail-open usability/charge
--- wrappers or its memoized percentage power predicate. Missing/secret evidence
--- must leave the current source action alone, never create a new priority.
+-- wrappers or its memoized percentage power predicate. Unknown cooldowns do
+-- not establish a burst window; unknown affordability never opens its gate.
 local function visible(value, kind)
     return not (issecretvalue and issecretvalue(value)) and type(value) == kind
 end
@@ -43,60 +45,372 @@ end
 local function power()
     local amount = read(UnitPower, "player", 6)
     local maximum = read(UnitPowerMax, "player", 6)
+    if visible(amount, "number") and (amount ~= amount or amount < 0 or amount >= math.huge)
+        or visible(maximum, "number") and (maximum ~= maximum or maximum < 60 or maximum >= math.huge)
+        or visible(amount, "number") and visible(maximum, "number") and amount > maximum then
+        return nil, nil, "invalid"
+    end
     if visible(amount, "number") and visible(maximum, "number")
         and maximum >= 60 and maximum < math.huge
         and amount >= 0 and amount <= maximum then return amount, maximum end
 end
 
-local function breathReady(spellID)
-    local amount = power()
-    if not amount then return nil end
-    if amount < 60 then return false end
-    local usable = read(C_Spell and C_Spell.IsSpellUsable, spellID)
-    if not visible(usable, "boolean") then return nil end
-    if not usable then return false end
-    return cooldownReady(spellID)
+local function usability(spellID, query)
+    local usable, noPower
+    if type(query) == "function" then
+        local ok
+        ok, usable, noPower = query("IsSpellUsableStrict", spellID)
+        if not ok then return nil end
+    else
+        usable, noPower = read(C_Spell and C_Spell.IsSpellUsable, spellID)
+    end
+    if visible(usable, "boolean") and visible(noPower, "boolean") then
+        return usable, noPower
+    end
 end
 
--- Once attempted, never inject a second ERW off the same stale charge/RP
--- snapshot. Only an observed Breath cooldown re-arms this optional preparation;
--- changing targets or a missing/secret frame cannot resurrect it. No resource
--- is credited on success: ERW's projectile may not have reached the target yet.
-local preparationSpent = false
-local function observePreparationCast(event, spellID)
-    if spellID == 47568 and (event == "UNIT_SPELLCAST_SUCCEEDED"
-        or event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_FAILED_QUIET"
-        or event == "UNIT_SPELLCAST_INTERRUPTED") then preparationSpent = true end
+local function breathReady(spellID, query)
+    local amount, _, powerState = power()
+    if powerState == "invalid" then return nil, "invalid-resource-state" end
+    if amount and amount < 60 then return false, "rp-below-60" end
+    -- Numeric RP can be secret even when the engine positively reports this
+    -- exact spell affordable. Do not require an unavailable numeric duplicate
+    -- of that proof; never replace it with the upstream fail-open boolean.
+    local usable, noPower = usability(spellID, query)
+    if usable == nil then return nil, "strict-usability-unknown" end
+    if not usable or noPower then return false, noPower and "insufficient-power" or "unusable" end
+    local ready = cooldownReady(spellID)
+    return ready, ready == nil and "cooldown-unknown" or ready == false
+        and "cooldown-active" or amount and "ready-visible-rp" or "ready-engine-affordability"
 end
 
-local function prepareBurst(selectedSpellID, canUse)
-    local breathCDReady = cooldownReady(1249658)
-    if breathCDReady == false then preparationSpent = false end
-    if preparationSpent or breathCDReady ~= true
-        or (selectedSpellID ~= 51271 and selectedSpellID ~= 1249658) then return nil end
-    if selectedSpellID == 51271 and cooldownReady(51271) ~= true then return nil end
-    if not canUse(1249658) or not canUse(47568) then return nil end
-    local amount, maximum = power()
-    if not amount or amount + 40 > maximum then return nil end
-    local usable, noPower = read(C_Spell and C_Spell.IsSpellUsable, 1249658)
-    if not visible(usable, "boolean") or (not usable
-        and not (amount < 60 and visible(noPower, "boolean") and noPower)) then return nil end
-    local charges = read(C_Spell and C_Spell.GetSpellCharges, 47568)
-    if not visible(charges, "table") then return nil end
-    local current, maxCharges = charges.currentCharges, charges.maxCharges
-    if not visible(current, "number") or not visible(maxCharges, "number")
-        or maxCharges ~= 2 or (current ~= 1 and current ~= 2) then return nil end
-    if current ~= 2 and amount >= 60 then return nil end
-    local erwUsable = read(C_Spell and C_Spell.IsSpellUsable, 47568)
-    if not visible(erwUsable, "boolean") or not erwUsable then return nil end
-    -- Only the no-KM case is proven here. Do not steal a proc-consumption GCD
-    -- or assume Killing Streak's talent-dependent stack budget.
-    local secretAuras = read(C_Secrets and C_Secrets.ShouldAurasBeSecret)
-    if not visible(secretAuras, "boolean") or secretAuras then return nil end
-    if not (C_UnitAuras and type(C_UnitAuras.GetPlayerAuraBySpellID) == "function") then return nil end
-    local auraOK, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, 51124)
-    if not auraOK or (issecretvalue and issecretvalue(aura)) or aura ~= nil then return nil end
-    return 47568
+-- User-requested M5 gate, not a full Frost APL. Pool BEFORE spending Pillar.
+-- The three cooldowns are observed afresh; neither queue membership nor a
+-- recommendation counts as a successful cast or credits generated RP.
+local BURST = { [439843] = true, [51271] = true, [152279] = true,
+    [1249658] = true, [279302] = true }
+local SPENDERS = { [49143] = true, [1228433] = true, -- Frost Strike / Frostbane
+    [194913] = true, [49998] = true }
+-- Rune-consuming Frost/common DK actions only. Costs (including free procs)
+-- come from the CURRENT effective spell, never a hard-coded cost or proc guess.
+local RUNE_SPENDERS = { [49020] = true, [49184] = true, [196770] = true,
+    [207230] = true, [43265] = true, [152280] = true, [45524] = true,
+    [343294] = true }
+local POOL_BLOCKED = {}
+for id in pairs(BURST) do POOL_BLOCKED[id] = true end
+for id in pairs(SPENDERS) do POOL_BLOCKED[id] = true end
+local sequence = Sequence.New({
+    withinSeconds = 10,
+    cancelOnFailure = false, -- held M5 can legitimately fail during GCD
+    cancelSpellIDs = { [1265384] = true },
+    steps = {
+        {spellID = 439843, name = "MARK"},
+        {spellID = 51271, name = "PILLAR", windowAnchor = true},
+        {spellID = 1249658, name = "BREATH", aliases = {152279}},
+        {spellID = 279302, name = "FURY"},
+    },
+})
+-- A second DECLARATIVE sequence, not a second hand-written state machine.
+-- It has no Breath step/resource reserve and ends on successful Pillar.
+local smallSequence = Sequence.New({
+    withinSeconds = 10,
+    cancelOnFailure = false,
+    steps = {
+        {spellID = 439843, name = "MARK"},
+        {spellID = 51271, name = "PILLAR"},
+    },
+})
+local function resetBurst() sequence:Reset(); smallSequence:Reset() end
+local function observeBurstCast(event, spellID, targetGUID)
+    sequence:Observe(event, spellID, targetGUID, GetTime())
+    smallSequence:Observe(event, spellID, targetGUID, GetTime())
+end
+local PASSTHROUGH = { [1265384] = true } -- explicit live recall, never first Fury
+local function gatedQueue(queue, context, pool, reason)
+    local decision = Sequence.Filter(queue, context.resolve, pool and POOL_BLOCKED or BURST, reason, PASSTHROUGH)
+    decision.allowCastFollowup = not pool
+    return decision
+end
+
+local function selectSmallBurst(queue, context, pillarReady)
+    local function wait(reason)
+        -- No 60-RP reservation here: ordinary spenders keep source order.
+        return gatedQueue(queue, context, false, reason)
+    end
+    if smallSequence.suspended then
+        if pillarReady == false then smallSequence:Reset()
+        else return wait("SMALL_COMPLETE_WAIT_COOLDOWN") end
+    end
+    if smallSequence:HasProposal(context.now)
+        and cooldownReady(smallSequence.config.steps[smallSequence.proposed].spellID) == false then
+        return wait("WAIT_SMALL_CAST_CONFIRM")
+    end
+    local usable, noPower = usability(51271, context.query)
+    if pillarReady ~= true or usable ~= true or noPower ~= false then
+        return wait("WAIT_SMALL_PILLAR")
+    end
+    if smallSequence.step == 2 then
+        return smallSequence:Propose(2, context, "SMALL_EXPECT_PILLAR")
+    end
+    local evidence = context.inspect(439843)
+    evidence.ready = cooldownReady(439843)
+    evidence.usable, evidence.noPower = usability(439843, context.query)
+    local disposition, why = Sequence.Prerequisite(evidence)
+    local detail = why .. ":" .. Sequence.Describe(evidence)
+    if disposition == "ready" then
+        return smallSequence:Propose(1, context, "SMALL_EXPECT_MARK:" .. detail)
+    end
+    if visible(evidence.known, "boolean") and evidence.known
+        and visible(evidence.bound, "boolean") and evidence.bound and evidence.ready == true
+        and (evidence.usable == false or evidence.noPower == true) then
+        -- Do not repeatedly spend the runes this mandatory opener needs.
+        return {queue = {}, reason = "WAIT_SMALL_MARK:" .. detail,
+            markResourceWait = evidence.noPower == true}
+    end
+    return wait("WAIT_SMALL_MARK:" .. detail)
+end
+
+local function prepareUpcomingBurst(queue, context, readiness)
+    -- Six seconds is a bounded user-selected preparation horizon, NOT a full
+    -- APL or a forecast of future resource gains. All evidence is current.
+    for _, id in ipairs({51271, 1249658, 279302}) do
+        if readiness[id] ~= true then
+            if readiness[id] ~= false then return nil, "PREP_BREATH_UNKNOWN_CD:" .. id end
+            local near, evidence = Preparation.CooldownBelow(id, 6, context.query)
+            if near ~= true then
+                return nil, "PREP_BREATH_NOT_NEAR:" .. id .. ":within6=" .. tostring(near)
+                    .. ":evidence=" .. tostring(evidence)
+            end
+        end
+    end
+    -- Mark is mandatory in BOTH variants. Absence/unknown cannot authorize
+    -- standalone Pillar, nor justify reserving RP for an unavailable opener.
+    local mark = context.inspect(439843)
+    if not visible(mark.known, "boolean") or not visible(mark.bound, "boolean")
+        or not mark.known or not mark.bound then return nil, "PREP_BREATH_MARK_UNAVAILABLE" end
+    if cooldownReady(439843) ~= true
+        and Preparation.CooldownBelow(439843, 6, context.query) ~= true then
+        return nil, "PREP_BREATH_MARK_NOT_NEAR"
+    end
+    return Preparation.Filter(queue, context, {
+        blocked = BURST, spenders = SPENDERS, powerType = 6, reserve = 60,
+        reason = "PREP_BREATH_WITHIN_6S",
+    })
+end
+
+local function markPreparationConfig(context)
+    -- Prepare for the actual selected group, not merely two ready buttons:
+    -- if either dragon is near/unknown, ALL FOUR must be within 6 seconds.
+    -- After Mark's success the reserve is spent; never keep it through Pillar.
+    if sequence.step or smallSequence.step or context.outOfRange
+        or not (context.targetKey or context.targetGUID)
+        or context.targetContext and context.targetContext.valid ~= true then return nil end
+    for _, id in ipairs({439843,51271,1249658,279302}) do
+        if context.resolve(id) ~= id or context.canUse(id) ~= true then return nil end
+    end
+    local mark = context.inspect(439843)
+    if not visible(mark.known, "boolean") or not mark.known
+        or not visible(mark.bound, "boolean") or not mark.bound then return nil end
+    local function near(id)
+        local ready = cooldownReady(id)
+        return ready == true or ready == false and Preparation.CooldownBelow(id, 6, context.query) == true
+    end
+    if not near(439843) or not near(51271) then return nil end
+    local bothFar = cooldownReady(1249658) == false and cooldownReady(279302) == false
+        and Preparation.CooldownAbove(1249658, 18, context.query) == true
+        and Preparation.CooldownAbove(279302, 18, context.query) == true
+    if not bothFar and not (near(1249658) and near(279302)) then return nil end
+    local reserve = Preparation.FixedCost(439843, 5)
+    if reserve and reserve % 1 ~= 0 then reserve = nil end
+    return {
+        blocked = BURST, spenders = RUNE_SPENDERS, powerType = 5, reserve = reserve,
+        allowFree = true, integerCosts = true,
+        resourceAtLeast = function(threshold)
+            return Preparation.ReadySlotsAtLeast(6, threshold, function(index)
+                return select(3, GetRuneCooldown(index))
+            end, context.query)
+        end,
+        reason = "PREP_MARK_WITHIN_6S:reserve=" .. tostring(reserve),
+    }
+end
+
+local function selectBurst(queue, context)
+    if context.targetContext and context.targetContext.valid == nil and not context.outOfRange then
+        -- Unknown is not absent and cannot hand an unguarded burst back to the
+        -- ordinary queue. Keep success receipts bounded, but export only safe
+        -- original-order generators until live target validity is readable.
+        sequence:Check(context)
+        if not smallSequence:Check(context) and smallSequence.suspended then
+            smallSequence:Reset() -- expiry while target evidence is hidden is not completion
+        end
+        return gatedQueue(queue, context, true, "WAIT_TARGET_EVIDENCE:" .. context.targetContext.evidence)
+    end
+    local valid, invalidReason = sequence:Check(context)
+    local smallValid = smallSequence:Check(context)
+    if not valid then return nil, "burst-" .. invalidReason end
+    if not smallValid and smallSequence.suspended then
+        smallSequence:Reset()
+        return gatedQueue(queue, context, false, "SMALL_SEQUENCE_EXPIRED")
+    end
+    local phase = sequence.step and sequence.config.steps[sequence.step].name
+    local function eligible(id) return context.canUse(id) == true end
+    for _, id in ipairs({51271, 1249658, 279302}) do
+        if not eligible(id) then
+            resetBurst()
+            return nil, "burst-unlearned-or-unbound:" .. tostring(id)
+        end
+    end
+    -- Recall is not a new first Fury and must stay owned by JustAC.
+    if context.resolve(279302) ~= 279302 or context.resolve(1249658) ~= 1249658 then
+        resetBurst()
+        return nil, "burst-override-delegate"
+    end
+    local pillarReady, breathCDReady, furyReady = cooldownReady(51271), cooldownReady(1249658), cooldownReady(279302)
+    local alignmentDetail
+    -- Finish a committed small pair on its own success receipts. Before
+    -- commitment, select it only when BOTH dragons are positively far away.
+    -- Unknown/near cooldowns are never interpreted as a long unavailable CD.
+    if smallValid and not phase and not sequence:HasProposal(context.now) then
+        local activeSmall = smallSequence.step or (smallSequence:HasProposal(context.now)
+            and cooldownReady(439843) == false)
+        local breathFar, breathEvidence, furyFar, furyEvidence
+        if breathCDReady == false and furyReady == false then
+            breathFar, breathEvidence = Preparation.CooldownAbove(1249658, 18, context.query)
+            furyFar, furyEvidence = Preparation.CooldownAbove(279302, 18, context.query)
+        end
+        local bothFar = breathCDReady == false and furyReady == false and breathFar == true and furyFar == true
+        alignmentDetail = ":align18:breathFar=" .. tostring(breathFar) .. ":" .. tostring(breathEvidence)
+            .. ":furyFar=" .. tostring(furyFar) .. ":" .. tostring(furyEvidence)
+        if activeSmall or bothFar then
+            return selectSmallBurst(queue, context, pillarReady)
+        end
+        smallSequence:Reset()
+    end
+    if sequence.suspended then
+        if pillarReady == false or breathCDReady == false or furyReady == false then sequence.suspended = nil
+        else return nil, "burst-attempt-complete-or-cancelled" end
+    end
+    if not phase and sequence:HasProposal(context.now)
+        and cooldownReady(sequence.config.steps[sequence.proposed].spellID) == false then
+        -- SPELL_UPDATE_COOLDOWN may precede UNIT_SPELLCAST_SUCCEEDED. Do not
+        -- skip a just-cast Mark/Pillar because its cooldown appeared first.
+        return gatedQueue(queue, context, true, "WAIT_CAST_CONFIRM")
+    end
+    if not phase and (pillarReady ~= true or breathCDReady ~= true or furyReady ~= true) then
+        local prepared, reason = prepareUpcomingBurst(queue, context,
+            {[51271] = pillarReady, [1249658] = breathCDReady, [279302] = furyReady})
+        return prepared, tostring(reason) .. (alignmentDetail or "")
+    end
+    local function choose(id, reason)
+        return sequence:Propose(sequence.membership[id], context, reason)
+    end
+    if phase == "FURY" then
+        local usable, noPower = usability(279302, context.query)
+        if furyReady == true and usable == true and noPower == false then
+            return choose(279302, "EXPECT_FURY")
+        end
+        return gatedQueue(queue, context, false, "WAIT_FURY")
+    end
+    if phase and breathCDReady == false then
+        if phase == "BREATH" and sequence.proposed == 3 then
+            return gatedQueue(queue, context, true, "WAIT_BREATH_CONFIRM")
+        end
+        sequence:Cancel()
+        return nil, "burst-breath-unexpected-cooldown"
+    end
+    if not phase then
+        local mark = context.inspect(439843)
+        if not visible(mark.known, "boolean") or not mark.known
+            or not visible(mark.bound, "boolean") or not mark.bound then
+            local disposition, why = Sequence.Prerequisite(mark)
+            local reason = "WAIT_MARK:" .. why .. ":" .. Sequence.Describe(mark)
+            if disposition == "skip" then return gatedQueue(queue, context, false, reason) end
+            return {queue = {}, reason = reason}
+        end
+        if cooldownReady(439843) ~= true then
+            local prepared = prepareUpcomingBurst(queue, context,
+                {[51271] = pillarReady, [1249658] = breathCDReady, [279302] = furyReady})
+            if prepared then return prepared end
+            local mark = context.inspect(439843)
+            mark.ready = cooldownReady(439843)
+            mark.usable, mark.noPower = usability(439843, context.query)
+            local _, why = Sequence.Prerequisite(mark)
+            return gatedQueue(queue, context, false, "WAIT_MARK:" .. why .. ":" .. Sequence.Describe(mark))
+        end
+    end
+    if not phase then
+        for _, id in ipairs({51271, 279302}) do
+            local usable, noPower = usability(id, context.query)
+            if usable ~= true or noPower ~= false then
+                return gatedQueue(queue, context, false, "WAIT_FULL_MEMBER:" .. id)
+            end
+        end
+    end
+    local affordable, why = breathReady(1249658, context.query)
+    if affordable ~= true then
+        -- This does NOT cancel the window. Continue original-order generators
+        -- (including JustAC's ERW), but no RP spender or burst can leak through.
+        return gatedQueue(queue, context, true, "POOL_BREATH:" .. tostring(why))
+    end
+    if phase == "BREATH" then return choose(1249658, "EXPECT_BREATH") end
+    if phase == "PILLAR" then
+        local usable, noPower = usability(51271, context.query)
+        if pillarReady == true and usable == true and noPower == false then
+            return choose(51271, "EXPECT_PILLAR")
+        end
+        return gatedQueue(queue, context, true, "WAIT_PILLAR")
+    end
+    -- This profile declares Mark mandatory. The shared evaluator's 'skip'
+    -- means positive absence, not permission to omit a required predecessor.
+    -- Unknown, cooldown, GCD and resource shortage all hold the sequence.
+    local evidence = context.inspect(439843)
+    evidence.ready = cooldownReady(439843)
+    evidence.usable, evidence.noPower = usability(439843, context.query)
+    local disposition, why = Sequence.Prerequisite(evidence)
+    local detail = why .. ":" .. Sequence.Describe(evidence)
+    if disposition == "ready" then
+        return choose(439843, "EXPECT_MARK:" .. detail)
+    end
+    -- Required Mark may never be skipped, even when absent/unbound. Waiting
+    -- for a temporarily unusable learned Mark must not consume its runes.
+    if disposition == "wait" then
+        return {queue = {}, reason = "WAIT_MARK:" .. detail,
+            markResourceWait = evidence.noPower == true, keepBreathResource = true}
+    end
+    return gatedQueue(queue, context, false, "WAIT_MARK:" .. detail)
+end
+
+-- All exits, including unknown cooldowns, missing members, target reset,
+-- recall and completion, retain group ownership. NEVER delegate these four
+-- actions back to an unfiltered upstream queue. The core also enforces this
+-- exclusion if this selector throws or unexpectedly returns nil.
+local function selectGroupedBurst(queue, context)
+    local decision, reason = selectBurst(queue, context)
+    decision = decision or gatedQueue(queue, context, false, "WAIT_GROUP:" .. tostring(reason))
+    if not decision.spellID then
+        local config = markPreparationConfig(context)
+        if config then
+            -- Replace the old all-M5 resource pause only with proven safe
+            -- current-queue actions. Full windows must retain BOTH reserves.
+            local candidates = decision.queue
+            if decision.markResourceWait then
+                candidates = gatedQueue(queue, context, false, decision.reason).queue
+                if decision.keepBreathResource then
+                    local breathPrepared = Preparation.Filter(candidates, context, {
+                        blocked = BURST, spenders = SPENDERS, powerType = 6,
+                        reserve = 60, reason = "KEEP_BREATH_RESERVE",
+                    })
+                    candidates = breathPrepared.queue
+                    decision.reason = decision.reason .. ";" .. breathPrepared.reason
+                end
+            end
+            local prepared = Preparation.Filter(candidates, context, config)
+            prepared.reason = decision.reason .. ";" .. prepared.reason
+            prepared.allowCastFollowup = decision.allowCastFollowup
+            return prepared
+        end
+    end
+    return decision
 end
 
 Registry.RegisterSpec("DEATHKNIGHT", 2, {
@@ -165,28 +479,13 @@ Registry.RegisterSpec("DEATHKNIGHT", 2, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 18,
-            prepareLossless = prepareBurst,
-            observePlayerSpellcast = observePreparationCast,
-            -- This is a bounded missing-action repair, not an owned Frost APL.
-            -- Only a real Pillar success opens the Breath follow-up. A small
-            -- Pillar window never waits for Breath's 90-second cooldown.
-            addCastFollowups = {
-                {
-                    spellID = 1249658,
-                    triggerSpells = { 51271 },
-                    withinSeconds = 4,
-                    lossless = true,
-                    preserve = false,
-                    targetBound = true,
-                    requiresCombat = true,
-                    readyPredicate = breathReady,
-                    cancelOnUnusable = true,
-                    cancelOnFailure = true,
-                    cancelSpells = { 152279, 1249658, 279302, 1265384 },
-                    label = "冰霜之柱后补冰龙吐息",
-                },
-            },
+            revision = 26,
+            selectionTargetScope = "target-epoch",
+            selectLossless = selectGroupedBurst,
+            losslessSelectionFallbackBlock = {439843, 51271, 152279, 1249658, 279302},
+            losslessSelectionPassthrough = {1265384},
+            resetLosslessSelection = resetBurst,
+            observePlayerSpellcast = observeBurstCast,
             addCastSequenceRules = {
                 { spellID = 152279, afterSpellID = 51271,
                     afterAuraID = 51271, withinSeconds = 10 },
