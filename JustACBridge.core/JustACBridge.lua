@@ -70,6 +70,7 @@ local successfulCastSequenceStep = {}
 local successfulCastSequenceAt = {}
 local successfulCastSequenceTargetGUID = {}
 local pendingCastFollowups = {}
+local pendingCastFollowupTargets = {}
 local MOVEMENT_FLAP_WINDOW_SECONDS = 0.12
 local MOVEMENT_STOP_DEBOUNCE_SECONDS = 0.25
 local queueReady = true
@@ -653,9 +654,16 @@ local function resetSuccessfulCastSequences()
     successfulCastSequenceAt = {}
     successfulCastSequenceTargetGUID = {}
     pendingCastFollowups = {}
+    pendingCastFollowupTargets = {}
 end
 
 local function resetTargetBoundSuccessfulCastSequences()
+    for rule in pairs(pendingCastFollowups) do
+        if rule.targetBound then
+            pendingCastFollowups[rule] = nil
+            pendingCastFollowupTargets[rule] = nil
+        end
+    end
     local function clearRule(rule, firstField, secondField)
         if type(rule) ~= "table" or rule.targetBound ~= true then return end
         for _, field in ipairs({ firstField, secondField }) do
@@ -850,11 +858,21 @@ local function recordSuccessfulCastFollowups(spellID)
             pendingCastFollowups[rule] = nil
             matched = true
         end
+        for _, cancelID in ipairs(rule.cancelSpells or {}) do
+            if spellID == cancelID then
+                pendingCastFollowups[rule] = nil
+                pendingCastFollowupTargets[rule] = nil
+                matched = true
+            end
+        end
         for _, triggerSpellID in ipairs(rule.triggerSpells or {}) do
             -- Trigger IDs are intentionally exact. A transformed second cast
             -- must not silently masquerade as the base first-cast event.
             if spellID == tonumber(triggerSpellID) then
                 pendingCastFollowups[rule] = GetTime()
+                if rule.targetBound then
+                    pendingCastFollowupTargets[rule] = getCurrentHostileTargetGUID()
+                end
                 matched = true
                 break
             end
@@ -1058,13 +1076,13 @@ isSpellKnown = function(spellID)
         return false
     end
     local ok, known = pcall(check, spellID)
-    if ok and known == true then
+    if ok and not isSecret(known) and known == true then
         return true
     end
     local displayID = getEffectiveSpellID(spellID)
     if displayID ~= spellID then
         ok, known = pcall(check, displayID)
-        return ok and known == true
+        return ok and not isSecret(known) and known == true
     end
     return false
 end
@@ -1240,7 +1258,12 @@ local function findPolicyCastFollowupRecommendation(position)
         local triggeredAt = enabled and pendingCastFollowups[rule] or nil
         local withinSeconds = tonumber(rule.withinSeconds)
         local elapsed = triggeredAt and GetTime() - triggeredAt or nil
-        if triggeredAt and (not withinSeconds or elapsed < 0
+        local targetOK = not rule.targetBound
+            or (pendingCastFollowupTargets[rule] ~= nil
+                and pendingCastFollowupTargets[rule] == getCurrentHostileTargetGUID())
+        local combatOK = not rule.requiresCombat or isPlayerDefinitelyInCombat()
+        if triggeredAt and (not targetOK or not combatOK
+            or not withinSeconds or elapsed < 0
             or elapsed >= withinSeconds) then
             pendingCastFollowups[rule] = nil
         elseif triggeredAt then
@@ -1250,6 +1273,10 @@ local function findPolicyCastFollowupRecommendation(position)
             else
                 local ready, usableOK, usable, cooldownOK, onCooldown =
                     isPolicyPriorityCueReadyNow(spellID)
+                if ready and rule.readyPredicate then
+                    local proofOK, proof = pcall(rule.readyPredicate, getEffectiveSpellID(spellID))
+                    ready = proofOK and not isSecret(proof) and proof == true
+                end
                 -- A definite cooldown, or cooldown state that cannot be
                 -- positively observed, abandons this follow-up immediately.
                 -- The caller then continues through the untouched source
@@ -1258,9 +1285,12 @@ local function findPolicyCastFollowupRecommendation(position)
                     or onCooldown ~= false then
                     pendingCastFollowups[rule] = nil
                 elseif ready then
+                    local bindingOK, binding = sourceCall("GetSpellHotkey", spellID)
                     local safe = position == 1 and isSafeQueueValue(spellID, 1)
                         or position == 2 and isPreserveSafeQueueValue(spellID)
-                    local data = safe and getSpellData(spellID, position) or nil
+                    local bound = bindingOK and not isSecret(binding)
+                        and type(binding) == "string" and binding ~= ""
+                    local data = safe and bound and getSpellData(spellID, position) or nil
                     if data and data.plainHotkey ~= "" then
                         data.policyCastFollowup = true
                         data.policyCastFollowupLabel = rule.label
@@ -1269,7 +1299,8 @@ local function findPolicyCastFollowupRecommendation(position)
                     elseif not data or data.plainHotkey == "" then
                         pendingCastFollowups[rule] = nil
                     end
-                elseif not usableOK or isSecret(usable) or usable == nil then
+                elseif rule.cancelOnUnusable or not usableOK
+                    or isSecret(usable) or usable == nil then
                     pendingCastFollowups[rule] = nil
                 end
             end
@@ -1876,7 +1907,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s commitMs=%s gameQueueMs=%s queueTiming=%s")
         :format(
-            reason, "2.13.2", GetTime() - debugStartedAt,
+            reason, "2.13.3", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1904,7 +1935,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
         local traceOK, trace = pcall(activeSource.GetDecisionTrace)
         appendDebug("SOURCE_DECISION " .. (traceOK and debugSafe(trace) or "call-error"))
     end
-    appendDebug(("SELECT lossless=%s/%s/%s policyPriorityCue=%s policyReason=%s sourceBurstCue=%s moveFallback=%s failureFallback=%s emergency=%s preserve=%s/%s/%s moveFallback=%s failureFallback=%s emergency=%s")
+    appendDebug(("SELECT lossless=%s/%s/%s policyPriorityCue=%s policyReason=%s sourceBurstCue=%s moveFallback=%s failureFallback=%s emergency=%s preserve=%s/%s/%s moveFallback=%s failureFallback=%s emergency=%s burstPreparation=%s castFollowup=%s")
         :format(
             debugSafe(lossless and lossless.queueValue), debugSafe(lossless and lossless.name),
             debugSafe(lossless and lossless.plainHotkey),
@@ -1918,7 +1949,9 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
             debugSafe(preserve and preserve.plainHotkey),
             tostring(preserve and preserve.movementFallback == true),
             tostring(preserve and preserve.failureFallback == true),
-            tostring(preserve and preserve.emergencyMovementFallback == true)))
+            tostring(preserve and preserve.emergencyMovementFallback == true),
+            tostring(lossless and lossless.policyBurstPreparation == true),
+            debugSafe(lossless and lossless.policyCastFollowupLabel)))
 
     for _, trace in ipairs(policyPriorityCueTraces) do
         appendDebug(("CUE policy spell=%s combat=%s condition=%s reason=%s known=%s ready=%s usableCall=%s usable=%s cooldownCall=%s onCooldown=%s safe=%s bound=%s selected=%s")
@@ -2359,10 +2392,11 @@ local function refresh()
     policyFallbackTraces = {}
     policyPriorityCueTraces = {}
     movementFallbackProofTraces = {}
-    local lossless = findPolicyCastFollowupRecommendation(1)
-    local losslessQueueOnlyRule = not lossless
-        and getActiveSourceQueueOnlyBeyondRule(
+    local losslessQueueOnlyRule = getActiveSourceQueueOnlyBeyondRule(
         "losslessSourceQueueOnlyBeyond")
+    -- Confirmed range is an output legality constraint, including injections.
+    local lossless = not losslessQueueOnlyRule
+        and findPolicyCastFollowupRecommendation(1) or nil
     if not lossless and losslessQueueOnlyRule then
         lossless = findAllowedSourceQueueRecommendation(
             queue, losslessQueueOnlyRule.allow, 1)
@@ -2374,6 +2408,27 @@ local function refresh()
     end
     if not lossless and not losslessQueueOnlyRule then
         lossless = findPolicyFinalFallback(1)
+    end
+    -- Optional policy-owned preparation only precedes an already selected
+    -- burst action. It never scans/reorders ordinary source filler or M4.
+    if lossless and not losslessQueueOnlyRule and currentPolicy and currentPolicy.prepareLossless
+        and isPlayerDefinitelyInCombat() and getCurrentHostileTargetGUID() then
+        local preparedOK, preparedID = pcall(currentPolicy.prepareLossless,
+            lossless.spellID, function(spellID)
+                local boundOK, binding = sourceCall("GetSpellHotkey", spellID)
+                -- Partner ownership/binding, not permission to cast it yet:
+                -- preparation may precede its sequence prerequisite.
+                return isSpellKnown(spellID) and boundOK and not isSecret(binding)
+                    and type(binding) == "string" and binding ~= ""
+            end)
+        if preparedOK and not isSecret(preparedID) and type(preparedID) == "number"
+            and isSpellKnown(preparedID) and isSafeQueueValue(preparedID, 1) then
+            local prepared = getSpellData(preparedID, 1)
+            if prepared and prepared.plainHotkey ~= "" then
+                prepared.policyBurstPreparation = true
+                lossless = prepared
+            end
+        end
     end
     local preserveQueueOnly = currentPolicy
         and currentPolicy.preserveSourceQueueOnly == true
@@ -2861,6 +2916,28 @@ eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
 eventFrame:RegisterUnitEvent("UNIT_HEALTH", "target")
 eventFrame:RegisterUnitEvent("UNIT_FLAGS", "target")
 eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID)
+    if event:match("^UNIT_SPELLCAST_") and unitTarget ~= "player" then return end
+    if event:match("^UNIT_SPELLCAST_") and currentPolicy
+        and currentPolicy.observePlayerSpellcast then
+        pcall(currentPolicy.observePlayerSpellcast, event, spellID)
+    end
+    if unitTarget == "player" and (event == "UNIT_SPELLCAST_FAILED"
+        or event == "UNIT_SPELLCAST_FAILED_QUIET"
+        or event == "UNIT_SPELLCAST_INTERRUPTED") then
+        for rule in pairs(pendingCastFollowups) do
+            if rule.cancelOnFailure then
+                local matches = spellID == rule.spellID
+                for _, id in ipairs(rule.cancelSpells or {}) do
+                    matches = matches or spellID == id
+                end
+                if matches then
+                    pendingCastFollowups[rule] = nil
+                    pendingCastFollowupTargets[rule] = nil
+                    lastSignature = nil
+                end
+            end
+        end
+    end
     if event == "PLAYER_LOGIN" then
         JustACBridgeDB = JustACBridgeDB or {}
         if JustACBridgeDB.visible == nil then

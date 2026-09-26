@@ -83,4 +83,32 @@ assert(justac.IsSpellCooldownRemainingAbove(365350, 30.1) == nil)
 durationThrows, comparisonThrows = false, true
 assert(justac.IsSpellCooldownRemainingAbove(365350, 30.1) == nil)
 
+-- Unknown capability results must survive the adapter. In particular, nil
+-- cooldown is not "off cooldown", and a missing usability API is not ready.
+do
+    local api = fakeLibraries["JustAC-BlizzardAPI"]
+    for _, name in ipairs({"IsSpellUsable", "IsSpellOnCooldown"}) do
+        local original = api[name]
+        api[name] = nil
+        assert(justac[name](1249658) == nil)
+        for _, value in ipairs({true, false, "unknown", {}}) do
+            api[name] = function() return value end
+            if type(value) == "boolean" then
+                assert(justac[name](1249658) == value)
+            else
+                assert(justac[name](1249658) == nil)
+            end
+        end
+        api[name] = function() return nil end
+        assert(justac[name](1249658) == nil)
+        api[name] = function() error("unavailable") end
+        assert(justac[name](1249658) == nil)
+        api[name] = function() return true end
+        issecretvalue = function() return true end
+        assert(justac[name](1249658) == nil)
+        issecretvalue = nil
+        api[name] = original
+    end
+end
+
 print("source registry tests passed")

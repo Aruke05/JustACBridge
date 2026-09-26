@@ -75,6 +75,10 @@ local function makeWidget()
         IsShown = function(self) return self.shown ~= false end,
         Show = function(self) self.shown = true end,
         Hide = function(self) self.shown = false end,
+        SetCooldownFromDurationObject = function(self, duration)
+            self.shown = duration.active
+        end,
+        SetCooldown = function(self) self.shown = false end,
         SetText = function(self, text) self.text = text end,
     }
     return setmetatable(widget, {
@@ -867,6 +871,226 @@ end
 
 classFile, specIndex = "DEATHKNIGHT", 2
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+
+-- Bounded 12.1 repair: the raw source omits Breath entirely. Only an actual
+-- player Pillar success may insert the learned, bound, usable Breath into M5.
+do
+    local savedTime, savedCombat, savedGUID = now, inCombat, targetGUID
+    local savedAPIs = { power = UnitPower, maxPower = UnitPowerMax,
+        duration = C_Spell.GetSpellCooldownDuration, usable = C_Spell.IsSpellUsable,
+        secrets = C_Secrets }
+    local rp, maxRP = 60, 100
+    UnitPower = function() return rp end
+    UnitPowerMax = function() return maxRP end
+    C_Spell.GetSpellCooldownDuration = function(id)
+        if unknownCooldownSpells[id] then return nil end
+        return { active = id == cooldownSpellID and cooldownEndsAt > now }
+    end
+    C_Spell.IsSpellUsable = function(id)
+        if (id == 1249658 or id == 152279) and rp < 60 then return false, true end
+        return unusableSpells[id] ~= true, false
+    end
+    C_Secrets = { ShouldAurasBeSecret = function() return false end }
+    inCombat, now = true, 100
+    local function success(id, unit)
+        eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", unit or "player", "frost-test", id)
+    end
+    local function reset()
+        eventFrame.OnEvent(eventFrame, "PLAYER_REGEN_ENABLED")
+        now, inCombat = 100, true
+        rp, maxRP = 60, 100
+        targetGUID, targetWithin5 = savedGUID, nil
+        targetDead, targetAttackable = false, true
+        cooldownSpellID, cooldownEndsAt = nil, 0
+        unlearnedSpells[1249658], unboundSpells[1249658] = nil, nil
+        unusableSpells[1249658], unknownCooldownSpells[1249658] = nil, nil
+        testQueue = {279302, 49184}
+    end
+    local function selected(id)
+        JustACBridge.Refresh()
+        local actual = JustACBridge.GetLosslessRecommendation()
+        assert(actual and actual.spellID == id, "frost expected " .. id)
+        assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49184)
+        return actual
+    end
+    reset()
+    selected(49184) -- no timer guesses before Pillar
+    success(51271, "target")
+    selected(49184) -- other units cannot open the window
+    success(51271)
+    assert(selected(1249658).policyCastFollowup == true)
+    assert(testQueue[1] == 279302 and #testQueue == 2) -- never mutate source
+    for _ = 1, 3 do selected(1249658) end -- recommendation is NOT success
+    success(1249658)
+    selected(279302)
+    success(279302)
+    selected(46585) -- retain existing Raise Dead follow-up
+    success(46585)
+    selected(49184)
+
+    -- Base and current cast events both consume the one follow-up.
+    reset(); success(51271); selected(1249658); success(152279); selected(279302)
+    reset(); effectiveSpellOverrides[1249658] = 152279
+    unlearnedSpells[1249658] = true
+    success(51271); selected(152279); success(152279); selected(279302)
+    effectiveSpellOverrides[1249658] = nil
+    -- Mark and Pillar remain source-owned: this repair completes their real
+    -- queue order, it does not inject/reapply a target debuff on guessed data.
+    reset(); testQueue = {439843, 51271, 279302, 49184}; selected(439843)
+    success(439843); testQueue = {51271, 279302, 49184}; selected(51271)
+    success(51271); testQueue = {279302, 49184}; selected(1249658)
+    success(1249658); selected(279302)
+    -- Never cast Breath out of the Pillar window, even if JustAC queues it.
+    for _, id in ipairs({152279, 1249658}) do
+        reset(); testQueue = {id, 49184}; selected(49184)
+        success(51271); selected(1249658)
+        now = 111; selected(49184)
+    end
+    -- The small window does not wait 45 seconds for Breath.
+    reset(); cooldownSpellID, cooldownEndsAt = 1249658, 190
+    testQueue = {51271, 49184}; selected(51271)
+    success(51271); testQueue = {279302, 49184}; selected(279302)
+    cooldownSpellID = nil; selected(279302) -- abandoned, never resurrected
+
+    for _, flags in ipairs({unlearnedSpells, unboundSpells,
+        unusableSpells, unknownCooldownSpells}) do
+        reset(); flags[1249658] = true; success(51271); selected(279302)
+        flags[1249658] = nil; selected(279302)
+    end
+    local source = JustACBridgeRecommendationSources.Get("test")
+    local known = IsPlayerSpell
+    for _, mode in ipairs({"nil", "secret", "throw"}) do
+        reset()
+        IsPlayerSpell = function(id)
+            if id ~= 1249658 then return known(id) end
+            if mode == "throw" then error("unknown ownership") end
+            if mode == "secret" then return secretAuraValue end
+            return nil
+        end
+        auraSecret = true
+        success(51271); selected(279302)
+        IsPlayerSpell, auraSecret = known, false
+        selected(279302)
+    end
+    for _, method in ipairs({"IsSpellUsable", "IsSpellOnCooldown", "GetSpellHotkey"}) do
+        local original = source[method]
+        for _, mode in ipairs({"nil", "secret", "throw"}) do
+            reset()
+            source[method] = function(id)
+                if id ~= 1249658 then return original(id) end
+                if mode == "throw" then error("injected API failure") end
+                if mode == "secret" then return secretAuraValue end
+                return nil
+            end
+            auraSecret = true
+            success(51271); selected(279302)
+            source[method], auraSecret = original, false
+            selected(279302)
+        end
+    end
+    for _, event in ipairs({"UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_FAILED_QUIET",
+        "UNIT_SPELLCAST_INTERRUPTED"}) do
+        reset(); success(51271); selected(1249658)
+        eventFrame.OnEvent(eventFrame, event, "player", "breath-failed", 1249658)
+        selected(279302)
+    end
+    for _, event in ipairs({"PLAYER_TARGET_CHANGED", "PLAYER_REGEN_ENABLED",
+        "PLAYER_ENTERING_WORLD", "PLAYER_TALENT_UPDATE", "TRAIT_CONFIG_UPDATED"}) do
+        reset(); success(51271); selected(1249658)
+        eventFrame.OnEvent(eventFrame, event)
+        testQueue = {49184}; selected(49184)
+    end
+    reset(); success(51271); targetGUID = "different-target"; selected(279302)
+    targetGUID = savedGUID; selected(279302) -- switching back cannot revive
+    reset(); success(51271); targetDead = true; selected(279302)
+    targetDead = false; selected(279302)
+    reset(); success(51271); targetAttackable = false; selected(279302)
+    targetAttackable = true; selected(279302)
+    reset(); success(51271); inCombat = false; selected(279302)
+    inCombat = true; selected(279302)
+    reset(); success(51271); now = 104; selected(279302) -- exact timeout
+    reset(); success(51271); now = 99; testQueue = {49184}; selected(49184)
+    reset(); success(51271); success(279302); selected(46585)
+    success(46585); selected(49184) -- manually spent Fury cancels late Breath
+    reset(); success(51271); success(1265384); selected(279302)
+    reset(); success(51271); targetWithin5 = false; selected(49184)
+    testQueue = {}; JustACBridge.Refresh()
+    assert(JustACBridge.GetLosslessRecommendation() == nil)
+    assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+    reset(); success(51271); classFile, specIndex = "DEATHKNIGHT", 3
+    eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+    testQueue = {49184}; selected(49184)
+    classFile, specIndex = "DEATHKNIGHT", 2
+    eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+    selected(49184)
+    -- Exact preparation only replaces an already selected Pillar/Breath.
+    -- The ordinary queue and M4 never inherit this priority.
+    reset(); testQueue = {51271, 49184}; rp = 42; spellCharges[47568] = 1
+    assert(selected(47568).policyBurstPreparation == true)
+    assert(testQueue[1] == 51271 and #testQueue == 2)
+    success(47568, "target"); selected(47568)
+    success(47568); selected(51271) -- stale RP/charge frame cannot double-use ERW
+    rp = 82; spellCharges[47568] = 0
+    success(51271); testQueue = {279302, 49184}; selected(1249658)
+    success(1249658); selected(279302)
+    -- A real observed partner cooldown rearms preparation, not a timer.
+    cooldownSpellID, cooldownEndsAt = 1249658, 190; selected(279302)
+    reset(); testQueue = {51271, 49184}; spellCharges[47568] = 2
+    selected(47568) -- 60+40 == 100; one charge made available for Breath refund
+    rp = 61; selected(51271) -- do not manufacture RP overflow
+    rp = 90; maxRP = 130; selected(47568) -- actual max, not a percentage
+    playerAuras[51124] = {applications = 1}; selected(51271)
+    playerAuras[51124] = nil
+    C_Secrets.ShouldAurasBeSecret = function() return true end; selected(51271)
+    C_Secrets.ShouldAurasBeSecret = function() return false end
+    spellCharges[47568] = 1; selected(51271) -- no full-charge loss, already >=60
+    rp = 42; unboundSpells[47568] = true; selected(51271)
+    unboundSpells[47568] = nil
+    unlearnedSpells[47568] = true; selected(51271)
+    unlearnedSpells[47568] = nil
+    unboundSpells[1249658] = true; selected(51271)
+    unboundSpells[1249658] = nil
+    testQueue = {49184, 51271}; selected(49184) -- never steal an ordinary priority
+    testQueue = {51271, 49184}; targetWithin5 = false; selected(49184)
+    targetWithin5 = nil; cooldownSpellID, cooldownEndsAt = 1249658, 135
+    selected(51271) -- 35-second small window never waits for Breath
+    cooldownSpellID = nil
+    selected(47568)
+    eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player", "erw-failed", 47568)
+    selected(51271) -- failed preparation also cannot loop indefinitely
+    cooldownSpellID, cooldownEndsAt = 1249658, 190; selected(51271)
+    spellCharges[47568] = nil
+    -- A fail-open source boolean cannot override the fresh absolute RP guard.
+    reset(); rp = 59; success(51271); selected(279302)
+    rp = 60; selected(279302) -- cancelled opportunity is not resurrected
+    -- Upstream still reports true/false readiness throughout. The independent
+    -- direct predicate must reject its fail-open result, not just propagate a
+    -- mocked source nil (which would miss the deployed JustAC failure mode).
+    for _, api in ipairs({
+        {C_Spell, "IsSpellUsable"}, {C_Spell, "GetSpellCooldownDuration"},
+        {_G, "UnitPower"}, {_G, "UnitPowerMax"},
+    }) do
+        local original = api[1][api[2]]
+        for _, fault in ipairs({"missing", "nil", "secret", "throw"}) do
+            reset()
+            if fault == "missing" then api[1][api[2]] = nil
+            else api[1][api[2]] = function()
+                if fault == "throw" then error("direct proof failed") end
+                if fault == "secret" then return secretAuraValue end
+                return nil
+            end end
+            auraSecret = true
+            success(51271); selected(279302)
+            api[1][api[2]], auraSecret = original, false
+            selected(279302)
+        end
+    end
+    reset()
+    now, inCombat, targetGUID = savedTime, savedCombat, savedGUID
+    UnitPower, UnitPowerMax = savedAPIs.power, savedAPIs.maxPower
+    C_Spell.GetSpellCooldownDuration, C_Spell.IsSpellUsable = savedAPIs.duration, savedAPIs.usable
+    C_Secrets = savedAPIs.secrets
+end
 
 -- Frostwyrm's Fury is never allowed to precede Pillar of Frost. The strict
 -- sequence gate uses successful player casts, not cooldown guesses. It also

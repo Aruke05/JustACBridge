@@ -67,23 +67,31 @@ function Source.GetEffectiveSpellID(spellID)
 end
 
 function Source.IsSpellUsable(spellID)
-    return not BlizzardAPI or not BlizzardAPI.IsSpellUsable
-        or BlizzardAPI.IsSpellUsable(spellID)
+    if not BlizzardAPI or not BlizzardAPI.IsSpellUsable then return nil end
+    local ok, usable = pcall(BlizzardAPI.IsSpellUsable, spellID)
+    if ok and type(usable) == "boolean"
+        and not (issecretvalue and issecretvalue(usable)) then return usable end
+    return nil
 end
 
--- Midnight hides numeric cooldown start/duration values in combat. JustAC's
--- cooldown tracker reads the engine DurationObject through a hidden Cooldown
--- widget, yielding an exact real-cooldown boolean with the GCD excluded.
+-- Preserve the upstream queue API's semantics for existing consumers. Some
+-- JustAC versions fail open (false) on missing DurationObjects; this wrapper
+-- cannot turn that boolean back into evidence. New Frost injections therefore
+-- require an additional strict, uncached policy predicate.
 function Source.IsSpellOnCooldown(spellID)
     if not BlizzardAPI or not BlizzardAPI.IsSpellOnCooldown then
         return nil
     end
-    return BlizzardAPI.IsSpellOnCooldown(spellID) == true
+    local ok, onCooldown = pcall(BlizzardAPI.IsSpellOnCooldown, spellID)
+    if ok and type(onCooldown) == "boolean"
+        and not (issecretvalue and issecretvalue(onCooldown)) then return onCooldown end
+    return nil
 end
 
 -- Secret-safe threshold query. The numeric remaining cooldown is intentionally
 -- never read; the engine DurationObject is compared against a constant through
--- JustAC's verified curve helper and yields a plain boolean or nil.
+-- JustAC's curve helper and yields a plain boolean or nil. Its rounded/ramped
+-- threshold must not be mistaken for an exact numeric resource/CD observation.
 function Source.IsSpellCooldownRemainingAbove(spellID, seconds)
     if not (spellID and type(seconds) == "number" and seconds > 0
             and C_Spell and C_Spell.GetSpellCooldownDuration

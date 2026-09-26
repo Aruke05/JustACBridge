@@ -20,7 +20,7 @@ dofile("JustACBridge.core/Policies/Hunter/Marksmanship.lua")
 dofile("JustACBridge.core/Policies/Hunter/Survival.lua")
 
 local registry = JustACBridgePolicyRegistry
-assert(registry.schemaVersion == 26)
+assert(registry.schemaVersion == 27)
 
 local arcane = assert(registry.Resolve("MAGE", 1, 120007))
 assert(arcane.storageKey == "MAGE_1" and arcane.id == "arcane")
@@ -155,7 +155,10 @@ assert(frostDK.fallbackActions[1].spellID == 49184 and frostDK.fallbackActions[1
 assert(#frostDK.rotationExclusions == 1 and frostDK.rotationExclusions[1] == 49576)
 
 local frostDK121 = assert(registry.Resolve("DEATHKNIGHT", 2, 120100))
-assert(frostDK121.ruleset == "midnight-12.1" and frostDK121.revision == 16)
+assert(frostDK121.ruleset == "midnight-12.1" and frostDK121.revision == 18)
+assert(type(frostDK121.prepareLossless) == "function")
+assert(type(frostDK121.observePlayerSpellcast) == "function")
+assert(frostDK.prepareLossless == nil and frostDK.observePlayerSpellcast == nil)
 assert(frostDK121.useDetectedBurstTriggers == false)
 assert(frostDK121.preserveSourceQueueOnly == true)
 assert(#frostDK121.fallbackActions == 0)
@@ -170,14 +173,27 @@ assert(#frostDK121.rotationExclusions == 1 and frostDK121.rotationExclusions[1] 
 assert(#frostDK121.reserveExclusions == 2)
 assert(frostDK121.reserveExclusions[1] == 194913
     and frostDK121.reserveExclusions[2] == 207230)
-assert(#frostDK121.castSequenceRules == 1)
+assert(#frostDK121.castSequenceRules == 3)
+assert(#frostDK.castSequenceRules == 1 and #frostDK.castFollowups == 1)
+for i, id in ipairs({152279, 1249658}) do
+    local rule = frostDK121.castSequenceRules[i + 1]
+    assert(rule.spellID == id and rule.afterSpellID == 51271
+        and rule.afterAuraID == 51271 and rule.withinSeconds == 10)
+end
 assert(frostDK121.castSequenceRules[1].spellID == 279302
     and frostDK121.castSequenceRules[1].afterSpellID == 51271
     and frostDK121.castSequenceRules[1].afterAuraID == 51271
     and frostDK121.castSequenceRules[1].withinSeconds == 10)
 assert(#frostDK121.castSequenceRules[1].passthroughEffectiveSpellIDs == 1
     and frostDK121.castSequenceRules[1].passthroughEffectiveSpellIDs[1] == 1265384)
-assert(#frostDK121.castFollowups == 1)
+assert(#frostDK121.castFollowups == 2)
+local breathFollowup = frostDK121.castFollowups[2]
+assert(type(breathFollowup.readyPredicate) == "function")
+assert(breathFollowup.spellID == 1249658 and breathFollowup.triggerSpells[1] == 51271)
+assert(breathFollowup.withinSeconds == 4 and breathFollowup.lossless
+    and not breathFollowup.preserve and breathFollowup.targetBound
+    and breathFollowup.requiresCombat and breathFollowup.cancelOnUnusable
+    and breathFollowup.cancelOnFailure and #breathFollowup.cancelSpells == 4)
 assert(frostDK121.castFollowups[1].spellID == 46585
     and frostDK121.castFollowups[1].triggerSpells[1] == 279302
     and frostDK121.castFollowups[1].withinSeconds == 4

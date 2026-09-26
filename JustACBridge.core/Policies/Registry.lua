@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 26
+Registry.schemaVersion = 27
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -341,6 +341,12 @@ local function copyCastFollowups(source)
                 withinSeconds = withinSeconds,
                 lossless = rule.lossless ~= false,
                 preserve = rule.preserve == true,
+                targetBound = rule.targetBound == true,
+                requiresCombat = rule.requiresCombat == true,
+                readyPredicate = type(rule.readyPredicate) == "function" and rule.readyPredicate or nil,
+                cancelOnUnusable = rule.cancelOnUnusable == true,
+                cancelOnFailure = rule.cancelOnFailure == true,
+                cancelSpells = copyArray(rule.cancelSpells),
                 label = rule.label,
             }
         end
@@ -599,6 +605,12 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         end
         if patch.castFollowups then
             result.castFollowups = copyCastFollowups(patch.castFollowups)
+        end
+        if type(patch.prepareLossless) == "function" then
+            result.prepareLossless = patch.prepareLossless
+        end
+        if type(patch.observePlayerSpellcast) == "function" then
+            result.observePlayerSpellcast = patch.observePlayerSpellcast
         end
         if patch.clipChannels then
             replaceArray(result.clipChannels, patch.clipChannels)
