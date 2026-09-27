@@ -69,7 +69,7 @@ local function usability(spellID, query)
     end
 end
 
-local function breathReady(spellID, query)
+local function breathAffordable(spellID, query)
     local amount, _, powerState = power()
     if powerState == "invalid" then return nil, "invalid-resource-state" end
     if amount and amount < 60 then return false, "rp-below-60" end
@@ -79,9 +79,7 @@ local function breathReady(spellID, query)
     local usable, noPower = usability(spellID, query)
     if usable == nil then return nil, "strict-usability-unknown" end
     if not usable or noPower then return false, noPower and "insufficient-power" or "unusable" end
-    local ready = cooldownReady(spellID)
-    return ready, ready == nil and "cooldown-unknown" or ready == false
-        and "cooldown-active" or amount and "ready-visible-rp" or "ready-engine-affordability"
+    return true, amount and "ready-visible-rp" or "ready-engine-affordability"
 end
 
 -- User-requested M5 gate, not a full Frost APL. Pool BEFORE spending Pillar.
@@ -104,9 +102,9 @@ local sequence = Sequence.New({
     cancelOnFailure = false, -- held M5 can legitimately fail during GCD
     cancelSpellIDs = { [1265384] = true },
     steps = {
-        {spellID = 439843, name = "MARK"},
-        {spellID = 51271, name = "PILLAR", windowAnchor = true},
-        {spellID = 1249658, name = "BREATH", aliases = {152279}},
+        {spellID = 439843, name = "MARK", gcdAfter = 1},
+        {spellID = 51271, name = "PILLAR", windowAnchor = true, gcdAfter = 0},
+        {spellID = 1249658, name = "BREATH", aliases = {152279}, gcdAfter = 0},
         {spellID = 279302, name = "FURY"},
     },
 })
@@ -116,7 +114,7 @@ local smallSequence = Sequence.New({
     withinSeconds = 10,
     cancelOnFailure = false,
     steps = {
-        {spellID = 439843, name = "MARK"},
+        {spellID = 439843, name = "MARK", gcdAfter = 1},
         {spellID = 51271, name = "PILLAR"},
     },
 })
@@ -126,6 +124,18 @@ local function observeBurstCast(event, spellID, targetGUID)
     smallSequence:Observe(event, spellID, targetGUID, GetTime())
 end
 local PASSTHROUGH = { [1265384] = true } -- explicit live recall, never first Fury
+local function startCooldowns(instance, context)
+    -- Frost uses a 1.5s melee-hasted GCD, floored at 0.75s. Pillar and Breath
+    -- add ZERO GCDs: all three successors share Mark's one-GCD deadline.
+    -- No old GCD/haste cache, no latency padding, no forecast of RP generation.
+    local gcd, evidence = Sequence.HastedGCD(1.5, 0.75, read(GetHaste))
+    local delay = read(JustACBridgeQueueTiming and JustACBridgeQueueTiming.ReadGCDRemaining)
+    local ready, why = instance:CanStartCooldowns(cooldownReady, function(id, budget)
+        return Preparation.CooldownAtMost(id, budget, context.query)
+    end, gcd, delay)
+    return ready, why .. ":gcd=" .. tostring(gcd) .. ":" .. tostring(evidence)
+        .. ":startDelay=" .. tostring(delay)
+end
 local function gatedQueue(queue, context, pool, reason)
     local decision = Sequence.Filter(queue, context.resolve, pool and POOL_BLOCKED or BURST, reason, PASSTHROUGH)
     decision.allowCastFollowup = not pool
@@ -143,14 +153,22 @@ local function selectSmallBurst(queue, context, pillarReady)
     end
     if smallSequence:HasProposal(context.now)
         and cooldownReady(smallSequence.config.steps[smallSequence.proposed].spellID) == false then
+        if smallSequence.step then return {queue = {}, reason = "WAIT_SMALL_CAST_CONFIRM"} end
         return wait("WAIT_SMALL_CAST_CONFIRM")
     end
-    local usable, noPower = usability(51271, context.query)
-    if pillarReady ~= true or usable ~= true or noPower ~= false then
-        return wait("WAIT_SMALL_PILLAR")
-    end
     if smallSequence.step == 2 then
-        return smallSequence:Propose(2, context, "SMALL_EXPECT_PILLAR")
+        local usable, noPower = usability(51271, context.query)
+        if pillarReady == true and usable == true and noPower == false then
+            return smallSequence:Propose(2, context, "SMALL_EXPECT_PILLAR")
+        end
+        -- The pair is committed. Do not insert a filler GCD into the last
+        -- milliseconds before the planned Pillar, or restart at cooling Mark.
+        return {queue = {}, reason = "WAIT_SMALL_PILLAR_STEP"}
+    end
+    local timing, timingReason = startCooldowns(smallSequence, context)
+    local usable, noPower = usability(51271, context.query)
+    if (pillarReady ~= true and timing ~= true) or usable ~= true or noPower ~= false then
+        return wait("WAIT_SMALL_PILLAR:" .. timingReason)
     end
     local evidence = context.inspect(439843)
     evidence.ready = cooldownReady(439843)
@@ -158,7 +176,7 @@ local function selectSmallBurst(queue, context, pillarReady)
     local disposition, why = Sequence.Prerequisite(evidence)
     local detail = why .. ":" .. Sequence.Describe(evidence)
     if disposition == "ready" then
-        return smallSequence:Propose(1, context, "SMALL_EXPECT_MARK:" .. detail)
+        return smallSequence:Propose(1, context, "SMALL_EXPECT_MARK:" .. detail .. ";START_TIMING:" .. timingReason)
     end
     if visible(evidence.known, "boolean") and evidence.known
         and visible(evidence.bound, "boolean") and evidence.bound and evidence.ready == true
@@ -296,10 +314,13 @@ local function selectBurst(queue, context)
         -- skip a just-cast Mark/Pillar because its cooldown appeared first.
         return gatedQueue(queue, context, true, "WAIT_CAST_CONFIRM")
     end
-    if not phase and (pillarReady ~= true or breathCDReady ~= true or furyReady ~= true) then
+    local timing, timingReason
+    if not phase then timing, timingReason = startCooldowns(sequence, context) end
+    if not phase and timing ~= true and (pillarReady ~= true or breathCDReady ~= true or furyReady ~= true) then
         local prepared, reason = prepareUpcomingBurst(queue, context,
             {[51271] = pillarReady, [1249658] = breathCDReady, [279302] = furyReady})
-        return prepared, tostring(reason) .. (alignmentDetail or "")
+        if prepared then prepared.reason = prepared.reason .. ";START_TIMING:" .. timingReason end
+        return prepared, tostring(reason) .. (alignmentDetail or "") .. ";START_TIMING:" .. timingReason
     end
     local function choose(id, reason)
         return sequence:Propose(sequence.membership[id], context, reason)
@@ -309,14 +330,15 @@ local function selectBurst(queue, context)
         if furyReady == true and usable == true and noPower == false then
             return choose(279302, "EXPECT_FURY")
         end
-        return gatedQueue(queue, context, false, "WAIT_FURY")
+        return {queue = {}, reason = "WAIT_FURY"}
     end
-    if phase and breathCDReady == false then
-        if phase == "BREATH" and sequence.proposed == 3 then
-            return gatedQueue(queue, context, true, "WAIT_BREATH_CONFIRM")
+    if phase == "BREATH" and breathCDReady ~= true then
+        if sequence.proposed == 3 then
+            return {queue = {}, reason = "WAIT_BREATH_CONFIRM"}
         end
-        sequence:Cancel()
-        return nil, "burst-breath-unexpected-cooldown"
+        -- A successor admitted for its turn may legitimately still be cooling
+        -- now. Current-step readiness, not a new whole-group zero-CD gate.
+        return {queue = {}, reason = "WAIT_BREATH_STEP"}
     end
     if not phase then
         local mark = context.inspect(439843)
@@ -346,7 +368,7 @@ local function selectBurst(queue, context)
             end
         end
     end
-    local affordable, why = breathReady(1249658, context.query)
+    local affordable, why = breathAffordable(1249658, context.query)
     if affordable ~= true then
         -- This does NOT cancel the window. Continue original-order generators
         -- (including JustAC's ERW), but no RP spender or burst can leak through.
@@ -358,7 +380,7 @@ local function selectBurst(queue, context)
         if pillarReady == true and usable == true and noPower == false then
             return choose(51271, "EXPECT_PILLAR")
         end
-        return gatedQueue(queue, context, true, "WAIT_PILLAR")
+        return {queue = {}, reason = "WAIT_PILLAR"}
     end
     -- This profile declares Mark mandatory. The shared evaluator's 'skip'
     -- means positive absence, not permission to omit a required predecessor.
@@ -369,7 +391,7 @@ local function selectBurst(queue, context)
     local disposition, why = Sequence.Prerequisite(evidence)
     local detail = why .. ":" .. Sequence.Describe(evidence)
     if disposition == "ready" then
-        return choose(439843, "EXPECT_MARK:" .. detail)
+        return choose(439843, "EXPECT_MARK:" .. detail .. ";START_TIMING:" .. tostring(timingReason))
     end
     -- Required Mark may never be skipped, even when absent/unbound. Waiting
     -- for a temporarily unusable learned Mark must not consume its runes.
@@ -385,6 +407,11 @@ end
 -- actions back to an unfiltered upstream queue. The core also enforces this
 -- exclusion if this selector throws or unexpectedly returns nil.
 local function selectGroupedBurst(queue, context)
+    if not Preparation.IsEnabled(context) then
+        -- A preserve/unspecified context can neither start a burst nor read
+        -- its resource gates; preserve the original ordinary-action order.
+        return Sequence.Filter(queue, context.resolve, BURST, "BURST_PREPARATION_DISABLED_FOR_MODE", PASSTHROUGH)
+    end
     local decision, reason = selectBurst(queue, context)
     decision = decision or gatedQueue(queue, context, false, "WAIT_GROUP:" .. tostring(reason))
     if not decision.spellID then
@@ -479,7 +506,7 @@ Registry.RegisterSpec("DEATHKNIGHT", 2, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 26,
+            revision = 28,
             selectionTargetScope = "target-epoch",
             selectLossless = selectGroupedBurst,
             losslessSelectionFallbackBlock = {439843, 51271, 152279, 1249658, 279302},

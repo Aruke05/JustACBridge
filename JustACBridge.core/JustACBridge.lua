@@ -1924,7 +1924,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
     local _, class = UnitClass("player")
     appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s commitMs=%s gameQueueMs=%s queueTiming=%s")
         :format(
-            reason, "2.13.11", GetTime() - debugStartedAt,
+            reason, "2.13.13", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1961,7 +1961,7 @@ local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, prese
                     tostring(pendingCastFollowups[rule] ~= nil)))
         end
     end
-    appendDebug(("SELECT lossless=%s/%s/%s policyPriorityCue=%s policyReason=%s sourceBurstCue=%s moveFallback=%s failureFallback=%s emergency=%s preserve=%s/%s/%s moveFallback=%s failureFallback=%s emergency=%s burstPreparation=%s castFollowup=%s preparationReason=%s targetEvidence=%s")
+    appendDebug(("SELECT lossless=%s/%s/%s policyPriorityCue=%s policyReason=%s sourceBurstCue=%s moveFallback=%s failureFallback=%s emergency=%s preserve=%s/%s/%s moveFallback=%s failureFallback=%s emergency=%s burstPreparation=%s castFollowup=%s preparationReason=%s targetEvidence=%s preparationScope=M5")
         :format(
             debugSafe(lossless and lossless.queueValue), debugSafe(lossless and lossless.name),
             debugSafe(lossless and lossless.plainHotkey),
@@ -2405,12 +2405,15 @@ local function refresh()
         return false, ok and "invalid recommendation queue" or tostring(queue)
     end
 
-    local preserveQueue = queue
+    -- Sources may reuse an internal array for both getters. Snapshot before
+    -- the second call, then give each mode (and the policy) its own array.
+    queue = copyTable(queue)
+    local preserveQueue = copyTable(queue)
     local separatePreserveQueue = false
     if type(activeSource.GetPreserveQueue) == "function" then
         local preserveOK, candidate = pcall(activeSource.GetPreserveQueue)
         if preserveOK and type(candidate) == "table" then
-            preserveQueue = candidate
+            preserveQueue = copyTable(candidate)
             separatePreserveQueue = true
         end
     end
@@ -2430,7 +2433,8 @@ local function refresh()
         local targetContext = currentPolicy.selectionTargetScope == "target-epoch"
             and selectionTargetLease:Read() or nil
         policyPreparationTarget = targetContext and targetContext.evidence
-        local gateOK, decision, reason = pcall(currentPolicy.selectLossless, queue, {
+        local gateOK, decision, reason = pcall(currentPolicy.selectLossless, copyTable(queue), {
+            mode = "lossless",
             targetGUID = not targetContext and getCurrentHostileTargetGUID() or nil,
             targetKey = targetContext and targetContext.key,
             targetContext = targetContext,
@@ -2525,6 +2529,7 @@ local function refresh()
     end
     if not preserve and not preserveQueueOnlyRule
         and not preserveQueueOnly and not separatePreserveQueue
+        and not burstDecision
         and lossless and lossless.plainHotkey ~= ""
         and not isReservedQueueValue(lossless.queueValue)
         and not isReserveExcludedQueueValue(lossless.queueValue)
@@ -2537,7 +2542,7 @@ local function refresh()
         -- action rather than accidentally skipping an earlier candidate.
         preserve = findReserveRecommendation(
             preserveQueue,
-            preserveQueueOnly and 1
+            (preserveQueueOnly or burstDecision ~= nil) and 1
                 or playerIsMoving and JustACBridgeDB.movementFilter ~= false
                 and 1 or (separatePreserveQueue and 1 or (lossless and 2 or 1))
         )
@@ -3086,7 +3091,7 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.13.11", PIXEL_PROTOCOL_VERSION,
+            :format("2.13.13", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 

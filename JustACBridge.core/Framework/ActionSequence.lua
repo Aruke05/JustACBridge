@@ -7,6 +7,21 @@ local function plain(value, kind)
     return not (issecretvalue and issecretvalue(value)) and type(value) == kind
 end
 
+local function seconds(value)
+    return plain(value, "number") and value == value and value >= 0 and value < math.huge
+end
+
+-- Current haste, never the duration of an earlier GCD. Unknown haste can only
+-- use the policy's proven minimum, not an invented 'normal' GCD. These are
+-- admission budgets, NOT timers, queued casts, or evidence of successful casts.
+function Sequence.HastedGCD(base, minimum, haste)
+    if not seconds(base) or not seconds(minimum) or minimum > base then return nil end
+    if not plain(haste, "number") or haste ~= haste or haste <= -100 or haste == math.huge then
+        return minimum, "minimum-gcd-proof"
+    end
+    return math.max(minimum, base / (1 + haste / 100)), "current-haste"
+end
+
 -- false is positive absence; nil means unknown. Never collapse the two when
 -- deciding whether an OPTIONAL prerequisite can be skipped.
 function Sequence.Ownership(ids, readers)
@@ -88,6 +103,42 @@ function Sequence.New(config)
     end
     self:Reset()
     return self
+end
+
+-- Stateless look-ahead, opt-in per step via gcdAfter (0 for off-GCD). A later
+-- action needs to be ready by ITS position, not at the opener. Unknown timing
+-- never prevents an already-ready group; it only withholds early admission.
+-- Readers are current-frame evidence supplied by the class policy. Ownership,
+-- binding, resources and the opener's actual usability remain its responsibility.
+function State:CanStartCooldowns(ready, within, gcd, startDelay)
+    local budget, detail = seconds(startDelay) and startDelay or 0, {}
+    for index, step in ipairs(self.config.steps) do
+        local ok, value = pcall(ready, step.spellID)
+        local status = "ready"
+        if not ok or not plain(value, "boolean") then
+            return nil, "cooldown-unknown:" .. step.name
+        end
+        if not value then
+            if index == 1 or not seconds(budget) or budget <= 0 then
+                return false, "cooldown-active:" .. step.name
+            end
+            local readOK, byThen = pcall(within, step.spellID, budget)
+            if not readOK or not plain(byThen, "boolean") then
+                return nil, "deadline-unknown:" .. step.name
+            end
+            if not byThen then return false, "deadline-missed:" .. step.name end
+            status = "by=" .. tostring(budget)
+        end
+        detail[#detail + 1] = step.name .. ":" .. status
+        if index < #self.config.steps then
+            local count = step.gcdAfter
+            if not seconds(count) or not seconds(budget) then budget = nil
+            elseif count > 0 then
+                if seconds(gcd) then budget = budget + count * gcd else budget = nil end
+            end
+        end
+    end
+    return true, table.concat(detail, ",")
 end
 
 function State:Reset()

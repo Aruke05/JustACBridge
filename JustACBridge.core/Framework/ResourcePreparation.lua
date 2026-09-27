@@ -6,6 +6,12 @@ _G.JustACBridgeResourcePreparation = Preparation
 local function plain(v, kind)
     return not (issecretvalue and issecretvalue(v)) and type(v) == kind
 end
+
+-- Explicit capability, not a remembered mouse-button/mode latch. The addon
+-- computes BOTH outputs every refresh; only an M5 context may reserve resources.
+function Preparation.IsEnabled(context)
+    return plain(context, "table") and plain(context.mode, "string") and context.mode == "lossless"
+end
 local function number(v)
     return plain(v, "number") and v == v and v >= 0 and v < math.huge
 end
@@ -124,6 +130,52 @@ function Preparation.CooldownAbove(spellID, seconds, query)
     return nil, "strict-boundary-unresolved"
 end
 
+-- Inclusive deadline for sequence admission. Do not add latency/epsilon to
+-- make a late spell look ready. Native precision that cannot express <= may
+-- still prove strict <; only the unresolved boundary remains unknown.
+function Preparation.CooldownAtMost(spellID, seconds, query)
+    if not number(seconds) or seconds <= 0 then return nil end
+    local duration = call(C_Spell and C_Spell.GetSpellCooldownDuration, spellID, true)
+    if not (plain(duration, "table") or plain(duration, "userdata")) then
+        return nil, "duration-unavailable"
+    end
+    local remaining = method(duration, "GetRemainingDuration")
+    local now = call(GetTime)
+    if number(now) and number(now + seconds) then
+        -- Bound only IEEE-double rounding of clock additions/subtractions,
+        -- including the previous cast's start+CD endpoint. Four clock ULPs,
+        -- NOT a user/latency epsilon; never grant even one microsecond of slack.
+        local scale = 1
+        while scale * 2 <= math.max(1, now + seconds) do scale = scale * 2 end
+        local roundoff = scale * 2 ^ -52 * 4
+        if roundoff < 0.000001 then seconds = ((now + seconds) - now) + roundoff end
+    end
+    if plain(remaining, "number") then
+        if number(remaining) then
+            return remaining <= seconds, "visible-deadline"
+        end
+        return nil, "invalid-duration"
+    end
+    if seconds <= 0 then return nil, "deadline-below-clock-resolution" end
+    local scale = 1
+    while scale > seconds do scale = scale / 2 end
+    while scale * 2 <= seconds do scale = scale * 2 end
+    local successor = seconds + scale * 2 ^ -52
+    local curve = stepCurve(successor, math.max(seconds * 2, 3600))
+    local atBoundary = curve and method(curve, "Evaluate", seconds)
+    local atSuccessor = curve and method(curve, "Evaluate", successor)
+    if plain(atBoundary, "number") and atBoundary == 0
+        and plain(atSuccessor, "number") and atSuccessor == 100 then
+        local late = binary(method(duration, "EvaluateRemainingDuration", curve), query)
+        if late ~= nil then return not late, "engine-inclusive-deadline" end
+    end
+    curve = stepCurve(seconds, math.max(seconds * 2, 3600))
+    if not curve then return nil, "deadline-boundary-unavailable" end
+    local atOrAfter = binary(method(duration, "EvaluateRemainingDuration", curve), query)
+    if atOrAfter == false then return true, "engine-before-deadline" end
+    return nil, "deadline-boundary-unresolved"
+end
+
 function Preparation.ResourceAtLeast(unit, powerType, threshold, query)
     if not number(threshold) then return nil end
     local maximum = call(UnitPowerMax, unit, powerType)
@@ -196,10 +248,11 @@ end
 -- Caller must first positively prove the near-window and action ownership.
 function Preparation.Filter(queue, context, config)
     local output, detail = {}, {}
+    local enabled = Preparation.IsEnabled(context)
     for _, id in ipairs(queue) do
         local effective = context.resolve(id)
         local blocked = config.blocked[id] or config.blocked[effective]
-        if not blocked and (config.spenders[id] or config.spenders[effective]) then
+        if enabled and not blocked and (config.spenders[id] or config.spenders[effective]) then
             local cost = Preparation.FixedCost(effective, config.powerType)
             if cost ~= nil and config.integerCosts and cost % 1 ~= 0 then cost = nil end
             local enough, why
@@ -223,5 +276,6 @@ function Preparation.Filter(queue, context, config)
         end
         if not blocked then output[#output + 1] = id end
     end
-    return {queue = output, reason = config.reason .. ":" .. table.concat(detail, ";")}
+    return {queue = output, reason = config.reason .. ":"
+        .. (enabled and table.concat(detail, ";") or "RESOURCE_PREPARATION_DISABLED_FOR_MODE")}
 end

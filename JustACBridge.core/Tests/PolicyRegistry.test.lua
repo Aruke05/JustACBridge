@@ -157,7 +157,7 @@ assert(frostDK.fallbackActions[1].spellID == 49184 and frostDK.fallbackActions[1
 assert(#frostDK.rotationExclusions == 1 and frostDK.rotationExclusions[1] == 49576)
 
 local frostDK121 = assert(registry.Resolve("DEATHKNIGHT", 2, 120100))
-assert(frostDK121.ruleset == "midnight-12.1" and frostDK121.revision == 26)
+assert(frostDK121.ruleset == "midnight-12.1" and frostDK121.revision == 28)
 assert(type(frostDK121.selectLossless) == "function")
 assert(frostDK121.selectionTargetScope == "target-epoch")
 assert(registry.Resolve("DEATHKNIGHT", 2, 110200).selectionTargetScope == nil)

@@ -972,7 +972,7 @@ do
     now = 101; rp = 60; selected(1249658); success(152279); selected(279302)
     -- Cooldown update before the event does not substitute for it or lose it.
     reset(); rp = 60; selected(439843); success(439843); selected(51271)
-    cds[51271] = true; selected(47568); success(51271); selected(1249658)
+    cds[51271] = true; selected(nil); success(51271); selected(1249658)
     -- No hidden fallback may resurrect a burst or spender from an empty pool.
     reset(); testQueue = {51271,49143,439843,279302,194913,49998}; selected(nil)
     assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49143)
@@ -1201,6 +1201,18 @@ do
         runes=2; rp=95; selected(49143)
         rp=60; cds={}; selected(439843); success(439843); runes=0
         selected(51271); success(51271); selected(1249658); success(1249658); selected(279302)
+        -- Same handoff with opaque cooldowns/resources/GUID/runes: the native
+        -- inclusive deadline is sufficient; no readable numeric duplicates.
+        local originalHaste=GetHaste
+        GetHaste=function() return 50 end
+        upcoming(); auraSecret=true; runeSecret=true; runes=2; rp=60
+        for _,id in ipairs({51271,1249658,279302}) do remaining[id]=1 end
+        selected(439843); success(439843); cds[439843]=true; runes=0
+        selected(nil) -- early Pillar cannot be bypassed by a filler
+        cds[51271]=false; selected(51271); success(51271); cds[51271]=true
+        selected(nil); cds[1249658]=false; selected(1249658); success(1249658)
+        selected(nil); cds[279302]=false; selected(279302)
+        GetHaste=originalHaste
         C_CurveUtil,Enum,UnitPowerPercent=previousCurve,previousEnum,previousPercent
         C_Spell.GetSpellCooldownDuration,UnitPower=previousDuration,previousPower
         UnitGUID=previousGUID
@@ -1314,7 +1326,7 @@ do
         success(439843); eventFrame.OnEvent(eventFrame,"UNIT_HEALTH","target")
         assert(selected(51271).policyBurstGateReason=="SMALL_EXPECT_PILLAR")
         event("UNIT_SPELLCAST_FAILED",51271); selected(51271)
-        cds[51271]=true; selected(49143); success(51271); selected(49143)
+        cds[51271]=true; selected(nil); success(51271); selected(49143)
         -- Empty filtered queue cannot invoke fallback or a source burst cue.
         smallWindow(); cds[439843]=true; testQueue={51271,279302,1249658,439843}; selected(nil)
         cds[439843]=false; selected(439843); success(439843); cds[439843]=true
@@ -1439,6 +1451,108 @@ do
         definition.selectLossless=originalSelector
         burstCues[51271],burstCues[1249658],burstCues[279302]=nil,nil,nil
         eventFrame.OnEvent(eventFrame,"PLAYER_SPECIALIZATION_CHANGED","player")
+    end
+    -- Generic mode isolation, including a future policy that does not opt in
+    -- to Frost's preserveSourceQueueOnly flag. M4 must not copy an M5 generator
+    -- selected by resource preparation, or skip the original first spender.
+    do
+        local definition=JustACBridgePolicyRegistry.classes.DEATHKNIGHT.specs[2].versions[1]
+        local oldSelector,oldQueueOnly=definition.selectLossless,definition.preserveSourceQueueOnly
+        local oldQueue,oldPreserve=source.GetQueue,source.GetPreserveQueue
+        definition.preserveSourceQueueOnly=false
+        source.GetPreserveQueue=nil
+        for _, shape in ipairs({"action","filtered-queue","empty"}) do
+            reset(); rp=42; testQueue={49143,49020}
+            definition.selectLossless=function(q,context)
+                assert(context.mode=="lossless")
+                table.remove(q,1) -- a badly behaved policy cannot mutate M4's snapshot
+                if shape=="action" then return {spellID=49020,reason="TEST_M5_PREPARATION"} end
+                return {queue=shape=="empty" and {} or q,reason="TEST_M5_PREPARATION"}
+            end
+            eventFrame.OnEvent(eventFrame,"PLAYER_SPECIALIZATION_CHANGED","player")
+            selected(shape~="empty" and 49020 or nil)
+            assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49143)
+            assert(testQueue[1]==49143 and #testQueue==2)
+        end
+        -- The source may reuse one table between getters. Snapshot BEFORE the
+        -- M4 getter runs so its update cannot retroactively alter the M5 queue.
+        local shared={}
+        source.GetQueue=function() shared[1],shared[2]=49143,49020; return shared end
+        source.GetPreserveQueue=function() shared[1],shared[2]=49020,49143; return shared end
+        definition.selectLossless=function(q,context)
+            assert(context.mode=="lossless"); return {queue=q,reason="MODE_SNAPSHOT_TEST"}
+        end
+        eventFrame.OnEvent(eventFrame,"PLAYER_SPECIALIZATION_CHANGED","player")
+        selected(49143); assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49020)
+        definition.selectLossless,definition.preserveSourceQueueOnly=oldSelector,oldQueueOnly
+        source.GetQueue,source.GetPreserveQueue=oldQueue,oldPreserve
+        eventFrame.OnEvent(eventFrame,"PLAYER_SPECIALIZATION_CHANGED","player")
+        -- Live-log shape: M5 removes both spenders while M4 uses the first
+        -- ordinary action. If the SOURCE omits spenders, do not invent one.
+        reset(); rp=42; runes=1; testQueue={51271,49143,49020,47568}
+        selected(47568); assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49143)
+        testQueue={51271,49020}; runes=6
+        selected(49020); assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49020)
+    end
+    -- End-to-end staggered start, including the GCD input commit window.
+    -- Being 62.5ms before the opener may NOT queue a filler just because the
+    -- successor is still (one GCD + 62.5ms) away at this frame.
+    do
+        local originalHaste=GetHaste
+        local haste=50
+        GetHaste=function() return haste end
+        for _, small in ipairs({true,false}) do
+            reset(); rp=small and 0 or 60
+            testQueue={279302,1249658,51271,49143,49020,47568}
+            cds[51271],remaining[51271]=true,1
+            cds[1249658],cds[279302]=true,true
+            remaining[1249658],remaining[279302]=small and 35 or 1,small and 35 or 1
+            selected(439843)
+            assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49143)
+            event("UNIT_SPELLCAST_FAILED",439843); selected(439843)
+            success(439843); cds[439843]=true; selected(nil)
+            assert(JustACBridge.GetPreserveBurstRecommendation().spellID==49143)
+            now=101; cds[51271]=false; selected(51271)
+            success(51271); cds[51271]=true
+            if small then selected(49143)
+            else
+                selected(nil); cds[1249658]=false; selected(1249658)
+                event("UNIT_SPELLCAST_FAILED",1249658); selected(1249658)
+                cds[1249658]=true; selected(nil); success(1249658)
+                selected(nil); cds[279302]=false; selected(279302)
+                success(279302); cds[279302]=true; selected(46585)
+            end
+        end
+        reset(); rp=60; testQueue={49143,49020}
+        for _,id in ipairs({51271,1249658,279302}) do cds[id],remaining[id]=true,1.0625 end
+        selected(49020) -- without an active GCD, 1.0625 misses the 1s deadline
+        cooldownSpellID,cooldownEndsAt=61304,now+0.0625
+        selected(439843)
+        for _,id in ipairs({51271,1249658,279302}) do remaining[id]=1.0635 end
+        selected(49020) -- no arbitrary latency slack
+        -- Empty upstream queue still has no priority over the ordered opener.
+        testQueue={}; remaining[51271],remaining[1249658],remaining[279302]=1,1,1
+        selected(439843); success(439843); cds[439843]=true; selected(nil)
+        eventFrame.OnEvent(eventFrame,"PLAYER_TARGET_CHANGED")
+        cds[51271],cds[1249658],cds[279302]=false,false,false; selected(nil)
+        -- Three actual-cooldown cycles without reset: full -> small -> full.
+        reset(); testQueue={51271,279302,1249658,49143,49020}
+        local ends={}
+        local function tick(t)
+            now=t
+            for _,id in ipairs({439843,51271,1249658,279302}) do
+                remaining[id]=math.max(0,(ends[id] or 0)-t); cds[id]=remaining[id]>0
+            end
+        end
+        local function cast(id,cd)
+            selected(id); success(id); ends[id]=now+cd; tick(now)
+        end
+        for round=0,2 do
+            tick(100+45*round); rp=60; runes=6
+            cast(439843,45); tick(101+45*round); cast(51271,45)
+            if round%2==0 then cast(1249658,90); rp=0; cast(279302,90) end
+        end
+        GetHaste=originalHaste
     end
     -- Exported diagnostics distinguish the pool and each ordered next action.
     reset(); selected(47568); rp = 60; selected(439843); success(439843)

@@ -171,3 +171,64 @@ API 明确返回固定 0 消耗的已列举动作，不把缺行/nil/异常当�
 离线测试验证 0–6 个符文、动态成本、免费触发、secret/nil/异常、6 秒边界、大小组与
 双资源门、空队列、成功事件解除、重置、核心实际导出及 M4 隔离；实际客户端隐藏
 接口/成本结构可能不可用，未知会保守等待，不能宣称实战无损或不会暂停。
+
+## 按步骤到期的启动门（2.13.12）
+
+`State:CanStartCooldowns(ready, within, gcd, startDelay)` 只做当前帧启动判断，不保存
+CD/资源预测，不推进序列。第一步必须当前已好；后继可以已好，或者由 `within(id, seconds)`
+正面证明在轮到它时转好。`startDelay` 仅可来自当前真实 GCD 剩余时间，未知用零额外信用。
+`steps[].gcdAfter` 显式声明该动作之后增加几个 GCD：不占 GCD 必须为 0，缺失表示未知，
+不能默认每个按钮占一个。所有技能已好时不需要时间证据，不得因为优化接口缺失反而卡组。
+单技能组没有后继时间门。读条/引导、特殊 GCD 或充能技能须另外证明，禁止套用本配置。
+
+冰 DK 的已验证 APL 有 `reapers_mark` 在 `pillar_of_frost.remains<=gcd.max` 时起手的条件。
+本用户严格分组仍保留：小组只检印记→冰柱；大组检查印记→冰柱→龙喷→龙怒。后面三个
+共享印记贡献的一个 GCD，不给冰柱或龙喷额外加一个 GCD，也不套用 APL 的预计回能放宽
+为 40 符能。两龙 >18 秒分组、6 秒资源准备和当前 60 符能要求均不变。
+
+- `HastedGCD(1.5,0.75,GetHaste())` 是本策略的当前近战急速 GCD；不复用上个 GCD
+  时长或旧急速。当前急速未知时仅用已知下限 0.75 秒的充分条件，不猜 1.5 秒。
+- `QueueTiming.ReadGCDRemaining()` 精确读取当前 GCD 结束剩余量，非 1 的 rate、
+  secret/nil/异常不提供额外信用。不改输入窗口/CVar，不提前发送受 GCD 保护的动作。
+  这避免预输入末尾把“后继还差一个 GCD＋当前剩余 GCD”错误判为迟到而排入普通填充。
+- `CooldownAtMost` 使用排除 GCD 的新鲜 DurationObject。边界为包含相等；处理时钟
+  加减的 IEEE-double 四个 ULP 舍入界，且此修正严格小于 1 微秒，不添加任意延迟容差。
+  hidden 数值仍走自检后的 Step 曲线；原生精度不足时严格早于期限是充分条件，仅无法
+  分辨的边界保持未知，不把明显迟到放行。实际施放仍必须等当前引擎就绪，不用数值
+  容差伪造就绪。
+- 已成功开组，只检查当前步骤及未消费资源。后继处于获准的短 CD 时不得取消重开；
+  衔接阶段的 CD/成功确认等待返回权威空队列，防止多插普通 GCD。资源确实不足仍走原有
+  回能过滤。真实乱序、目标失效和原有 10 秒期限仍取消；这不是永远等待的锁。
+- 日志 `START_TIMING` 记录每步 ready/by、当前 GCD 依据、起手偏移；缺证据/超时
+  指向具体步骤。M4、其他职业与旧版本不启用该启动门，不能声称已改好所有职业。
+
+依据（2026-09-27 核对）：[SimC Midnight 冰 DK APL](https://github.com/simulationcraft/simc/blob/midnight/ActionPriorityLists/default/deathknight_frost.simc)、
+[SimC GCD 缩放](https://github.com/simulationcraft/simc/blob/midnight/engine/action/action.cpp)、
+[客户端急速属性读取](https://github.com/Gethe/wow-ui-source/blob/live/Interface/AddOns/Blizzard_UIPanels_Game/Mainline/PaperDollFrame.lua)。
+测试涵盖准入两侧/相等、非 GCD 不加时间、当前 GCD 末尾、多个急速下连续五轮、隐藏 CD
+与资源和目标的核心导出、实际后继等待、资源不足、失败/成功先后、未知接口与模式隔离。
+以上为离线 mock/核心集成验证，不能证明真实客户端所有 secret 接口与事件延迟均可用。
+
+## M4/M5 模式与队列隔离（2.13.13）
+
+`ResourcePreparation.IsEnabled(context)` 只接受明确的 `mode="lossless"`。核心为
+`selectLossless` 显式提供该模式；直接调用公共资源过滤器的测试/新职业也必须声明。
+`preserve`、缺失、secret 或无效模式都禁用爆发资源保留：`Filter` 只删除配置的爆发
+blocked 项，不读花费/资源，不删除普通 spender。冰 DK 的启动入口也执行同一检查，
+不能因为准备被禁用就绕过资源门提前开爆发；模式禁用只返回普通原队列，不推进/清除
+另一路已有的 M5 成功凭据。
+
+核心在调用另一源 getter/职业 selector 前，分别复制 M5 原始队列、M4 原始队列及
+交给 selector 的数组。源复用数组或 selector 原地修改都不能污染另一路。存在爆发门
+时，M4 不复用 M5 选择的普通回能动作，也不从原队列第 2 位起扫；必须从自己的第 1 项
+按已有保留和合法性条件选择。未接入爆发门的专精保留原行为；独立 `GetPreserveQueue`
+（包括奥法特例）仍具有权威性。
+
+插件每帧同时计算两路，日志中的 `preparationReason` 属于 M5，现在注明
+`preparationScope=M5`；它不是鼠标当前按键状态。实际比较需联合 QUEUE/PQUEUE、
+`SELECT.preserve` 与成功事件，不能把 M5 空动作或 POOL 字样误当作 M4 等待。
+
+这保证 Bridge 不为 M4 施加爆发资源准备，不承诺改变上游推荐源自己的 APL。源只给
+回能动作而未给消耗动作时，M4 仍按原队列；不得强插冰打或前移后排 spender 来制造
+“不攒能”的表象。定向测试包含各模式/资源接口不访问、切换无锁存、selector 注入/
+过滤/空队列、普通专精公共复用路径、源共享数组、M4 原队列没有 spender 以及核心导出。

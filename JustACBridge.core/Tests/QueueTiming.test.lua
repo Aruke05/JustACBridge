@@ -42,4 +42,24 @@ C_CVar.GetCVar = nil
 expect(80, 80, "cvar-known")
 GetCVar = nil
 expect(120, nil, "cvar-unavailable")
+local now, cd = 100, {startTime=99,duration=1.08,modRate=1}
+GetTime=function() return now end
+C_Spell={GetSpellCooldown=function(id) assert(id==61304); return cd end}
+assert(math.abs(timing.ReadGCDRemaining()-0.08)<1e-12)
+now=100.08; assert(timing.ReadGCDRemaining()==0)
+cd={startTime=0,duration=0,modRate=1}; assert(timing.ReadGCDRemaining()==0)
+issecretvalue=function(v) return rawequal(v,secret) end
+for _, field in ipairs({"startTime","duration","modRate"}) do
+    for _, v in ipairs({secret,0/0,-1,math.huge,false}) do
+        cd={startTime=99,duration=1.08,modRate=1}; cd[field]=v
+        assert(timing.ReadGCDRemaining()==nil)
+    end
+    cd[field]=nil; assert(timing.ReadGCDRemaining()==nil)
+end
+cd={startTime=101,duration=1,modRate=1}; assert(timing.ReadGCDRemaining()==nil)
+cd={startTime=99,duration=1,modRate=2}; assert(timing.ReadGCDRemaining()==nil)
+cd=secret; assert(timing.ReadGCDRemaining()==nil)
+C_Spell.GetSpellCooldown=function() error("API unavailable") end
+assert(timing.ReadGCDRemaining()==nil)
+C_Spell=nil; assert(timing.ReadGCDRemaining()==nil)
 print("queue timing tests passed")

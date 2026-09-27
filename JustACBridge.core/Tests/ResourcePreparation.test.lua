@@ -153,7 +153,7 @@ assert(P.FixedCost(201,6) == 35)
 reset()
 local config={blocked={[101]=true},spenders={[201]=true},powerType=6,reserve=60,reason="PREP"}
 local other={blocked={[301]=true},spenders={[201]=true},powerType=6,reserve=20,reason="OTHER"}
-local ctx={resolve=function(id) return id==202 and 201 or id end,query=query}
+local ctx={mode="lossless",resolve=function(id) return id==202 and 201 or id end,query=query}
 local q={101,201,401,202,301,402}
 local function check(c, expected)
     local decision=P.Filter(q,ctx,c)
@@ -258,4 +258,71 @@ end
 nativeBroken=true
 assert(P.ReadySlotsAtLeast(6,2,function() return opaque end,slotQuery)==nil)
 C_CurveUtil.EvaluateColorValueFromBoolean=nil
+-- Inclusive sequence deadlines: equality must not wait another entire GCD.
+for _, hidden in ipairs({false,true}) do
+    reset(); hiddenCD,hiddenResult=hidden,hidden
+    for _, deadline in ipairs({0.75,1,1.2,1.5,2.5}) do
+        for _, delta in ipairs({-0.01,-0.000001,0,0.000001,0.01,20}) do
+            remaining=deadline+delta
+            assert(P.CooldownAtMost(101,deadline,query)==(remaining<=deadline))
+        end
+    end
+end
+for _, mode in ipairs({"throw","nil","secret"}) do
+    reset(); durationMode=mode; assert(P.CooldownAtMost(101,1,query)==nil)
+end
+for _, mode in ipairs({"throw","wrong-boundary","linear","secret"}) do
+    reset(); hiddenCD=true; curveMode=mode; assert(P.CooldownAtMost(101,1,query)==nil)
+end
+for _, mode in ipairs({"throw","nil","invalid"}) do
+    reset(); hiddenCD=true; resultMode=mode; assert(P.CooldownAtMost(101,1,query)==nil)
+end
+reset(); hiddenCD,hiddenResult=true,true
+C_CurveUtil.CreateCurve=function()
+    local c=originalCreate()
+    local add=c.AddPoint
+    c.AddPoint=function(self,x,y) add(self,tonumber(string.format("%.7g",x)),y) end
+    return c
+end
+remaining=0.99; assert(P.CooldownAtMost(101,1,query)==true)
+remaining=1; assert(P.CooldownAtMost(101,1,query)==nil) -- float cannot distinguish next-double
+remaining=1.01; assert(P.CooldownAtMost(101,1,query)~=true)
+C_CurveUtil.CreateCurve=originalCreate
+for _, hidden in ipairs({false,true}) do
+    reset(); hiddenCD,hiddenResult=hidden,hidden
+    local clock=280
+    GetTime=function() return clock end
+    local gcd=1.5/1.75
+    remaining=((235+gcd)+45)-clock
+    assert(remaining>gcd) -- cancellation/addition error, not a gameplay delay
+    assert(P.CooldownAtMost(101,gcd,query)==true)
+    remaining=gcd+0.000001
+    assert(P.CooldownAtMost(101,gcd,query)==false) -- one microsecond is NOT forgiven
+    clock=1000000; remaining=((clock-45+1.2)+45)-clock
+    assert(P.CooldownAtMost(101,1.2,query)==true)
+    remaining=1.200001; assert(P.CooldownAtMost(101,1.2,query)==false)
+    GetTime=nil
+end
+-- Explicit M5-only capability: M4/unknown contexts retain ordinary spender
+-- order and must not even READ costs/resources for an upcoming burst.
+do
+    local originalCost,originalPower=C_Spell.GetSpellPowerCost,UnitPower
+    C_Spell.GetSpellPowerCost=function() error("M4 must not query preparation cost") end
+    UnitPower=function() error("M4 must not query preparation resource") end
+    for _, mode in ipairs({"preserve","invalid",false,opaque}) do
+        ctx.mode=mode
+        assert(P.IsEnabled(ctx)==false)
+        local d=P.Filter({101,201,401,202},ctx,config)
+        assert(#d.queue==3 and d.queue[1]==201 and d.queue[2]==401 and d.queue[3]==202)
+        assert(d.reason:find("RESOURCE_PREPARATION_DISABLED_FOR_MODE",1,true))
+    end
+    ctx.mode=nil; assert(not P.IsEnabled(ctx))
+    assert(P.Filter({201},ctx,config).queue[1]==201)
+    assert(P.Filter({},ctx,config).queue[1]==nil)
+    C_Spell.GetSpellPowerCost,UnitPower=originalCost,originalPower
+    ctx.mode="lossless"; reset(); amount=42; costRows={{type=6,cost=35,minCost=35}}
+    assert(P.IsEnabled(ctx)==true and #P.Filter({201},ctx,config).queue==0)
+    ctx.mode="preserve"; assert(P.Filter({201},ctx,config).queue[1]==201)
+    ctx.mode="lossless"; assert(#P.Filter({201},ctx,config).queue==0) -- no mode latch
+end
 print("resource preparation framework tests passed")

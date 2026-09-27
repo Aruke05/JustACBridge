@@ -58,7 +58,7 @@ local function reset()
     runeCosts = {[49020]=2,[49184]=1,[196770]=1,[207230]=1,[43265]=1,[152280]=1,[45524]=1,[343294]=1}
     dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
     p = spec.versions[1]
-    context = {targetGUID = "target-A", now = now,
+    context = {mode = "lossless", targetGUID = "target-A", now = now,
         resolve = function(id) return overrides[id] or id end,
         canUse = function(id) return not unavailable[id] end,
         inspect = function(id) return {known = not unavailable[id], bound = true} end}
@@ -186,10 +186,12 @@ local function upcoming(seconds)
 end
 for _, seconds in ipairs({0.001,2,5,5.999999}) do
     upcoming(seconds)
-    d=expect(nil,"PREP_BREATH_WITHIN_6S:")
+    d=expect(nil,seconds<=0.75 and "POOL_BREATH:" or "PREP_BREATH_WITHIN_6S:")
     assert(#d.queue==3 and d.queue[1]==47568 and d.queue[2]==49020 and d.queue[3]==49184)
     assert(select({49143,51271,439843,279302}).queue[1]==nil)
-    rp=60; expect(nil,"PREP_BREATH_WITHIN_6S:") -- don't fire burst early
+    rp=60
+    if seconds<=0.75 then expect(439843) -- even hidden haste proves the minimum GCD
+    else expect(nil,"PREP_BREATH_WITHIN_6S:") end
     cooldowns={}; expect(439843,"EXPECT_MARK")
     success(439843); expect(51271); success(51271); expect(1249658)
     success(1249658); expect(279302)
@@ -433,4 +435,120 @@ markUpcoming(2,2); runes=6; runeCosts[49020]=1.5
 assert(select({49020,47568}).queue[1]==47568) -- fractional rune cost is not a supported proof
 markCost=1.5; runeCosts[49020]=2
 assert(select({49020,47568}).queue[1]==47568)
+-- Staggered cooldown regression: opener now, successors by their execution
+-- deadline. The same public sequence engine handles small and full groups.
+do
+    local originalHaste=GetHaste
+    local haste=50
+    GetHaste=function() return fault("haste",haste) end
+    local function timed(small,seconds)
+        if small then smallWindow() else reset(); rp=60 end
+        cooldowns[51271],remaining[51271]=true,seconds
+        if not small then
+            cooldowns[1249658],remaining[1249658]=true,seconds
+            cooldowns[279302],remaining[279302]=true,seconds
+        end
+    end
+    for _, small in ipairs({true,false}) do
+        for _, h in ipairs({0,25,50,100,200}) do
+            haste=h; local gcd=math.max(0.75,1.5/(1+h/100))
+            for _, delta in ipairs({-0.001,0,0.001}) do
+                timed(small,gcd+delta)
+                if delta<=0 then
+                    d=expect(439843)
+                    assert(d.reason:find("START_TIMING:",1,true))
+                    -- A failed key/GCD never advances; a success always does.
+                    p.observePlayerSpellcast("UNIT_SPELLCAST_FAILED",439843,context.targetGUID)
+                    expect(439843)
+                    success(439843); cooldowns[439843],remaining[439843]=true,45
+                    d=held(); assert(#d.queue==0) -- no filler GCD steals the handoff
+                    now=now+gcd
+                    cooldowns[51271]=false
+                    expect(51271); success(51271); cooldowns[51271]=true
+                    if not small then
+                        -- Successors may still be cooling on an early frame;
+                        -- this is WAIT, never 'unexpected CD' cancellation.
+                        d=held(); assert(#d.queue==0 and d.reason=="WAIT_BREATH_STEP")
+                        cooldowns[1249658]=false
+                        expect(1249658); success(1249658); cooldowns[1249658]=true; rp=0
+                        d=held(); assert(#d.queue==0 and d.reason=="WAIT_FURY")
+                        cooldowns[279302]=false; expect(279302); success(279302)
+                    end
+                else
+                    held() -- a genuinely late successor cannot start the opener
+                end
+            end
+        end
+    end
+    haste=50
+    -- No double-counting off-GCD buttons, even if just the LAST CD is late.
+    for _, id in ipairs({51271,1249658,279302}) do
+        reset(); rp=60; cooldowns[id],remaining[id]=true,1.01; held()
+        remaining[id]=1; expect(439843)
+    end
+    -- Mark itself must be affordable/ready now; no predicted rune/RP gains.
+    timed(false,1); cooldowns[439843],remaining[439843]=true,0.01; held()
+    timed(false,1); rp=59; held(); rp=60; expect(439843)
+    timed(false,1); runes=1; held(); runes=2; expect(439843)
+    timed(true,1); runes=1; held(); runes=2; rp=0; expect(439843)
+    for _, key in ipairs({"haste","remaining"}) do
+        for _, mode in ipairs({"missing","secret","throw"}) do
+            timed(false,1); faults[key]=mode; held()
+            remaining[51271],remaining[1249658],remaining[279302]=0.7,0.7,0.7
+            if key=="haste" then expect(439843) else held() end
+            cooldowns={}; expect(439843) -- unknown optimization cannot block all-ready
+        end
+    end
+    -- Current haste is never sticky. Loss of a proposal without success does
+    -- not count as commitment, and a shorter next GCD re-evaluates the budget.
+    timed(false,1.2); haste=0; expect(439843)
+    haste=100; held(); haste=0; expect(439843)
+    context.targetGUID="new-target"; cooldowns[439843]=true; held()
+    context.targetGUID="target-A"; held()
+    -- Five natural cycles, no reset between them: large/small/large/small/large.
+    -- Each later Pillar comes off CD one GCD AFTER Mark, with no accumulated
+    -- waiting drift. Arrival times are derived from the actual successes.
+    for _, h in ipairs({0,25,50,75,100}) do
+        reset(); haste=h; rp=60
+        local gcd=math.max(0.75,1.5/(1+h/100))
+        local ends={}; local start=100
+        local function tick(t)
+            now=t
+            for _,id in ipairs({439843,51271,1249658,279302}) do
+                remaining[id]=math.max(0,(ends[id] or 0)-now)
+                cooldowns[id]=remaining[id]>0
+            end
+        end
+        local function cast(id,duration)
+            expect(id); success(id); ends[id]=now+duration; tick(now)
+        end
+        for round=0,4 do
+            tick(start+45*round); rp=60; runes=6
+            local large=round%2==0
+            local opening=expect(439843)
+            assert(opening.reason:find(large and "EXPECT_MARK:" or "SMALL_EXPECT_MARK:",1,true)==1)
+            cast(439843,45)
+            -- Actual casting still requires the engine to end the cooldown;
+            -- previous floating-point endpoint additions may differ by one ULP.
+            tick(math.max(start+45*round+gcd,ends[51271] or 0,
+                large and (ends[1249658] or 0) or 0,large and (ends[279302] or 0) or 0))
+            cast(51271,45)
+            if large then cast(1249658,90); rp=0; cast(279302,90) end
+        end
+    end
+    GetHaste=originalHaste
+end
+do
+    reset(); rp=42; runes=1
+    local q={51271,49143,49020,439843,1249658,279302}
+    context.mode="preserve"
+    local decision=select(q)
+    assert(decision.spellID==nil and #decision.queue==2)
+    assert(decision.queue[1]==49143 and decision.queue[2]==49020)
+    assert(decision.reason=="BURST_PREPARATION_DISABLED_FOR_MODE")
+    context.mode=nil; assert(select(q).queue[1]==49143)
+    context.mode="lossless"; rp=60; runes=2; expect(439843)
+    context.mode="preserve"; assert(select(q).queue[1]==49143)
+    context.mode="lossless"; success(439843); expect(51271) -- M4 read cannot clear the M5 receipt
+end
 print("frost preparation tests passed")

@@ -117,4 +117,48 @@ local toc=file:read("*a"); file:close()
 local framework=assert(toc:find("Framework\\ActionSequence.lua",1,true))
 assert(framework < assert(toc:find("Policies\\DeathKnight\\Frost.lua",1,true)))
 assert(framework < assert(toc:find("\nJustACBridge.lua",1,true)))
+-- Admission deadlines count only configured GCDs, never buttons. No state is
+-- committed, no resources forecast, and fully ready sequences need no timing.
+do
+    local pair=S.New({withinSeconds=10,steps={
+        {spellID=1,name="A",gcdAfter=1},{spellID=2,name="B"}}})
+    local four=S.New({withinSeconds=10,steps={
+        {spellID=1,name="A",gcdAfter=1},{spellID=2,name="B",gcdAfter=0},
+        {spellID=3,name="C",gcdAfter=0},{spellID=4,name="D"}}})
+    local cds={0,1,1,1}
+    local function ready(id) return cds[id]==0 end
+    local function within(id,budget) return cds[id]<=budget end
+    assert(pair:CanStartCooldowns(ready,within,1)==true)
+    assert(four:CanStartCooldowns(ready,within,1)==true)
+    assert(four.step==nil and four.proposed==nil)
+    for i=2,4 do
+        cds[i]=1.000001; assert(four:CanStartCooldowns(ready,within,1)==false); cds[i]=1
+    end
+    cds[1]=0.01; assert(four:CanStartCooldowns(ready,within,1)==false); cds[1]=0
+    assert(four:CanStartCooldowns(ready,within,nil)==false)
+    for _, reader in ipairs({function() return nil end,function() return secret end,function() error("unknown") end}) do
+        assert(four:CanStartCooldowns(reader,within,1)==nil)
+        assert(four:CanStartCooldowns(ready,reader,1)==nil)
+    end
+    assert(four:CanStartCooldowns(function() return true end,nil,nil)==true)
+    cds={0,1.08,1.08,1.08}
+    assert(four:CanStartCooldowns(ready,within,1,0.08)==true)
+    assert(four:CanStartCooldowns(ready,within,1,secret)==false)
+    cds[1]=0.01; assert(four:CanStartCooldowns(ready,within,1,0.08)==false)
+    local multi=S.New({withinSeconds=10,steps={
+        {spellID=1,name="A",gcdAfter=1},{spellID=2,name="B",gcdAfter=1},
+        {spellID=3,name="C",gcdAfter=0},{spellID=4,name="D"}}})
+    cds={0,1,2,2}; assert(multi:CanStartCooldowns(ready,within,1)==true)
+    assert(four:CanStartCooldowns(ready,within,1)==false) -- no config leakage
+    assert(S.New({withinSeconds=10,steps={{spellID=1,name="Only"}}}):CanStartCooldowns(ready,nil,nil)==true)
+    assert(S.HastedGCD(1.5,0.75,0)==1.5)
+    assert(S.HastedGCD(1.5,0.75,50)==1)
+    assert(S.HastedGCD(1.5,0.75,100)==0.75)
+    assert(S.HastedGCD(1.5,0.75,200)==0.75)
+    for _, invalid in ipairs({secret,0/0,math.huge,-100}) do
+        assert(S.HastedGCD(1.5,0.75,invalid)==0.75)
+    end
+    assert(S.HastedGCD(1.5,0.75,nil)==0.75)
+    assert(S.HastedGCD(secret,0.75,0)==nil)
+end
 print("action sequence framework tests passed")
