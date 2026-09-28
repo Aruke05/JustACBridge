@@ -11,6 +11,7 @@ local classFile = "DEATHKNIGHT"
 local specIndex = 3
 local testQueue = { 43265, 47541 }
 local burstTriggers = {}
+local highlightSpellID
 local cooldownSpellID
 local cooldownEndsAt = 0
 local playerAuras = {
@@ -117,6 +118,7 @@ assert(JustACBridgeRecommendationSources.Register("test", {
     IsChanneled = function(id) return channeledSpells[id] == true end,
     IsConfirmedOutOfRange = function() return false end,
     GetDetectedBurstTriggers = function() return burstTriggers end,
+    GetHighlightCastSpell = function() return highlightSpellID end,
 }))
 
 dofile("JustACBridge.core/Policies/Registry.lua")
@@ -128,6 +130,8 @@ dofile("JustACBridge.core/Policies/DeathKnight.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Blood.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
+dofile("JustACBridge.core/Policies/Hunter.lua")
+dofile("JustACBridge.core/Policies/Hunter/BeastMastery.lua")
 dofile("JustACBridge.core/Trackers/GroundEffects.lua")
 dofile("JustACBridge.core/JustACBridge.lua")
 
@@ -197,6 +201,46 @@ testQueue = { 30451, 1449, 44425 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetLosslessRecommendation().spellID == 30451)
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 1449)
+
+-- Hunter preservation is independent of source burst detection. Both Wild
+-- Thrash IDs and Bestial Wrath stay available to M5, while stationary and
+-- moving M4 scans skip all of them and select the next ordinary attack.
+classFile, specIndex = "HUNTER", 1
+burstTriggers = {}
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+for _, testSpeed in ipairs({ 0, 7 }) do
+    speed = testSpeed
+    for _, spellID in ipairs({ 19574, 1264355, 1264359 }) do
+        testQueue = { spellID, 19574, 1264355, 1264359, 34026 }
+        JustACBridge.Refresh()
+        assert(JustACBridge.GetLosslessRecommendation().spellID == spellID)
+        assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 34026)
+    end
+end
+speed = 0
+
+-- A stale saved "reserve remove" override and highlight fallback must not
+-- reintroduce either held skill. An all-reserved queue leaves M4 idle.
+JustACBridgeDB.reserveOverrides.HUNTER_1 = {
+    exclude = { [19574] = true, [1264355] = true, [1264359] = true },
+}
+eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
+testQueue = { 19574, 1264355, 1264359, 34026 }
+JustACBridge.Refresh()
+assert(JustACBridge.GetLosslessRecommendation().spellID == 19574)
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 34026)
+testQueue = { 19574, 1264355, 1264359 }
+for _, spellID in ipairs({ 19574, 1264355, 1264359 }) do
+    highlightSpellID = spellID
+    JustACBridge.Refresh()
+    assert(JustACBridge.GetLosslessRecommendation().spellID == 19574)
+    assert(JustACBridge.GetPreserveBurstRecommendation() == nil)
+end
+highlightSpellID = 34026
+JustACBridge.Refresh()
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 34026)
+highlightSpellID = nil
+JustACBridgeDB.reserveOverrides.HUNTER_1 = nil
 
 -- Death Grip is encounter utility rather than a Frost damage action. A stale
 -- queue/gap-closer injection must be skipped by both exported actions.

@@ -15,7 +15,8 @@ WoW 插件从可替换的推荐源读取队列并生成“无损版”和“保�
   和引导，选择队列中首个安全替代
 - M4 保留爆发版面向拉怪跑路和普通机制持续按住：跳过专精大爆发、药水、主动饰品
   及不可移动读条/引导/蓄力，无论当前一帧是否静止都只选择首个可移动安全动作
-- 内置法师/死亡骑士专精规则，并合并 JustAC 当前 Burst Trigger 配置与新版法术 ID
+- 内置法师/死亡骑士/兽王猎人专精规则，并合并 JustAC 当前 Burst Trigger 配置与新版法术 ID
+- 兽王猎人保留爆发版始终跳过狂野怒火与狂野鞭挞，包括狂野鞭挞的两种法术形态
 - 冰霜 DK 不复刻攻略中的进阶 APL，只从两路伤害循环明确排除非伤害工具死亡之握
 - 奥术宝珠依赖人物面向且无法在副本内可靠自动瞄准，因此仅允许 M5 手动瞄准释放，
   M4 持续按住模式始终跳过
@@ -65,6 +66,9 @@ JustACBridge.core/       WoW 插件与像素协议文档
       Blood.lua
       Frost.lua
       Unholy.lua
+    Hunter.lua
+    Hunter/
+      BeastMastery.lua
   PIXEL_PROTOCOL.md
 
 JustACBridge.M5/         Windows WinForms 客户端（.NET 10）

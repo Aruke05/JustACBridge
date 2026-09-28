@@ -14,6 +14,8 @@ Policies/DeathKnight.lua          # 死亡骑士三系公共规则
 Policies/DeathKnight/Blood.lua    # 鲜血专精全部规则
 Policies/DeathKnight/Frost.lua    # 冰霜专精全部规则
 Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
+Policies/Hunter.lua              # 猎人公共注册
+Policies/Hunter/BeastMastery.lua  # 野兽控制专精保留规则
 ```
 
 专精文件通过 `RegisterSpec("CLASSFILE", specIndex, definition)` 原子登记完整定义。
@@ -29,6 +31,10 @@ Policies/DeathKnight/Unholy.lua   # 邪恶专精全部规则
 
 没有登记策略的职业仍可工作：Bridge 会使用 JustAC 当前专精检测到的
 `Burst Trigger`，只是没有 Bridge 内置兼容表。
+
+兽王猎人通过 `reserve` 与 `reserveExclusions` 同时登记狂野怒火 `19574`、
+狂野鞭挞 `1264355` / `1264359`。保留爆发版始终跳过这些技能；推荐源未报告爆发
+触发器或已有 `/jacb reserve remove` 覆盖时也不会放行。无损版继续按原队列推荐。
 
 ## 游戏版本变动
 

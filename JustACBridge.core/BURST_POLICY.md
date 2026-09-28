@@ -1,4 +1,4 @@
-# DK / 法师双动作策略
+# 职业双动作策略
 
 ## 目标
 
@@ -15,12 +15,20 @@
 - 公共选择、版本匹配和玩家覆盖逻辑：`Policies/Registry.lua`
 - 法师法术表：`Policies/Mage.lua`
 - DK 法术表：`Policies/DeathKnight.lua`
+- 兽王猎人法术表：`Policies/Hunter/BeastMastery.lua`
 - 推荐源注册与 JustAC 适配：`Sources/Registry.lua`、`Sources/JustAC.lua`
 - 场地技能生命周期：`Trackers/GroundEffects.lua`
 - `JustACBridge.lua` 只消费已解析策略，不包含职业法术 ID。
 
 新增职业或为新 Interface 版本增加差异时，仅增加/修改对应策略文件及 TOC
 加载项；现有 SavedVariables 仍按 `CLASSFILE_<专精序号>` 保存，不需要迁移。
+
+## 兽王猎人
+
+保留爆发版始终跳过狂野怒火 `19574` 和狂野鞭挞 `1264355` / `1264359`，
+从原队列选择下一项可执行的普通攻击。两者同时登记到 `reserve` 与
+`reserveExclusions`，避免推荐源未识别爆发或已有玩家取消保留覆盖时被重新放行；
+队列及高亮兜底中没有其他安全动作时，保留版不发送技能。无损版继续执行原推荐。
 
 ## 法师
 

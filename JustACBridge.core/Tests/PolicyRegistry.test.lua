@@ -14,6 +14,8 @@ dofile("JustACBridge.core/Policies/DeathKnight.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Blood.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Frost.lua")
 dofile("JustACBridge.core/Policies/DeathKnight/Unholy.lua")
+dofile("JustACBridge.core/Policies/Hunter.lua")
+dofile("JustACBridge.core/Policies/Hunter/BeastMastery.lua")
 
 local registry = JustACBridgePolicyRegistry
 assert(registry.schemaVersion == 10)
@@ -86,6 +88,16 @@ assert(unholy.groundEffects[1].duration == 10)
 assert(#unholy.fallbackActions == 2)
 assert(unholy.fallbackActions[1].spellID == 207317 and unholy.fallbackActions[1].minEnemies == 5)
 assert(unholy.fallbackActions[2].spellID == 47541)
+
+local beastMastery = assert(registry.Resolve("HUNTER", 1, 120100))
+assert(beastMastery.storageKey == "HUNTER_1" and beastMastery.id == "beast-mastery")
+assert(#beastMastery.reserve == 3 and #beastMastery.reserveExclusions == 3)
+for index, spellID in ipairs({ 19574, 1264355, 1264359 }) do
+    assert(beastMastery.reserve[index] == spellID)
+    assert(beastMastery.reserveExclusions[index] == spellID)
+end
+assert(registry.Resolve("HUNTER", 2, 120100) == nil)
+assert(registry.Resolve("HUNTER", 3, 120100) == nil)
 
 -- An unregistered class falls back to JustAC-only behavior in the bridge core.
 assert(registry.Resolve("WARRIOR", 1, 120007) == nil)
