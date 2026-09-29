@@ -951,6 +951,50 @@ do
             "frost expected " .. tostring(id) .. " got " .. tostring(actual and actual.spellID))
         return actual
     end
+    -- Mark's GCD must not delay the next ready off-GCD action. Replay both
+    -- groups without advancing time, including the actual pixel permission
+    -- consumed by M5 rather than only the sequence's timing budget.
+    do
+        local function checkClosedGCD(id, offGCD)
+            local actual = selected(id)
+            assert(actual and actual.offGCD == offGCD,
+                "frost GCD permission for " .. tostring(id))
+            assert(JustACBridgeExport.queueReady == false)
+            assert(JustACBridgeExport.gcdRemainingMs == 1500)
+            local cells, flags = namedFrames.JustACBridgePixelFrame.textures, 0
+            for bit = 1, 8 do flags = flags * 2 + cells[504 + bit].bit end
+            assert(flags % 2 == 0, "global GCD must remain closed")
+            assert(math.floor(flags / 8) % 2 == (offGCD and 1 or 0))
+            assert(math.floor(flags / 16) % 2 == 0, "M4 filler cannot bypass GCD")
+            assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49143)
+        end
+        for _, small in ipairs({true, false}) do
+            reset(); rp = small and 0 or 60
+            if small then
+                cds[1249658], cds[279302] = true, true
+                remaining[1249658], remaining[279302] = 35, 35
+            end
+            cooldownSpellID, cooldownEndsAt = 61304, now + 1.5
+            checkClosedGCD(439843, false)
+            event("UNIT_SPELLCAST_FAILED", 439843); checkClosedGCD(439843, false)
+            success(439843); cds[439843] = true
+            unusableSpells[51271] = true; selected(nil)
+            unusableSpells[51271] = nil
+            unknownCooldownSpells[51271] = true; selected(nil)
+            unknownCooldownSpells[51271] = nil
+            checkClosedGCD(51271, true)
+            event("UNIT_SPELLCAST_FAILED", 51271); checkClosedGCD(51271, true)
+            success(51271); cds[51271] = true
+            if small then checkClosedGCD(49143, false)
+            else
+                rp = 59; checkClosedGCD(47568, false)
+                rp = 60; checkClosedGCD(1249658, true)
+                event("UNIT_SPELLCAST_FAILED", 1249658); checkClosedGCD(1249658, true)
+                success(1249658); cds[1249658] = true
+                checkClosedGCD(279302, false) -- first Fury really uses the GCD
+            end
+        end
+    end
     reset()
     assert(selected(47568).policyBurstGateReason:find("POOL_BREATH:rp-below-60",1,true)==1)
     assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 49143)

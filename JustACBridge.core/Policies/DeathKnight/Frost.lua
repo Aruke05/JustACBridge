@@ -506,7 +506,11 @@ Registry.RegisterSpec("DEATHKNIGHT", 2, {
             id = "midnight-12.1",
             minInterface = 120100,
             maxInterface = 120199,
-            revision = 28,
+            revision = 29,
+            -- gcdAfter budgets successor cooldowns; it does not grant input
+            -- permission. These ready actions may be sent during Mark's GCD.
+            -- Mark and the first Fury still use their actual global cooldown.
+            offGCD = {51271, 152279, 1249658},
             selectionTargetScope = "target-epoch",
             selectLossless = selectGroupedBurst,
             losslessSelectionFallbackBlock = {439843, 51271, 152279, 1249658, 279302},

@@ -146,18 +146,23 @@ assert(fire.maintenanceBuffs[1].reserveCharges == 1)
 assert(fire.moveCastInstantOnly[1] == 11366 and fire.moveCastInstantOnly[2] == 2120)
 
 local blood = assert(registry.Resolve("DEATHKNIGHT", 1, 120007))
+assert(#blood.offGCD == 0)
 assert(#blood.reserve == 2 and blood.reserve[2] == 194844)
 assert(#blood.fallbackActions == 2)
 assert(blood.fallbackActions[1].spellID == 50842)
 assert(#blood.rotationExclusions == 1 and blood.rotationExclusions[1] == 49576)
 
 local frostDK = assert(registry.Resolve("DEATHKNIGHT", 2, 120007))
+assert(#frostDK.offGCD == 0)
 assert(#frostDK.fallbackActions == 2)
 assert(frostDK.fallbackActions[1].spellID == 49184 and frostDK.fallbackActions[1].requireProc)
 assert(#frostDK.rotationExclusions == 1 and frostDK.rotationExclusions[1] == 49576)
 
 local frostDK121 = assert(registry.Resolve("DEATHKNIGHT", 2, 120100))
-assert(frostDK121.ruleset == "midnight-12.1" and frostDK121.revision == 28)
+assert(frostDK121.ruleset == "midnight-12.1" and frostDK121.revision == 29)
+assert(#frostDK121.offGCD == 3 and frostDK121.offGCD[1] == 51271
+    and frostDK121.offGCD[2] == 152279 and frostDK121.offGCD[3] == 1249658)
+assert(#registry.Resolve("DEATHKNIGHT", 1, 120100).offGCD == 0)
 assert(type(frostDK121.selectLossless) == "function")
 assert(frostDK121.selectionTargetScope == "target-epoch")
 assert(registry.Resolve("DEATHKNIGHT", 2, 110200).selectionTargetScope == nil)
@@ -224,6 +229,7 @@ assert(unholy.fallbackActions[1].spellID == 207317 and unholy.fallbackActions[1]
 assert(unholy.fallbackActions[2].spellID == 47541)
 
 local unholy121 = assert(registry.Resolve("DEATHKNIGHT", 3, 120100))
+assert(#unholy121.offGCD == 0)
 assert(unholy121.ruleset == "midnight-12.1" and unholy121.revision == 6)
 assert(unholy121.useDetectedBurstTriggers == false)
 assert(unholy121.preserveSourceQueueOnly == true)
