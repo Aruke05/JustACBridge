@@ -38,8 +38,8 @@ function Source.GetQueue()
 end
 
 function Source.GetSpellHotkey(spellID)
-    return ActionBarScanner and ActionBarScanner.GetSpellHotkey
-        and ActionBarScanner.GetSpellHotkey(spellID) or ""
+    if not ActionBarScanner or type(ActionBarScanner.GetSpellHotkey) ~= "function" then return nil end
+    return ActionBarScanner.GetSpellHotkey(spellID)
 end
 
 function Source.GetItemHotkey(itemID)
@@ -52,9 +52,103 @@ function Source.GetDisplaySpellID(spellID)
         and BlizzardAPI.GetDisplaySpellID(spellID) or spellID
 end
 
+-- The Assisted Combat queue may return the base action-bar spell while a
+-- talent replacement is active.  Dynamic action-bar transforms (for example
+-- Arcane Blast -> Prismatic Bolt) are authoritative first; when none exists,
+-- fall back to JustAC's separate talent-override resolver (for example
+-- Arcane Explosion -> Arcane Pulse).
+function Source.GetEffectiveSpellID(spellID)
+    local displayID = Source.GetDisplaySpellID(spellID)
+    if displayID and displayID ~= 0 and displayID ~= spellID then
+        return displayID
+    end
+    return BlizzardAPI and BlizzardAPI.ResolveSpellID
+        and BlizzardAPI.ResolveSpellID(spellID) or spellID
+end
+
 function Source.IsSpellUsable(spellID)
-    return not BlizzardAPI or not BlizzardAPI.IsSpellUsable
-        or BlizzardAPI.IsSpellUsable(spellID)
+    if not BlizzardAPI or not BlizzardAPI.IsSpellUsable then return nil end
+    local ok, usable = pcall(BlizzardAPI.IsSpellUsable, spellID)
+    if ok and type(usable) == "boolean"
+        and not (issecretvalue and issecretvalue(usable)) then return usable end
+    return nil
+end
+
+-- Input is ONLY a framework-validated binary (0/100 step or 0/1 boolean), never raw
+-- power or time. IsSecretZero's integer conversion cannot blur this boundary.
+function Source.ReadBinaryPredicate(value)
+    if not (issecretvalue and issecretvalue(value)) then
+        if value == 100 then return true end
+        if value == 0 then return false end
+        return nil
+    end
+    if not (BlizzardAPI and type(BlizzardAPI.IsSecretZero) == "function") then return nil end
+    local ok, zero = pcall(BlizzardAPI.IsSecretZero, value)
+    if ok and not (issecretvalue and issecretvalue(zero)) and type(zero) == "boolean" then
+        return not zero
+    end
+end
+
+-- Positive, current affordability evidence; never the upstream fail-open or
+-- event-cache result. Ownership and a real hotkey remain caller requirements.
+function Source.IsSpellUsableStrict(spellID)
+    local function plain(value, kind)
+        return not (issecretvalue and issecretvalue(value)) and type(value) == kind
+    end
+    if C_Spell and type(C_Spell.IsSpellUsable) == "function" then
+        local ok, usable, noPower = pcall(C_Spell.IsSpellUsable, spellID)
+        if ok and plain(usable, "boolean") and plain(noPower, "boolean") then
+            return usable, noPower
+        end
+    end
+    if not (ActionBarScanner and type(ActionBarScanner.GetSlotForSpell) == "function"
+        and type(GetActionInfo) == "function" and C_ActionBar
+        and type(C_ActionBar.IsUsableAction) == "function") then return nil end
+    local slotOK, slot = pcall(ActionBarScanner.GetSlotForSpell, spellID)
+    if not slotOK or not plain(slot, "number") or slot <= 0 or slot % 1 ~= 0 then return nil end
+    local infoOK, actionType, actionID = pcall(GetActionInfo, slot)
+    -- No macro, assisted-combat placeholder or stale scanner slot may prove
+    -- affordability for a different action. Only the exact physical spell.
+    if not infoOK or not plain(actionType, "string") or actionType ~= "spell"
+        or not plain(actionID, "number") or actionID ~= spellID then return nil end
+    local usableOK, usable, noPower = pcall(C_ActionBar.IsUsableAction, slot)
+    if usableOK and plain(usable, "boolean") and plain(noPower, "boolean") then
+        return usable, noPower
+    end
+end
+
+-- Preserve the upstream queue API's semantics for existing consumers. Some
+-- JustAC versions fail open (false) on missing DurationObjects; this wrapper
+-- cannot turn that boolean back into evidence. New Frost injections therefore
+-- require an additional strict, uncached policy predicate.
+function Source.IsSpellOnCooldown(spellID)
+    if not BlizzardAPI or not BlizzardAPI.IsSpellOnCooldown then
+        return nil
+    end
+    local ok, onCooldown = pcall(BlizzardAPI.IsSpellOnCooldown, spellID)
+    if ok and type(onCooldown) == "boolean"
+        and not (issecretvalue and issecretvalue(onCooldown)) then return onCooldown end
+    return nil
+end
+
+-- Secret-safe threshold query. The numeric remaining cooldown is intentionally
+-- never read; the engine DurationObject is compared against a constant through
+-- JustAC's curve helper and yields a plain boolean or nil. Its rounded/ramped
+-- threshold must not be mistaken for an exact numeric resource/CD observation.
+function Source.IsSpellCooldownRemainingAbove(spellID, seconds)
+    if not (spellID and type(seconds) == "number" and seconds > 0
+            and C_Spell and C_Spell.GetSpellCooldownDuration
+            and BlizzardAPI and BlizzardAPI.IsDurationBelowSeconds) then
+        return nil
+    end
+    local okDuration, duration = pcall(C_Spell.GetSpellCooldownDuration, spellID, true)
+    if not okDuration or not duration then return nil end
+    local okBelow, below = pcall(BlizzardAPI.IsDurationBelowSeconds, duration, seconds)
+    if not okBelow or type(below) ~= "boolean"
+        or (issecretvalue and issecretvalue(below)) then
+        return nil
+    end
+    return not below
 end
 
 function Source.IsSpellProcced(spellID)
@@ -70,6 +164,15 @@ end
 function Source.IsConfirmedOutOfRange(spellID)
     return SpellQueue and SpellQueue.IsConfirmedOutOfRange
         and SpellQueue.IsConfirmedOutOfRange(spellID) or false
+end
+
+-- Stage G can deliberately place a called-for burst trigger at queue position
+-- 2 while preserving Blizzard Assisted Combat's authoritative pick at position
+-- 1. Expose that exact, source-owned signal so M5 can execute the cue instead
+-- of treating it as an ordinary low-priority tail entry.
+function Source.IsBurstCue(spellID)
+    return SpellQueue and SpellQueue.IsBurstCue
+        and SpellQueue.IsBurstCue(spellID) == true or false
 end
 
 function Source.IsTargetWithin(yards)

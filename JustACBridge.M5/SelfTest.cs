@@ -42,6 +42,17 @@ internal static unsafe class SelfTest
             Console.Error.WriteLine("protocol v3 queue-ready self-test failed");
             return 14;
         }
+        byte[] version3OffGcd = (byte[])version3.Clone();
+        version3OffGcd[63] = 0x08; // M5 off-GCD only; ordinary queue gate closed
+        RewriteChecksums(version3OffGcd);
+        if (!PixelProtocol.TryDecode(version3OffGcd, out var v3OffGcd) ||
+            v3OffGcd is not { QueueReady: false } ||
+            !v3OffGcd.Lossless.OffGcd || v3OffGcd.PreserveBurst.OffGcd ||
+            !v3OffGcd.LosslessCanPulse || v3OffGcd.PreserveCanPulse)
+        {
+            Console.Error.WriteLine("protocol v3 off-GCD self-test failed");
+            return 23;
+        }
         byte[] version4 = (byte[])version3.Clone();
         version4[3] = 4;
         version4[63] = 0x06; // moving + movement filter, queue gate closed
@@ -158,6 +169,58 @@ internal static unsafe class SelfTest
         {
             Console.Error.WriteLine("trigger display self-test failed");
             return 9;
+        }
+        var stableDelay = new StableRecommendationDelay();
+        if (stableDelay.Observe(1449, 100, 1000) ||
+            stableDelay.Observe(1449, 100, 1099) ||
+            !stableDelay.Observe(1449, 100, 1100) ||
+            !stableDelay.Observe(30451, 0, 1101) ||
+            stableDelay.Observe(1449, 100, 1102) ||
+            !stableDelay.Observe(1449, 100, 1202))
+        {
+            Console.Error.WriteLine("stable recommendation delay self-test failed");
+            return 16;
+        }
+        var repeatSendGate = new RepeatSendGate(250);
+        if (!repeatSendGate.TryCommit("4", 1000) ||
+            repeatSendGate.TryCommit("4", 1170) ||
+            repeatSendGate.RemainingMs("4", 1170) != 80 ||
+            !repeatSendGate.TryCommit("5", 1170) ||
+            !repeatSendGate.TryCommit("4", 1250))
+        {
+            Console.Error.WriteLine("repeat send acknowledgement gate self-test failed");
+            return 17;
+        }
+        var protectedLatch = new ProtectedChannelSendLatch(2000);
+        protectedLatch.Arm(1000);
+        if (!protectedLatch.Blocks(1001) || protectedLatch.State != "pendingstart")
+        {
+            Console.Error.WriteLine("protected channel pending latch self-test failed");
+            return 18;
+        }
+        protectedLatch.ObserveBusy(false); // stale idle packet must not release it
+        if (!protectedLatch.Blocks(1100))
+        {
+            Console.Error.WriteLine("protected channel stale-idle latch self-test failed");
+            return 19;
+        }
+        protectedLatch.ObserveBusy(true);
+        if (!protectedLatch.Blocks(5000) || protectedLatch.State != "confirmedchannel")
+        {
+            Console.Error.WriteLine("protected channel confirmed latch self-test failed");
+            return 20;
+        }
+        protectedLatch.ObserveBusy(false);
+        if (protectedLatch.Blocks(5001) || protectedLatch.State != "idle")
+        {
+            Console.Error.WriteLine("protected channel release latch self-test failed");
+            return 21;
+        }
+        protectedLatch.Arm(6000);
+        if (protectedLatch.Blocks(8000))
+        {
+            Console.Error.WriteLine("protected channel timeout latch self-test failed");
+            return 22;
         }
         Console.WriteLine("self-test passed");
         return 0;

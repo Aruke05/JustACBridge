@@ -1,4 +1,4 @@
-﻿local ADDON_NAME = ...
+local ADDON_NAME = ...
 
 -- WoW addons cannot open sockets or write arbitrary files.  This addon therefore
 -- exposes live data to other addons through _G.JustACBridge, and exposes data to
@@ -16,6 +16,8 @@ local PIXEL_PROTOCOL_VERSION = 3
 -- Do not fill WoW's spell queue for the whole SpellQueueWindow.  Waiting until
 -- the end of the GCD leaves late procs/target changes time to change JustAC's
 -- recommendation while retaining enough margin for the screen-capture bridge.
+-- This is a ceiling; a positively observed smaller game queue window wins.
+-- Spell readiness look-ahead below remains independent of the input gate.
 local QUEUE_COMMIT_WINDOW_MS = 120
 local PIXEL_BYTE_COUNT = 72
 local PIXEL_BIT_COUNT = PIXEL_BYTE_COUNT * 8
@@ -32,8 +34,10 @@ JustACBridgeExport = JustACBridgeExport or {}
 local PolicyRegistry = _G.JustACBridgePolicyRegistry
 local SourceRegistry = _G.JustACBridgeRecommendationSources
 local GroundEffectTracker = _G.JustACBridgeGroundEffectTracker
+local CooldownReadyTracker = _G.JustACBridgeCooldownReadyTracker
 local activeSource
 local supportSource
+local activeSourceMode
 local bridgeFrame
 local rows = {}
 local exportBox
@@ -53,20 +57,35 @@ local playerIsChanneling = false
 local playerChannelSpellID
 local playerIsCasting = false
 local playerIsMoving = false
+local movementStateInitialized = false
 local lastMovementStartedAt = -math.huge
+local lastMovementStoppedAt = -math.huge
 local movementStopPendingUntil = 0
+local movementProbeStopPending = false
 local movementFlapCount = 0
 local movementLastDebugAt = -math.huge
+local successfulCastResumeTriggerAt = {}
+local successfulCastSequenceSerial = 0
+local successfulCastSequenceStep = {}
+local successfulCastSequenceAt = {}
+local successfulCastSequenceTargetGUID = {}
+local pendingCastFollowups = {}
+local pendingCastFollowupTargets = {}
 local MOVEMENT_FLAP_WINDOW_SECONDS = 0.12
 local MOVEMENT_STOP_DEBOUNCE_SECONDS = 0.25
 local queueReady = true
 local gcdRemainingMs = 0
+local queueTiming = { windowMs = QUEUE_COMMIT_WINDOW_MS, reason = "not-sampled" }
 local reservedSpellIDs = {}
 local reserveExcludedSpellIDs = {}
+local reserveEffectiveExcludedSpellIDs = {}
 local rotationExcludedSpellIDs = {}
+local rotationEffectiveExcludedSpellIDs = {}
 local currentSpecKey
 local currentPolicy
 local getSpellData
+local getEffectiveSpellID
+local isMovementFallbackProofSatisfied
 local issecretvalue = issecretvalue
 local statusBaseText = ""
 local lastStatusText
@@ -75,12 +94,24 @@ local debugLines = {}
 local debugLastSnapshot
 local debugLastSnapshotAt = 0
 local debugStartedAt = GetTime()
+local debugDirty = false
 -- Debug snapshots are intentionally verbose.  Keep enough history for the
 -- user to finish a pull and copy the log without losing the incident that
 -- happened a few minutes earlier.
-local DEBUG_MAX_LINES = 3600
+-- A three-minute combat trace can exceed 3,600 lines when queue snapshots and
+-- cast events are both active. Keep enough headroom for the run plus the time
+-- needed to stop and flush it without discarding the opener.
+local DEBUG_MAX_LINES = 12000
+local DEBUG_RETAIN_LINES = 9000
 local policyFallbackTraces = {}
+local policyPriorityCueTraces = {}
+local policyPreparationReason
+local policyPreparationTarget
+local selectionTargetLease = JustACBridgeTargetLease.New()
+local debugSafe, appendDebug
+local movementFallbackProofTraces = {}
 local failedMovementRecommendations = {}
+local cancelledMovementProbeForRefresh = {}
 local debugFailureLastLog = {}
 local FAILURE_WINDOW_SECONDS = 0.30
 local FAILURE_DUPLICATE_WINDOW_SECONDS = 0.08
@@ -135,25 +166,48 @@ local function sourceCall(methodName, ...)
     return false, nil, "unsupported capability: " .. tostring(methodName)
 end
 
+local AUTOMATIC_SOURCE_BY_SPEC = {
+    MAGE_1 = "arcane121",
+    MAGE_2 = "fire121",
+    MAGE_3 = "frostmage121",
+    HUNTER_1 = "bmhunter121",
+    HUNTER_2 = "mmhunter121",
+    HUNTER_3 = "survivalhunter121",
+}
+
+local function automaticRecommendationSourceID()
+    local _, classFile = UnitClass("player")
+    local spec = GetSpecialization and GetSpecialization()
+    local interface = GetBuildInfo and select(4, GetBuildInfo())
+    if type(interface) ~= "number" or interface < 120100 or interface > 120199 then
+        return "justac"
+    end
+    return AUTOMATIC_SOURCE_BY_SPEC[classFile .. "_" .. tostring(spec)] or "justac"
+end
+
 local function activateRecommendationSource(preferredID, strict)
     if not SourceRegistry or not SourceRegistry.Select then
-        activeSource, supportSource = nil, nil
+        activeSource, supportSource, activeSourceMode = nil, nil, nil
         return false, "recommendation-source registry unavailable"
     end
 
+    local requestedID = preferredID or "auto"
+    local resolvedID = requestedID == "auto"
+        and automaticRecommendationSourceID() or requestedID
     local source, reason
-    if strict and preferredID and SourceRegistry.Get then
-        source, reason = SourceRegistry.Get(preferredID)
+    if strict and requestedID ~= "auto" and SourceRegistry.Get then
+        source, reason = SourceRegistry.Get(resolvedID)
     else
-        source, reason = SourceRegistry.Select(preferredID)
+        source, reason = SourceRegistry.Select(resolvedID)
     end
     if not source then
-        activeSource, supportSource = nil, nil
+        activeSource, supportSource, activeSourceMode = nil, nil, nil
         return false, reason
     end
     activeSource = source
+    activeSourceMode = requestedID
     supportSource = SourceRegistry.Get and SourceRegistry.Get("justac") or nil
-    JustACBridgeDB.recommendationSource = source.id
+    JustACBridgeDB.recommendationSource = requestedID
     return true
 end
 
@@ -182,9 +236,9 @@ local function addReservedSpell(spellID)
     end
 
     reservedSpellIDs[spellID] = true
-    local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-    if ok and type(displayID) == "number" and displayID > 0 then
-        reservedSpellIDs[displayID] = true
+    local effectiveID = getEffectiveSpellID(spellID)
+    if type(effectiveID) == "number" and effectiveID > 0 then
+        reservedSpellIDs[effectiveID] = true
     end
 end
 
@@ -194,9 +248,9 @@ local function removeReservedSpell(spellID)
         return
     end
     reservedSpellIDs[spellID] = nil
-    local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-    if ok and type(displayID) == "number" and displayID > 0 then
-        reservedSpellIDs[displayID] = nil
+    local effectiveID = getEffectiveSpellID(spellID)
+    if type(effectiveID) == "number" and effectiveID > 0 then
+        reservedSpellIDs[effectiveID] = nil
     end
 end
 
@@ -206,10 +260,20 @@ local function refreshReserveExclusions(spellIDs)
         spellID = tonumber(spellID)
         if spellID and spellID > 0 then
             reserveExcludedSpellIDs[spellID] = true
-            local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-            if ok and type(displayID) == "number" and displayID > 0 then
-                reserveExcludedSpellIDs[displayID] = true
+            local effectiveID = getEffectiveSpellID(spellID)
+            if type(effectiveID) == "number" and effectiveID > 0 then
+                reserveExcludedSpellIDs[effectiveID] = true
             end
+        end
+    end
+end
+
+local function refreshReserveEffectiveExclusions(spellIDs)
+    reserveEffectiveExcludedSpellIDs = {}
+    for _, spellID in ipairs(spellIDs or {}) do
+        spellID = tonumber(spellID)
+        if spellID and spellID > 0 then
+            reserveEffectiveExcludedSpellIDs[spellID] = true
         end
     end
 end
@@ -220,10 +284,20 @@ local function refreshRotationExclusions(spellIDs)
         spellID = tonumber(spellID)
         if spellID and spellID > 0 then
             rotationExcludedSpellIDs[spellID] = true
-            local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-            if ok and type(displayID) == "number" and displayID > 0 then
-                rotationExcludedSpellIDs[displayID] = true
+            local effectiveID = getEffectiveSpellID(spellID)
+            if type(effectiveID) == "number" and effectiveID > 0 then
+                rotationExcludedSpellIDs[effectiveID] = true
             end
+        end
+    end
+end
+
+local function refreshRotationEffectiveExclusions(spellIDs)
+    rotationEffectiveExcludedSpellIDs = {}
+    for _, spellID in ipairs(spellIDs or {}) do
+        spellID = tonumber(spellID)
+        if spellID and spellID > 0 then
+            rotationEffectiveExcludedSpellIDs[spellID] = true
         end
     end
 end
@@ -234,13 +308,22 @@ local function refreshReservedSpells()
     currentSpecKey = storageKey
     currentPolicy = policy
     refreshReserveExclusions(currentPolicy and currentPolicy.reserveExclusions)
+    refreshReserveEffectiveExclusions(currentPolicy and currentPolicy.reserveEffectiveExclusions)
     refreshRotationExclusions(currentPolicy and currentPolicy.rotationExclusions)
+    refreshRotationEffectiveExclusions(currentPolicy and currentPolicy.rotationEffectiveExclusions)
     if GroundEffectTracker and GroundEffectTracker.Configure then
         GroundEffectTracker.Configure(
             currentPolicy and currentPolicy.groundEffects or {},
             function(spellID)
-                local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-                return ok and displayID or spellID
+                return getEffectiveSpellID(spellID)
+            end
+        )
+    end
+    if CooldownReadyTracker and CooldownReadyTracker.Configure then
+        CooldownReadyTracker.Configure(
+            currentPolicy and currentPolicy.groundEffects or {},
+            function(spellID)
+                return getEffectiveSpellID(spellID)
             end
         )
     end
@@ -252,13 +335,15 @@ local function refreshReservedSpells()
         addReservedSpell(spellID)
     end
 
-    -- Follow JustAC's current per-spec trigger configuration for every class.
-    -- Registered policies add compatibility defaults; unregistered/new classes
+    -- Follow JustAC's current per-spec trigger configuration unless a versioned
+    -- policy owns an exact preserve set (12.1 Arcane). Unregistered/new classes
     -- still work in JustAC-only mode without changing this bridge core.
-    local ok, triggers = sourceCall("GetDetectedBurstTriggers")
-    if ok and type(triggers) == "table" then
-        for _, trigger in ipairs(triggers) do
-            addReservedSpell(type(trigger) == "table" and trigger.spellID or trigger)
+    if not currentPolicy or currentPolicy.useDetectedBurstTriggers ~= false then
+        local ok, triggers = sourceCall("GetDetectedBurstTriggers")
+        if ok and type(triggers) == "table" then
+            for _, trigger in ipairs(triggers) do
+                addReservedSpell(type(trigger) == "table" and trigger.spellID or trigger)
+            end
         end
     end
 
@@ -293,36 +378,64 @@ local function isReservedQueueValue(queueValue)
     -- Items in an offensive queue are normally potions/on-use trinkets. Keep
     -- all of them for the player's chosen burst window in reserve mode.
     return queueValue < 0 or reservedSpellIDs[queueValue] == true
+        or reservedSpellIDs[getEffectiveSpellID(queueValue)] == true
 end
 
 local function isReserveExcludedQueueValue(queueValue)
-    return type(queueValue) == "number"
-        and queueValue > 0
-        and reserveExcludedSpellIDs[queueValue] == true
+    if type(queueValue) ~= "number" or queueValue <= 0 then
+        return false
+    end
+    return reserveExcludedSpellIDs[queueValue] == true
+        or reserveEffectiveExcludedSpellIDs[getEffectiveSpellID(queueValue)] == true
 end
 
 local function isRotationExcludedQueueValue(queueValue)
-    return type(queueValue) == "number"
-        and queueValue > 0
-        and rotationExcludedSpellIDs[queueValue] == true
+    if type(queueValue) ~= "number" or queueValue <= 0 then
+        return false
+    end
+    return rotationExcludedSpellIDs[queueValue] == true
+        or rotationEffectiveExcludedSpellIDs[getEffectiveSpellID(queueValue)] == true
 end
 
 local function isSecret(value)
     return issecretvalue and issecretvalue(value) or false
 end
 
-local function getDisplaySpellID(spellID)
+local function getCurrentHostileTargetGUID()
+    if not (UnitExists and UnitCanAttack and UnitGUID) then return nil end
+    local okExists, exists = pcall(UnitExists, "target")
+    local okAttack, attackable = pcall(UnitCanAttack, "player", "target")
+    if not okExists or isSecret(exists) or exists ~= true
+        or not okAttack or isSecret(attackable) or attackable ~= true then
+        return nil
+    end
+    if UnitIsDeadOrGhost then
+        local okDead, dead = pcall(UnitIsDeadOrGhost, "target")
+        if not okDead or isSecret(dead) or dead ~= false then return nil end
+    end
+    local okGUID, guid = pcall(UnitGUID, "target")
+    if not okGUID or isSecret(guid) or type(guid) ~= "string" or guid == "" then
+        return nil
+    end
+    return guid
+end
+
+getEffectiveSpellID = function(spellID)
     spellID = tonumber(spellID)
     if not spellID then
         return spellID
     end
-    local ok, displayID = sourceCall("GetDisplaySpellID", spellID)
-    return ok and type(displayID) == "number" and displayID > 0 and displayID or spellID
+    local ok, effectiveID = sourceCall("GetEffectiveSpellID", spellID)
+    if ok and type(effectiveID) == "number" and effectiveID > 0 then
+        return effectiveID
+    end
+    local displayOK, displayID = sourceCall("GetDisplaySpellID", spellID)
+    return displayOK and type(displayID) == "number" and displayID > 0 and displayID or spellID
 end
 
 local function cooldownRemainingSeconds(spellID)
     if type(spellID) ~= "number" or spellID <= 0 or not C_Spell then return nil end
-    local displayID = getDisplaySpellID(spellID)
+    local displayID = getEffectiveSpellID(spellID)
     if C_Spell.GetSpellCharges then
         local ok, charges = pcall(C_Spell.GetSpellCharges, displayID)
         if ok and type(charges) == "table" then
@@ -365,10 +478,10 @@ local function spellListContains(list, spellID)
     if not spellID then
         return false
     end
-    local displayID = getDisplaySpellID(spellID)
+    local displayID = getEffectiveSpellID(spellID)
     for _, configuredID in ipairs(list or {}) do
         if configuredID == spellID or configuredID == displayID
-            or getDisplaySpellID(configuredID) == displayID then
+            or getEffectiveSpellID(configuredID) == displayID then
             return true
         end
     end
@@ -382,11 +495,11 @@ end
 local function isPolicyFallbackSpell(spellID)
     spellID = tonumber(spellID)
     if not spellID or not currentPolicy then return false end
-    local displayID = getDisplaySpellID(spellID)
+    local displayID = getEffectiveSpellID(spellID)
     for _, rule in ipairs(currentPolicy.fallbackActions or {}) do
         local configuredID = tonumber(type(rule) == "table" and rule.spellID or rule)
         if configuredID and (configuredID == spellID or configuredID == displayID
-            or getDisplaySpellID(configuredID) == displayID) then
+            or getEffectiveSpellID(configuredID) == displayID) then
             return true
         end
     end
@@ -432,6 +545,56 @@ local function hasMovementCastBuff()
     return false
 end
 
+local isSpellKnown
+
+local function hasObservablePlayerAura(auraID)
+    local getAura = C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID
+    if not getAura or type(auraID) ~= "number" or auraID <= 0 then
+        return false
+    end
+    local ok, aura = pcall(getAura, auraID)
+    return ok and not isSecret(aura) and aura ~= nil
+end
+
+local function getConditionalMoveCastLabel(spellID)
+    for _, rule in ipairs(currentPolicy and currentPolicy.moveCastConditions or {}) do
+        local configuredSpellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local requiresSpell = type(rule) == "table" and tonumber(rule.requiresSpell) or nil
+        local auraID = type(rule) == "table" and tonumber(rule.auraID) or nil
+        if configuredSpellID and spellListContains({ configuredSpellID }, spellID)
+            and (not requiresSpell or isSpellKnown(requiresSpell))
+            and (not auraID or hasObservablePlayerAura(auraID)) then
+            return rule.label or tostring(configuredSpellID)
+        end
+    end
+    return nil
+end
+
+local function getMoveCastProbeRule(spellID)
+    for _, rule in ipairs(currentPolicy and currentPolicy.moveCastConditions or {}) do
+        local configuredSpellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local requiresSpell = type(rule) == "table" and tonumber(rule.requiresSpell) or nil
+        if rule.probeWhenUsable == true
+            and configuredSpellID and spellListContains({ configuredSpellID }, spellID)
+            and (not requiresSpell or isSpellKnown(requiresSpell))
+            and isSpellKnown(configuredSpellID) then
+            return rule
+        end
+    end
+    return nil
+end
+
+local function getMoveCastProbeLabel(spellID)
+    if movementProbeStopPending then
+        return nil
+    end
+    local rule = getMoveCastProbeRule(spellID)
+    if rule and isUsableNow(spellID) then
+        return rule.label or tostring(rule.spellID)
+    end
+    return nil
+end
+
 local function isSpellMoveCastableNow(spellID)
     -- Some replacement spells share the base button's proc/highlight state.
     -- Stationary-only policy must win before generic movement buffs or proc
@@ -440,6 +603,16 @@ local function isSpellMoveCastableNow(spellID)
         return false
     end
     local instantOnly = policyContains("moveCastInstantOnly", spellID)
+    if getConditionalMoveCastLabel(spellID) then
+        return true
+    end
+    -- A narrowly configured policy may request one empirical moving attempt
+    -- when the positive aura is hidden but the owned action is currently
+    -- usable. A failed attempt is latched below until movement really stops;
+    -- this is not a generic permission for channels or hardcasts.
+    if getMoveCastProbeLabel(spellID) then
+        return true
+    end
     if not instantOnly
         and (policyContains("moveCastAlways", spellID) or hasMovementCastBuff()) then
         return true
@@ -453,7 +626,7 @@ local function isSpellMoveCastableNow(spellID)
         return false
     end
 
-    local effectiveSpellID = getDisplaySpellID(spellID)
+    local effectiveSpellID = getEffectiveSpellID(spellID)
     local info = C_Spell and C_Spell.GetSpellInfo
         and C_Spell.GetSpellInfo(effectiveSpellID)
     local castTime = info and info.castTime
@@ -479,12 +652,318 @@ local function isSpellMoveCastableNow(spellID)
     return false
 end
 
-local function isMovementSafeQueueValue(queueValue)
-    if JustACBridgeDB.movementFilter == false or not playerIsMoving then
+local function resetSuccessfulCastSequences()
+    selectionTargetLease:Reset()
+    if currentPolicy and currentPolicy.resetLosslessSelection then
+        pcall(currentPolicy.resetLosslessSelection)
+    end
+    successfulCastSequenceSerial = 0
+    successfulCastSequenceStep = {}
+    successfulCastSequenceAt = {}
+    successfulCastSequenceTargetGUID = {}
+    pendingCastFollowups = {}
+    pendingCastFollowupTargets = {}
+end
+
+local function resetTargetBoundSuccessfulCastSequences(keepLossless)
+    if not keepLossless then selectionTargetLease:Reset() end
+    if not keepLossless and currentPolicy and currentPolicy.resetLosslessSelection then
+        pcall(currentPolicy.resetLosslessSelection)
+    end
+    for rule in pairs(pendingCastFollowups) do
+        if rule.targetBound then
+            pendingCastFollowups[rule] = nil
+            pendingCastFollowupTargets[rule] = nil
+        end
+    end
+    local function clearRule(rule, firstField, secondField)
+        if type(rule) ~= "table" or rule.targetBound ~= true then return end
+        for _, field in ipairs({ firstField, secondField }) do
+            local spellID = tonumber(rule[field])
+            if spellID then
+                successfulCastSequenceStep[spellID] = nil
+                successfulCastSequenceAt[spellID] = nil
+                successfulCastSequenceTargetGUID[spellID] = nil
+            end
+        end
+    end
+    for _, rule in ipairs(currentPolicy and currentPolicy.castSequenceRules or {}) do
+        clearRule(rule, "spellID", "afterSpellID")
+    end
+    for _, rule in ipairs(currentPolicy and currentPolicy.pairedCastRules or {}) do
+        clearRule(rule, "leaderSpellID", "followerSpellID")
+    end
+end
+
+local function isCastSequenceSafeQueueValue(queueValue)
+    if type(queueValue) ~= "number" or queueValue <= 0 then
         return true
     end
+    for _, rule in ipairs(currentPolicy and currentPolicy.castSequenceRules or {}) do
+        local spellID = tonumber(rule.spellID)
+        local afterSpellID = tonumber(rule.afterSpellID)
+        if spellID and afterSpellID
+            and spellListContains({ spellID }, queueValue) then
+            local effectiveSpellID = getEffectiveSpellID(queueValue)
+            local effectivePassthrough = false
+            for _, passthroughID in ipairs(rule.passthroughEffectiveSpellIDs or {}) do
+                if tonumber(passthroughID) == effectiveSpellID then
+                    effectivePassthrough = true
+                    break
+                end
+            end
+            if not effectivePassthrough then
+                local actionStep = successfulCastSequenceStep[spellID] or 0
+                local prerequisiteStep = successfulCastSequenceStep[afterSpellID] or 0
+                local recentPrerequisite = prerequisiteStep > actionStep
+                local withinSeconds = tonumber(rule.withinSeconds)
+                if recentPrerequisite and withinSeconds and withinSeconds > 0 then
+                    local castAt = successfulCastSequenceAt[afterSpellID]
+                    local elapsed = castAt and GetTime() - castAt or nil
+                    recentPrerequisite = elapsed ~= nil and elapsed >= 0
+                        and elapsed < withinSeconds
+                end
+                local auraProvesOrder = rule.afterAuraID
+                    and hasObservablePlayerAura(tonumber(rule.afterAuraID)) or false
+                if not recentPrerequisite and not auraProvesOrder then
+                    return false
+                end
+            end
+        end
+    end
+
+    for _, rule in ipairs(currentPolicy and currentPolicy.pairedCastRules or {}) do
+        local leaderSpellID = tonumber(rule.leaderSpellID)
+        local followerSpellID = tonumber(rule.followerSpellID)
+        if leaderSpellID and followerSpellID then
+            local isLeader = spellListContains({ leaderSpellID }, queueValue)
+            local isFollower = spellListContains({ followerSpellID }, queueValue)
+            if isLeader or isFollower then
+                local partnerSpellID = isLeader and followerSpellID or leaderSpellID
+                local partnerKnown = isSpellKnown and isSpellKnown(partnerSpellID) or false
+                local partnerReady, partnerReadyReason
+                if not partnerKnown then
+                    partnerReady = false
+                    partnerReadyReason = "unlearned"
+                else
+                    local hotkeyOK, hotkey = sourceCall("GetSpellHotkey", partnerSpellID)
+                    local usableOK, usable = sourceCall("IsSpellUsable", partnerSpellID)
+                    local cooldownOK, onCooldown = sourceCall("IsSpellOnCooldown", partnerSpellID)
+                    if not hotkeyOK or type(hotkey) ~= "string" or hotkey == "" then
+                        -- Do not use `hotkeyOK and false or nil`: Lua's `and/or`
+                        -- idiom cannot preserve a false middle value. A known
+                        -- empty binding is positively unavailable and therefore
+                        -- permits a configured direct-follower path; only a
+                        -- failed capability call remains unknown/fail-closed.
+                        if hotkeyOK then
+                            partnerReady = false
+                            partnerReadyReason = "unbound"
+                        else
+                            partnerReady = nil
+                            partnerReadyReason = "binding-unknown"
+                        end
+                    elseif not usableOK or type(usable) ~= "boolean"
+                        or not cooldownOK or type(onCooldown) ~= "boolean" then
+                        partnerReady = nil
+                        partnerReadyReason = "readiness-unknown"
+                    elseif onCooldown then
+                        partnerReady = false
+                        partnerReadyReason = "cooldown"
+                    elseif not usable then
+                        partnerReady = false
+                        partnerReadyReason = "unusable"
+                    else
+                        partnerReady = true
+                        partnerReadyReason = "ready"
+                    end
+                end
+
+                if isLeader then
+                    -- Never spend the leader unless the follower can actually
+                    -- be executed immediately afterward in this pairing.
+                    if partnerReady ~= true then return false end
+                else
+                    local leaderStep = successfulCastSequenceStep[leaderSpellID] or 0
+                    local followerStep = successfulCastSequenceStep[followerSpellID] or 0
+                    local recentLeader = leaderStep > followerStep
+                    local withinSeconds = tonumber(rule.withinSeconds)
+                    if recentLeader and withinSeconds and withinSeconds > 0 then
+                        local castAt = successfulCastSequenceAt[leaderSpellID]
+                        local elapsed = castAt and GetTime() - castAt or nil
+                        recentLeader = elapsed ~= nil and elapsed >= 0
+                            and elapsed < withinSeconds
+                    end
+                    if recentLeader and rule.targetBound == true then
+                        local credentialGUID = successfulCastSequenceTargetGUID[leaderSpellID]
+                        local currentGUID = getCurrentHostileTargetGUID()
+                        recentLeader = credentialGUID ~= nil and currentGUID ~= nil
+                            and credentialGUID == currentGUID
+                    end
+                    -- A recent leader success proves the ordered path. Without
+                    -- it, direct follower use is legal only when the leader is
+                    -- positively unavailable; ready or unknown both hold. A
+                    -- policy may further restrict the active-cooldown case.
+                    if not recentLeader and partnerReady ~= false then return false end
+                    if not recentLeader and partnerReadyReason == "cooldown" then
+                        local minimum = tonumber(
+                            rule.directFollowerMinLeaderCooldownRemainingSeconds)
+                        if minimum and minimum > 0 then
+                            local thresholdOK, remainsAbove = sourceCall(
+                                "IsSpellCooldownRemainingAbove", leaderSpellID, minimum)
+                            if not thresholdOK or remainsAbove ~= true then return false end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return true
+end
+
+local function recordSuccessfulCastSequence(spellID)
+    spellID = tonumber(spellID)
+    if not spellID then return false end
+    local matched = false
+    for _, rule in ipairs(currentPolicy and currentPolicy.castSequenceRules or {}) do
+        for _, configuredID in ipairs({
+            tonumber(rule.spellID),
+            tonumber(rule.afterSpellID),
+        }) do
+            if configuredID and spellListContains({ configuredID }, spellID) then
+                successfulCastSequenceSerial = successfulCastSequenceSerial + 1
+                successfulCastSequenceStep[configuredID] = successfulCastSequenceSerial
+                successfulCastSequenceAt[configuredID] = GetTime()
+                if rule.targetBound == true then
+                    successfulCastSequenceTargetGUID[configuredID] =
+                        getCurrentHostileTargetGUID()
+                end
+                matched = true
+            end
+        end
+    end
+    for _, rule in ipairs(currentPolicy and currentPolicy.pairedCastRules or {}) do
+        for _, configuredID in ipairs({
+            tonumber(rule.leaderSpellID),
+            tonumber(rule.followerSpellID),
+        }) do
+            if configuredID and spellListContains({ configuredID }, spellID) then
+                successfulCastSequenceSerial = successfulCastSequenceSerial + 1
+                successfulCastSequenceStep[configuredID] = successfulCastSequenceSerial
+                successfulCastSequenceAt[configuredID] = GetTime()
+                if rule.targetBound == true then
+                    successfulCastSequenceTargetGUID[configuredID] =
+                        getCurrentHostileTargetGUID()
+                end
+                matched = true
+            end
+        end
+    end
+    return matched
+end
+
+local function recordSuccessfulCastFollowups(spellID)
+    spellID = tonumber(spellID)
+    if not spellID then return false end
+    local matched = false
+    for _, rule in ipairs(currentPolicy and currentPolicy.castFollowups or {}) do
+        if spellID == tonumber(rule.spellID) then
+            pendingCastFollowups[rule] = nil
+            matched = true
+        end
+        for _, cancelID in ipairs(rule.cancelSpells or {}) do
+            if spellID == cancelID then
+                pendingCastFollowups[rule] = nil
+                pendingCastFollowupTargets[rule] = nil
+                matched = true
+            end
+        end
+        for _, triggerSpellID in ipairs(rule.triggerSpells or {}) do
+            -- Trigger IDs are intentionally exact. A transformed second cast
+            -- must not silently masquerade as the base first-cast event.
+            if spellID == tonumber(triggerSpellID) then
+                pendingCastFollowups[rule] = GetTime()
+                if rule.targetBound then
+                    pendingCastFollowupTargets[rule] = getCurrentHostileTargetGUID()
+                end
+                matched = true
+                break
+            end
+        end
+    end
+    return matched
+end
+
+local function isResumeRuleEnabled(rule, position)
+    if position == 2 then
+        return rule.preserve ~= false
+    end
+    return rule.lossless ~= false
+end
+
+local function getMoveResumeDelay(spellID, position)
+    for _, rule in ipairs(currentPolicy and currentPolicy.moveCastResumeDelays or {}) do
+        local configuredSpellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local seconds = type(rule) == "table" and tonumber(rule.seconds) or nil
+        if configuredSpellID and seconds and seconds > 0
+            and isResumeRuleEnabled(rule, position)
+            and spellListContains({ configuredSpellID }, spellID) then
+            return seconds
+        end
+    end
+    return nil
+end
+
+local function isSuccessfulCastResumeDelayed(spellID, position)
+    local now = GetTime()
+    for _, rule in ipairs(currentPolicy and currentPolicy.successfulCastResumeDelays or {}) do
+        local configuredSpellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local seconds = type(rule) == "table" and tonumber(rule.seconds) or nil
+        if configuredSpellID and seconds and seconds > 0
+            and isResumeRuleEnabled(rule, position)
+            and spellListContains({ configuredSpellID }, spellID) then
+            for _, triggerSpellID in ipairs(rule.triggerSpells or {}) do
+                local castAt = successfulCastResumeTriggerAt[triggerSpellID]
+                local elapsed = castAt and now - castAt or nil
+                if elapsed and elapsed >= 0 and elapsed < seconds then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function recordSuccessfulCastResumeTrigger(spellID)
+    local matched = false
+    local now = GetTime()
+    for _, rule in ipairs(currentPolicy and currentPolicy.successfulCastResumeDelays or {}) do
+        for _, triggerSpellID in ipairs(rule.triggerSpells or {}) do
+            if spellListContains({ triggerSpellID }, spellID) then
+                successfulCastResumeTriggerAt[triggerSpellID] = now
+                matched = true
+            end
+        end
+    end
+    return matched
+end
+
+local function isMovementSafeQueueValue(queueValue, position)
     if type(queueValue) ~= "number" or queueValue == 0 then
         return false
+    end
+    if queueValue > 0 and isSuccessfulCastResumeDelayed(queueValue, position) then
+        return false
+    end
+    if playerIsMoving and queueValue > 0
+        and policyContains("moveCastNever", queueValue) then
+        return false
+    end
+    local resumeDelay = queueValue > 0 and getMoveResumeDelay(queueValue, position) or nil
+    if resumeDelay and GetTime() - lastMovementStoppedAt < resumeDelay then
+        return false
+    end
+    if JustACBridgeDB.movementFilter == false or not playerIsMoving then
+        return true
     end
     return queueValue < 0 or isSpellMoveCastableNow(queueValue)
 end
@@ -517,13 +996,47 @@ local function isFailureSuppressedQueueValue(queueValue)
     if type(queueValue) ~= "number" or queueValue <= 0 then
         return false
     end
+    if cancelledMovementProbeForRefresh[queueValue] then
+        return true
+    end
     local state = failedMovementRecommendations[queueValue]
+    if state and state.probeBlocked and getConditionalMoveCastLabel(queueValue) then
+        -- Newly observable exact evidence is stronger than an earlier blind
+        -- failure, which may have had a different transient cause.
+        failedMovementRecommendations[queueValue] = nil
+        return false
+    end
     return state and (tonumber(state.suppressUntil) or 0) > GetTime() or false
 end
 
-local function isSafeQueueValue(queueValue)
+local function resetMovementProbeFailures()
+    for spellID, state in pairs(failedMovementRecommendations) do
+        if state and state.probeBlocked then
+            failedMovementRecommendations[spellID] = nil
+        end
+    end
+end
+
+local function cancelCurrentMovementProbeForNextRefresh()
+    local changed = false
+    for index = 1, ROW_COUNT do
+        local row = currentRows[index]
+        if row and row.movementProbe and tonumber(row.queueValue) then
+            cancelledMovementProbeForRefresh[tonumber(row.queueValue)] = true
+            changed = true
+        end
+    end
+    return changed
+end
+
+local function clearCancelledMovementProbes()
+    cancelledMovementProbeForRefresh = {}
+end
+
+local function isSafeQueueValue(queueValue, position)
     return not isRotationExcludedQueueValue(queueValue)
-        and isMovementSafeQueueValue(queueValue)
+        and isCastSequenceSafeQueueValue(queueValue)
+        and isMovementSafeQueueValue(queueValue, position)
         and isRangeSafeQueueValue(queueValue)
         and isGroundEffectSafeQueueValue(queueValue)
         and not isFailureSuppressedQueueValue(queueValue)
@@ -533,32 +1046,51 @@ local function isHoldSafeQueueValue(queueValue)
     -- M4 is a mechanics/movement hold key, not merely the ordinary selector
     -- with major cooldowns removed.  Always evaluate it as if the player were
     -- moving so a momentary stop cannot start a hardcast or channel.
-    return type(queueValue) == "number" and queueValue > 0
-        and not isRotationExcludedQueueValue(queueValue)
-        and isSpellMoveCastableNow(queueValue)
+    if type(queueValue) ~= "number" or queueValue <= 0 then return false end
+    -- Conditional movement permission (for example Slipstream Missiles) is
+    -- valid for M5 but never makes a channel suitable for the always-held M4.
+    if isSuccessfulCastResumeDelayed(queueValue, 2) then return false end
+    local channeledOK, channeled = sourceCall("IsChanneled", queueValue)
+    if channeledOK and channeled == true then return false end
+    local effectiveSpellID = getEffectiveSpellID(queueValue)
+    if effectiveSpellID ~= queueValue then
+        local effectiveOK, effectiveChanneled = sourceCall("IsChanneled", effectiveSpellID)
+        if effectiveOK and effectiveChanneled == true then return false end
+    end
+    -- A direction-dependent instant may be explicitly delayed after movement
+    -- for both outputs (Arcane Orb in 12.1).  Once the real stationary delay is
+    -- satisfied, allow only a positively observed zero-cast-time form; this
+    -- exception can never admit a hardcast, channel or empower into held M4.
+    local resumeDelay = getMoveResumeDelay(queueValue, 2)
+    local stationaryResumeSafe = false
+    if resumeDelay and not playerIsMoving
+        and GetTime() - lastMovementStoppedAt >= resumeDelay then
+        local info = C_Spell and C_Spell.GetSpellInfo
+            and C_Spell.GetSpellInfo(effectiveSpellID)
+        local castTime = info and info.castTime
+        stationaryResumeSafe = type(castTime) == "number"
+            and not isSecret(castTime) and castTime == 0
+    end
+    return not isRotationExcludedQueueValue(queueValue)
+        and isCastSequenceSafeQueueValue(queueValue)
+        and (stationaryResumeSafe or isSpellMoveCastableNow(queueValue))
         and isRangeSafeQueueValue(queueValue)
         and isGroundEffectSafeQueueValue(queueValue)
         and not isFailureSuppressedQueueValue(queueValue)
 end
 
-local function isSpellKnown(spellID)
-    if not spellID then
-        return true
+isSpellKnown = function(spellID, preserveUnknown)
+    if not spellID then return not preserveUnknown end
+    local readers = {IsPlayerSpell or false, IsSpellKnown or false}
+    local known = JustACBridgeActionSequence.Ownership({spellID}, readers)
+    if known ~= true then
+        local effectiveID = getEffectiveSpellID(spellID)
+        if effectiveID ~= spellID then
+            known = JustACBridgeActionSequence.Ownership({spellID, effectiveID}, readers)
+        end
     end
-    local check = IsPlayerSpell or IsSpellKnown
-    if not check then
-        return false
-    end
-    local ok, known = pcall(check, spellID)
-    if ok and known == true then
-        return true
-    end
-    local displayID = getDisplaySpellID(spellID)
-    if displayID ~= spellID then
-        ok, known = pcall(check, displayID)
-        return ok and known == true
-    end
-    return false
+    if preserveUnknown then return known end
+    return known == true
 end
 
 local function isPlayerAuraDefinitelyMissing(auraID)
@@ -573,6 +1105,51 @@ local function isPlayerAuraDefinitelyMissing(auraID)
     return ok and not isSecret(aura) and aura == nil
 end
 
+local function isPreserveSafeQueueValue(queueValue)
+    -- 12.1 Arcane explicitly defines M4 as M5 minus the two reserved cooldowns.
+    -- It therefore shares M5's real-time movement gate: stationary casts and
+    -- channels are allowed, while moving casts still require exact permission.
+    if currentPolicy and currentPolicy.preserveUsesCurrentSafety == true then
+        return isSafeQueueValue(queueValue, 2)
+    end
+    return isHoldSafeQueueValue(queueValue)
+end
+
+local function isPlayerDefinitelyInCombat()
+    if not UnitAffectingCombat then
+        return false
+    end
+    local ok, inCombat = pcall(UnitAffectingCombat, "player")
+    return ok and not isSecret(inCombat) and inCombat == true
+end
+
+local function priorityCueAuraConditionMet(rule)
+    local getAura = C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID
+    local auraID = tonumber(rule and rule.auraID)
+    if not getAura or not auraID or auraID <= 0 then
+        return false, "aura-unavailable"
+    end
+
+    local ok, aura = pcall(getAura, auraID)
+    if not ok or isSecret(aura) then
+        return false, "aura-unknown"
+    end
+    if aura == nil then
+        return rule.allowAuraMissing == true, "aura-missing"
+    end
+
+    local minimum = tonumber(rule.minAuraStacks)
+    if not minimum or minimum <= 0 or type(aura) ~= "table" then
+        return false, "stacks-unavailable"
+    end
+    local applications = aura.applications
+    if type(applications) ~= "number" or isSecret(applications) then
+        return false, "stacks-unknown"
+    end
+    return applications >= minimum,
+        ("stacks-%s-of-%s"):format(tostring(applications), tostring(minimum))
+end
+
 local function isMaintenanceSpellReadyNow(spellID, reserveCharges)
     local ok, usable = sourceCall("IsSpellUsable", spellID)
     if not ok or isSecret(usable) or usable ~= true then
@@ -584,7 +1161,7 @@ local function isMaintenanceSpellReadyNow(spellID, reserveCharges)
         if not getCharges then
             return false
         end
-        local chargesOK, charges = pcall(getCharges, getDisplaySpellID(spellID))
+        local chargesOK, charges = pcall(getCharges, getEffectiveSpellID(spellID))
         local current = chargesOK and type(charges) == "table" and charges.currentCharges
         -- Spending is allowed only when the live count proves that the
         -- configured manual reserve will remain afterwards.
@@ -613,7 +1190,7 @@ local function findMaintenanceRecommendation(position)
             and (position == 1 and isSafeQueueValue(spellID)
                 or position == 2 and not isReservedQueueValue(spellID)
                     and not isReserveExcludedQueueValue(spellID)
-                    and isHoldSafeQueueValue(spellID)) then
+                    and isPreserveSafeQueueValue(spellID)) then
             local data = getSpellData(spellID, position)
             if data and data.plainHotkey ~= "" then
                 data.maintenanceBuff = true
@@ -654,13 +1231,215 @@ local function findRangeSequenceRecommendation(queue, count)
                     and spellListContains(rule.prefer, queueValue)
                     and isSafeQueueValue(queueValue) and isUsableNow(queueValue) then
                     local data = getSpellData(queueValue, 1)
-                    if data and data.plainHotkey ~= "" then
+                    local proofOK, proofRequired, proofReason =
+                        isMovementFallbackProofSatisfied(queueValue, index, 1)
+                    if data and data.plainHotkey ~= "" and proofOK then
                         data.rangeFallback = true
                         data.sequenceFallback = true
                         data.sequenceReason = "confirmed-beyond-" .. tostring(distance)
+                        data.movementFallback = proofRequired
+                        data.movementFallbackProof = proofRequired
+                        data.movementFallbackProofReason = proofReason
                         return data
                     end
                 end
+            end
+        end
+    end
+    return nil
+end
+
+local function isPolicyPriorityCueReadyNow(spellID)
+    local usableOK, usable = sourceCall("IsSpellUsable", spellID)
+    local cooldownOK, onCooldown = sourceCall("IsSpellOnCooldown", spellID)
+    local ready = usableOK and not isSecret(usable) and usable == true
+        and cooldownOK and not isSecret(onCooldown) and onCooldown == false
+    return ready, usableOK, usable, cooldownOK, onCooldown
+end
+
+local function findPolicyCastFollowupRecommendation(position)
+    for _, rule in ipairs(currentPolicy and currentPolicy.castFollowups or {}) do
+        local enabled = position == 1 and rule.lossless == true
+            or position == 2 and rule.preserve == true
+        local triggeredAt = enabled and pendingCastFollowups[rule] or nil
+        local withinSeconds = tonumber(rule.withinSeconds)
+        local elapsed = triggeredAt and GetTime() - triggeredAt or nil
+        local targetOK = not rule.targetBound
+            or (pendingCastFollowupTargets[rule] ~= nil
+                and pendingCastFollowupTargets[rule] == getCurrentHostileTargetGUID())
+        local combatOK = not rule.requiresCombat or isPlayerDefinitelyInCombat()
+        if triggeredAt and (not targetOK or not combatOK
+            or not withinSeconds or elapsed < 0
+            or elapsed >= withinSeconds) then
+            pendingCastFollowups[rule] = nil
+            appendDebug(("FOLLOWUP spell=%s cancel=window targetOK=%s combatOK=%s elapsed=%s")
+                :format(debugSafe(rule.spellID), tostring(targetOK), tostring(combatOK), debugSafe(elapsed)))
+        elseif triggeredAt then
+            local spellID = tonumber(rule.spellID)
+            if not spellID or not isSpellKnown(spellID) then
+                pendingCastFollowups[rule] = nil
+                appendDebug("FOLLOWUP spell=" .. debugSafe(spellID) .. " cancel=ownership-unproven")
+            else
+                local ready, usableOK, usable, cooldownOK, onCooldown =
+                    isPolicyPriorityCueReadyNow(spellID)
+                local proofReason
+                if rule.readyPredicate then
+                    local proofOK, proof, reason = pcall(rule.readyPredicate,
+                        getEffectiveSpellID(spellID), sourceCall)
+                    ready = proofOK and not isSecret(proof) and proof == true
+                    proofReason = proofOK and reason or "predicate-error"
+                end
+                -- A definite cooldown, or cooldown state that cannot be
+                -- positively observed, abandons this follow-up immediately.
+                -- The caller then continues through the untouched source
+                -- queue in the same refresh; this rule can never stall M5.
+                if not rule.readyPredicate and (not cooldownOK or isSecret(onCooldown)
+                    or onCooldown ~= false) then
+                    pendingCastFollowups[rule] = nil
+                    appendDebug("FOLLOWUP spell=" .. debugSafe(spellID) .. " cancel=source-cooldown-unproven")
+                elseif ready then
+                    local bindingOK, binding = sourceCall("GetSpellHotkey", spellID)
+                    local safe = position == 1 and isSafeQueueValue(spellID, 1)
+                        or position == 2 and isPreserveSafeQueueValue(spellID)
+                    local bound = bindingOK and not isSecret(binding)
+                        and type(binding) == "string" and binding ~= ""
+                    local data = safe and bound and getSpellData(spellID, position) or nil
+                    if data and data.plainHotkey ~= "" then
+                        data.policyCastFollowup = true
+                        data.policyCastFollowupLabel = rule.label
+                        data.policyCastFollowupTriggeredAt = triggeredAt
+                        return data
+                    elseif not data or data.plainHotkey == "" then
+                        pendingCastFollowups[rule] = nil
+                        appendDebug(("FOLLOWUP spell=%s cancel=legality-or-binding safe=%s bound=%s hotkey=%s")
+                            :format(debugSafe(spellID), tostring(safe), tostring(bound), debugSafe(binding)))
+                    end
+                elseif rule.cancelOnUnusable or not usableOK
+                    or isSecret(usable) or usable == nil then
+                    pendingCastFollowups[rule] = nil
+                    appendDebug(("FOLLOWUP spell=%s cancel=not-ready proof=%s usable=%s onCooldown=%s")
+                        :format(debugSafe(spellID), debugSafe(proofReason), debugSafe(usable), debugSafe(onCooldown)))
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Some resource spenders are legal while moving but must not become legal
+-- *because* of movement. For policy-listed spells, a later queue entry may be
+-- promoted during real movement only when the active source positively proves
+-- its ordinary APL condition. Missing hooks, errors, nil and secret-like values
+-- all fail closed. Queue position 1 is never queried: it remains the source's
+-- authoritative current recommendation rather than a Bridge-created fallback.
+isMovementFallbackProofSatisfied = function(spellID, queueIndex, position)
+    local numericIndex = tonumber(queueIndex)
+    local required = playerIsMoving
+        and JustACBridgeDB.movementFilter ~= false
+        and numericIndex and numericIndex > 1
+        and policyContains("movementFallbackProofSpells", spellID)
+        or false
+    if not required then return true, false, nil end
+
+    local fn = activeSource and activeSource.IsMovementFallbackAllowed
+    local ok, allowed, reason
+    if type(fn) == "function" then
+        ok, allowed, reason = pcall(fn, spellID, position)
+    else
+        ok, allowed, reason = false, nil, "source-proof-unavailable"
+    end
+    local approved = ok and allowed == true
+    local trace = {
+        position = position,
+        queueIndex = queueIndex,
+        spellID = spellID,
+        source = activeSource and activeSource.id,
+        callOK = ok == true,
+        allowed = allowed == true,
+        approved = approved,
+        reason = ok and reason or (reason or tostring(allowed)),
+    }
+    movementFallbackProofTraces[#movementFallbackProofTraces + 1] = trace
+    return approved, true, trace.reason
+end
+
+-- A recommendation source may explicitly mark a queue entry as its current
+-- burst cue. This is intentionally queried only on the active source rather
+-- than through sourceCall(): falling back to JustAC for a custom source would
+-- mix two independently ordered queues. The Bridge does not infer a burst
+-- window or rewrite the source APL; it merely honors the source's observable
+-- cue after applying the same safety, usability, and binding gates as any
+-- other executable recommendation.
+local function findSourceBurstCueRecommendation(queue)
+    local isBurstCue = activeSource and activeSource.IsBurstCue
+    if type(isBurstCue) ~= "function" then
+        return nil
+    end
+
+    local count = math.min(#queue, QUEUE_SCAN_COUNT)
+    for index = 1, count do
+        local queueValue = queue[index]
+        if type(queueValue) == "number" and queueValue > 0 then
+            local ok, cued = pcall(isBurstCue, queueValue)
+            if ok and cued == true
+                and isSafeQueueValue(queueValue) and isUsableNow(queueValue) then
+                local data = getSpellData(queueValue, 1)
+                local proofOK, proofRequired, proofReason =
+                    isMovementFallbackProofSatisfied(queueValue, index, 1)
+                if data and data.plainHotkey ~= "" and proofOK then
+                    data.sourceBurstCue = true
+                    data.sourceQueueIndex = index
+                    data.movementFallback = proofRequired
+                    data.movementFallbackProof = proofRequired
+                    data.movementFallbackProofReason = proofReason
+                    return data
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Execute only policy rules whose complete live condition is positively
+-- observable. These cues are intentionally M5-only and remain separate from
+-- the source queue so M4's hold-safe contract cannot leak a major cooldown.
+local function findPolicyPriorityCueRecommendation()
+    if not currentPolicy then
+        return nil
+    end
+    for _, rule in ipairs(currentPolicy.priorityCues or {}) do
+        local spellID = tonumber(rule.spellID)
+        local combatOK = rule.requiresCombat ~= true or isPlayerDefinitelyInCombat()
+        local conditionOK, reason = priorityCueAuraConditionMet(rule)
+        local known = spellID and spellID > 0 and isSpellKnown(spellID) or false
+        local ready, usableOK, usable, cooldownOK, onCooldown =
+            isPolicyPriorityCueReadyNow(spellID)
+        local safe = spellID and spellID > 0 and isSafeQueueValue(spellID) or false
+        local trace = {
+            spellID = spellID,
+            combatOK = combatOK,
+            conditionOK = conditionOK,
+            conditionReason = reason,
+            known = known,
+            ready = ready,
+            usableOK = usableOK,
+            usable = usable,
+            cooldownOK = cooldownOK,
+            onCooldown = onCooldown,
+            safe = safe,
+            bound = false,
+            selected = false,
+        }
+        policyPriorityCueTraces[#policyPriorityCueTraces + 1] = trace
+        if combatOK and conditionOK and known and ready and safe then
+            local data = getSpellData(spellID, 1)
+            if data and data.plainHotkey ~= "" then
+                trace.bound = true
+                trace.selected = true
+                data.policyPriorityCue = true
+                data.policyPriorityCueLabel = rule.label
+                data.policyPriorityCueReason = reason
+                return data
             end
         end
     end
@@ -678,20 +1457,75 @@ local function findSafeRecommendation(queue)
     local primaryGroundBlocked = not isGroundEffectSafeQueueValue(queue[1])
     local primaryFailureBlocked = isFailureSuppressedQueueValue(queue[1])
     local primaryRotationBlocked = isRotationExcludedQueueValue(queue[1])
+    local primarySequenceBlocked = not isCastSequenceSafeQueueValue(queue[1])
     for index = 1, count do
         local queueValue = queue[index]
         if type(queueValue) == "number" and queueValue ~= 0
             and isSafeQueueValue(queueValue)
             and (queueValue < 0 or isUsableNow(queueValue)) then
             local data = getSpellData(queueValue, 1)
-            -- Preserve the historical behavior for the primary entry, but do
-            -- not replace a blocked hardcast with an unusable unbound fallback.
-            if data and (index == 1 or data.plainHotkey ~= "") then
-                data.movementFallback = index ~= 1 and primaryMovementBlocked
+            -- A source-owned action can be prepended even when that spell is
+            -- absent from the player's action bars. Exporting such an entry
+            -- makes the desktop hook consume M5 while having no key to send.
+            -- Every exported action, including position 1, must therefore be
+            -- executable; otherwise continue to the next bound queue entry
+            -- and finally the specialization's bound fallback.
+            local proofOK, proofRequired, proofReason =
+                isMovementFallbackProofSatisfied(queueValue, index, 1)
+            if data and data.plainHotkey ~= "" and proofOK then
+                data.movementFallback = proofRequired
+                    or index ~= 1 and primaryMovementBlocked
+                data.movementFallbackProof = proofRequired
+                data.movementFallbackProofReason = proofReason
                 data.rangeFallback = index ~= 1 and primaryRangeBlocked
                 data.groundFallback = index ~= 1 and primaryGroundBlocked
                 data.failureFallback = index ~= 1 and primaryFailureBlocked
                 data.rotationFallback = index ~= 1 and primaryRotationBlocked
+                data.sequenceFallback = index ~= 1 and primarySequenceBlocked
+                return data
+            end
+        end
+    end
+    return nil
+end
+
+local function getActiveSourceQueueOnlyBeyondRule(field)
+    local rule = currentPolicy and currentPolicy[field]
+    local beyond = type(rule) == "table" and tonumber(rule.beyond) or nil
+    if not beyond or beyond <= 0 or not rule.allow or #rule.allow == 0 then
+        return nil
+    end
+    local ok, within = sourceCall("IsTargetWithin", beyond)
+    -- Range uncertainty must not be turned into a guessed mechanics state.
+    return ok and not isSecret(within) and within == false and rule or nil
+end
+
+local function findAllowedSourceQueueRecommendation(queue, allow, position)
+    local count = math.min(#queue, QUEUE_SCAN_COUNT)
+    for index = 1, count do
+        local queueValue = queue[index]
+        local positionEligible = position == 1
+            or not isReservedQueueValue(queueValue)
+                and not isReserveExcludedQueueValue(queueValue)
+        local safe
+        if position == 2 then
+            safe = isPreserveSafeQueueValue(queueValue)
+        else
+            safe = isSafeQueueValue(queueValue, position)
+        end
+        if type(queueValue) == "number" and queueValue > 0
+            and spellListContains(allow, queueValue)
+            and positionEligible and safe
+            and isUsableNow(queueValue) then
+            local data = getSpellData(queueValue, position)
+            local proofOK, proofRequired, proofReason =
+                isMovementFallbackProofSatisfied(queueValue, index, position)
+            if data and data.plainHotkey ~= "" and proofOK then
+                data.sourceQueueOnly = true
+                data.sourceQueueOnlyBeyond = true
+                data.movementFallback = proofRequired
+                data.movementFallbackProof = proofRequired
+                data.movementFallbackProofReason = proofReason
                 return data
             end
         end
@@ -705,13 +1539,52 @@ local function refreshPlayerMoving()
     end
     local ok, speed = pcall(GetUnitSpeed, "player")
     if ok and type(speed) == "number" and not isSecret(speed) then
+        if not movementStateInitialized then
+            movementStateInitialized = true
+            playerIsMoving = speed > 0
+            if playerIsMoving then
+                lastMovementStartedAt = GetTime()
+            else
+                -- Direction-dependent actions such as 12.1 Arcane Orb must
+                -- prove a full stationary delay even immediately after addon
+                -- load/reload; -infinity would incorrectly release them on the
+                -- first frame without the configured observed-stillness delay.
+                lastMovementStoppedAt = GetTime()
+            end
+            movementStopPendingUntil = 0
+            movementProbeStopPending = false
+            return
+        end
+        local wasMoving = playerIsMoving
         playerIsMoving = speed > 0
-        movementStopPendingUntil = 0
+        if wasMoving and not playerIsMoving then
+            cancelCurrentMovementProbeForNextRefresh()
+            lastMovementStoppedAt = GetTime()
+            resetMovementProbeFailures()
+            movementProbeStopPending = false
+            movementStopPendingUntil = 0
+        elseif movementProbeStopPending then
+            -- A visible nonzero speed immediately after STOP can be a sampling
+            -- lag. Keep probes blocked for the debounce window, then accept
+            -- the authoritative moving speed if no zero sample or new event
+            -- arrives.
+            if movementStopPendingUntil > 0
+                and GetTime() >= movementStopPendingUntil then
+                movementProbeStopPending = false
+                movementStopPendingUntil = 0
+            end
+        else
+            movementStopPendingUntil = 0
+        end
     elseif movementStopPendingUntil > 0 and GetTime() >= movementStopPendingUntil then
         -- When speed is secret, accept a STOP only after no matching START has
         -- arrived for the debounce interval. Repeated same-frame START/STOP
         -- pairs therefore represent movement intent instead of stationary.
+        cancelCurrentMovementProbeForNextRefresh()
         playerIsMoving = false
+        lastMovementStoppedAt = GetTime()
+        resetMovementProbeFailures()
+        movementProbeStopPending = false
         movementStopPendingUntil = 0
         lastSignature = nil
     end
@@ -725,15 +1598,27 @@ local function findReserveRecommendation(queue, startIndex)
             and not isReservedQueueValue(queueValue)
             and not isReserveExcludedQueueValue(queueValue)
             and isUsableNow(queueValue)
-            and isHoldSafeQueueValue(queueValue) then
+            and isPreserveSafeQueueValue(queueValue) then
             local data = getSpellData(queueValue, 2)
-            if data and data.plainHotkey ~= "" then
+            local proofOK, proofRequired, proofReason =
+                isMovementFallbackProofSatisfied(queueValue, index, 2)
+            if data and data.plainHotkey ~= "" and proofOK then
+                data.movementFallback = proofRequired
+                data.movementFallbackProof = proofRequired
+                data.movementFallbackProofReason = proofReason
                 return data
             end
         end
     end
 
     if type(queue[1]) ~= "number" or queue[1] == 0 then
+        return nil
+    end
+
+    -- Some policies require M4 to remain a literal filtered view of the
+    -- source queue. Do not manufacture an action from Blizzard highlight data
+    -- when no matching entry exists in that queue.
+    if currentPolicy and currentPolicy.preserveSourceQueueOnly == true then
         return nil
     end
 
@@ -744,9 +1629,14 @@ local function findReserveRecommendation(queue, startIndex)
     if ok and type(spellID) == "number" and spellID > 0
         and spellID ~= queue[1] and not isReservedQueueValue(spellID)
         and not isReserveExcludedQueueValue(spellID)
-        and isUsableNow(spellID) and isHoldSafeQueueValue(spellID) then
+        and isUsableNow(spellID) and isPreserveSafeQueueValue(spellID) then
         local data = getSpellData(spellID, 2)
-        if data and data.plainHotkey ~= "" then
+        local proofOK, proofRequired, proofReason =
+            isMovementFallbackProofSatisfied(spellID, 2, 2)
+        if data and data.plainHotkey ~= "" and proofOK then
+            data.movementFallback = proofRequired
+            data.movementFallbackProof = proofRequired
+            data.movementFallbackProofReason = proofReason
             return data
         end
     end
@@ -829,15 +1719,21 @@ local function findPolicyFinalFallback(position)
             usable = usable,
         }
         trace.rules[#trace.rules + 1] = ruleTrace
-        -- This is the final action, not another recommendation candidate.
-        -- Range/usability failures are deliberately diagnostic-only: when no
-        -- normal action exists, M4/M5 must still have a bound fallback to send.
+        -- This is an explicit policy opt-in, not a universal requirement to
+        -- produce an action. Specs whose source order must remain authoritative
+        -- leave fallbackActions empty and are allowed to export no action.
+        -- Historical fallback policies keep range/usability as diagnostics.
         if eligible and known and not reserved and not excluded
             and not rotationExcluded and movementSafe then
             local data = getSpellData(spellID, position)
             ruleTrace.data = data ~= nil
             ruleTrace.hotkey = data and data.plainHotkey or ""
-            if data and data.plainHotkey ~= "" then
+            local proofOK, proofRequired, proofReason =
+                isMovementFallbackProofSatisfied(spellID, 2, position)
+            ruleTrace.movementProofRequired = proofRequired
+            ruleTrace.movementProofOK = proofOK
+            ruleTrace.movementProofReason = proofReason
+            if data and data.plainHotkey ~= "" and proofOK then
                 data.finalFallback = true
                 data.finalFallbackLabel = rule.label
                 data.finalFallbackEnemyCount = enemyCount
@@ -846,6 +1742,8 @@ local function findPolicyFinalFallback(position)
                 data.emergencyMovementFallback = true
                 data.emergencyFallbackLabel = rule.label
                 data.emergencyFallbackEnemyCount = enemyCount
+                data.movementFallbackProof = proofRequired
+                data.movementFallbackProofReason = proofReason
                 ruleTrace.selected = true
                 trace.selected = spellID
                 return data
@@ -880,6 +1778,8 @@ getSpellData = function(queueValue, position)
         icon = 134400,
         hotkey = "",
         plainHotkey = "",
+        offGCD = false,
+        movementProbe = false,
     }
 
     if queueValue < 0 then
@@ -902,9 +1802,15 @@ getSpellData = function(queueValue, position)
         local ok, hotkey = sourceCall("GetItemHotkey", itemID)
         data.hotkey = ok and hotkey or ""
     else
-        data.spellID = queueValue
+        local effectiveSpellID = getEffectiveSpellID(queueValue)
+        data.spellID = effectiveSpellID
+        data.sourceSpellID = queueValue
+        data.offGCD = policyContains("offGCD", queueValue)
+        data.movementProbe = playerIsMoving
+            and getConditionalMoveCastLabel(queueValue) == nil
+            and getMoveCastProbeLabel(queueValue) ~= nil
 
-        local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(queueValue)
+        local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(effectiveSpellID)
         if info then
             data.name = info.name or data.name
             data.icon = info.iconID or data.icon
@@ -918,7 +1824,7 @@ getSpellData = function(queueValue, position)
     return data
 end
 
-local function debugSafe(value)
+debugSafe = function(value)
     if isSecret(value) then
         return "<secret>"
     end
@@ -928,23 +1834,39 @@ local function debugSafe(value)
     return tostring(value):gsub("[\r\n\t]", " ")
 end
 
-local function appendDebug(line)
+appendDebug = function(line)
     if JustACBridgeDB.debugEnabled == false then
         return
     end
     debugLines[#debugLines + 1] = ("[%8.3f] %s"):format(GetTime(), tostring(line))
-    while #debugLines > DEBUG_MAX_LINES do
-        table.remove(debugLines, 1)
+    if #debugLines > DEBUG_MAX_LINES then
+        local trimmed = {}
+        local first = math.max(1, #debugLines - DEBUG_RETAIN_LINES + 1)
+        for index = first, #debugLines do
+            trimmed[#trimmed + 1] = debugLines[index]
+        end
+        debugLines = trimmed
     end
-    JustACBridgeExport.debugLog = table.concat(debugLines, "\n")
+    -- table.concat on every verbose Q line made diagnostic mode itself a
+    -- measurable combat load. Materialize the SavedVariables string only on
+    -- explicit display/save boundaries; the in-memory line table is current.
+    debugDirty = true
+end
+
+local function syncDebugExport()
+    if debugDirty then
+        JustACBridgeExport.debugLog = table.concat(debugLines, "\n")
+        debugDirty = false
+    end
+    local exportText = JustACBridgeExport.debugLog or ""
     if debugBox and debugBox:IsShown() then
-        debugBox:SetText(JustACBridgeExport.debugLog)
-        debugBox:SetCursorPosition(#JustACBridgeExport.debugLog)
+        debugBox:SetText(exportText)
+        debugBox:SetCursorPosition(#exportText)
     end
 end
 
 local function movementDecision(spellID)
-    local displayID = getDisplaySpellID(spellID)
+    local displayID = getEffectiveSpellID(spellID)
     local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(displayID)
     local castTime = info and info.castTime
     local chOk, channeled = sourceCall("IsChanneled", spellID)
@@ -959,15 +1881,18 @@ local function movementDecision(spellID)
         "instantOnly=" .. tostring(policyContains("moveCastInstantOnly", spellID)),
         "always=" .. tostring(policyContains("moveCastAlways", spellID)),
         "moveBuff=" .. tostring(hasMovementCastBuff()),
+        "moveCondition=" .. debugSafe(getConditionalMoveCastLabel(spellID)),
+        "moveProbe=" .. debugSafe(getMoveCastProbeLabel(spellID)),
         "chan=" .. (chOk and debugSafe(channeled) or "call-error"),
         "proc=" .. (procOk and debugSafe(procced) or "call-error"),
         "safe=" .. tostring(isMovementSafeQueueValue(spellID)),
+        "sequence=" .. tostring(isCastSequenceSafeQueueValue(spellID)),
         "usable=" .. tostring(isUsableNow(spellID)),
         "hotkey=" .. (hotkeyOk and debugSafe(toPlainHotkey(hotkey)) or "call-error"),
     }, " ")
 end
 
-local function recordDebugSnapshot(reason, queue, lossless, preserve)
+local function recordDebugSnapshot(reason, queue, preserveQueue, lossless, preserve)
     if JustACBridgeDB.debugEnabled == false then
         return
     end
@@ -976,12 +1901,18 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
     for index = 1, math.min(#queue, QUEUE_SCAN_COUNT) do
         queueKey[#queueKey + 1] = tostring(queue[index])
     end
+    local preserveQueueKey = {}
+    for index = 1, math.min(#preserveQueue, QUEUE_SCAN_COUNT) do
+        preserveQueueKey[#preserveQueueKey + 1] = tostring(preserveQueue[index])
+    end
     local now = GetTime()
     local snapshotKey = table.concat({
         tostring(reason), tostring(playerIsMoving), debugSafe(speed),
-        table.concat(queueKey, ","), tostring(lossless and lossless.queueValue),
+        table.concat(queueKey, ","), table.concat(preserveQueueKey, ","),
+        tostring(lossless and lossless.queueValue),
         tostring(preserve and preserve.queueValue), tostring(queueReady),
         tostring(playerIsCasting), tostring(playerIsChanneling),
+        tostring(queueTiming.windowMs), tostring(queueTiming.gameWindowMs), queueTiming.reason,
     }, ":")
     if snapshotKey == debugLastSnapshot
         and (not playerIsMoving or now - debugLastSnapshotAt < 1) then
@@ -991,9 +1922,9 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
     debugLastSnapshotAt = now
 
     local _, class = UnitClass("player")
-    appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s")
+    appendDebug(("SNAP reason=%s build=%s uptime=%.3f class=%s spec=%s policy=%s/r%s source=%s filter=%s moving=%s speed=%s speedOK=%s cast=%s channel=%s channelID=%s queueReady=%s gcdMs=%s commitMs=%s gameQueueMs=%s queueTiming=%s")
         :format(
-            reason, "2.10.10", GetTime() - debugStartedAt,
+            reason, "2.13.13", GetTime() - debugStartedAt,
             debugSafe(class), debugSafe(currentSpecKey),
             debugSafe(currentPolicy and currentPolicy.id),
             debugSafe(currentPolicy and currentPolicy.revision),
@@ -1001,17 +1932,42 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
             tostring(JustACBridgeDB.movementFilter ~= false),
             tostring(playerIsMoving), debugSafe(speed), tostring(speedOK),
             tostring(playerIsCasting), tostring(playerIsChanneling),
-            debugSafe(playerChannelSpellID), tostring(queueReady), debugSafe(gcdRemainingMs)))
+            debugSafe(playerChannelSpellID), tostring(queueReady), debugSafe(gcdRemainingMs),
+            tostring(queueTiming.windowMs), tostring(queueTiming.gameWindowMs), queueTiming.reason))
 
     local queueParts = {}
     for index = 1, math.min(#queue, QUEUE_SCAN_COUNT) do
         queueParts[#queueParts + 1] = tostring(index) .. "=" .. debugSafe(queue[index])
     end
     appendDebug("QUEUE " .. table.concat(queueParts, " "))
-    appendDebug(("SELECT lossless=%s/%s/%s moveFallback=%s failureFallback=%s emergency=%s preserve=%s/%s/%s moveFallback=%s failureFallback=%s emergency=%s")
+    if activeSource and type(activeSource.GetPreserveQueue) == "function" then
+        local preserveQueueParts = {}
+        for index = 1, math.min(#preserveQueue, QUEUE_SCAN_COUNT) do
+            preserveQueueParts[#preserveQueueParts + 1] = tostring(index)
+                .. "=" .. debugSafe(preserveQueue[index])
+        end
+        appendDebug("PQUEUE " .. table.concat(preserveQueueParts, " "))
+    end
+    if activeSource and type(activeSource.GetDecisionTrace) == "function" then
+        local traceOK, trace = pcall(activeSource.GetDecisionTrace)
+        appendDebug("SOURCE_DECISION " .. (traceOK and debugSafe(trace) or "call-error"))
+    end
+    for _, rule in ipairs(currentPolicy and currentPolicy.castFollowups or {}) do
+        if rule.readyPredicate then
+            local bindingOK, binding = sourceCall("GetSpellHotkey", rule.spellID)
+            appendDebug(("FOLLOWUP_STATE spell=%s effective=%s known=%s bindingCall=%s hotkey=%s pending=%s")
+                :format(debugSafe(rule.spellID), debugSafe(getEffectiveSpellID(rule.spellID)),
+                    tostring(isSpellKnown(rule.spellID)), tostring(bindingOK), debugSafe(binding),
+                    tostring(pendingCastFollowups[rule] ~= nil)))
+        end
+    end
+    appendDebug(("SELECT lossless=%s/%s/%s policyPriorityCue=%s policyReason=%s sourceBurstCue=%s moveFallback=%s failureFallback=%s emergency=%s preserve=%s/%s/%s moveFallback=%s failureFallback=%s emergency=%s burstPreparation=%s castFollowup=%s preparationReason=%s targetEvidence=%s preparationScope=M5")
         :format(
             debugSafe(lossless and lossless.queueValue), debugSafe(lossless and lossless.name),
             debugSafe(lossless and lossless.plainHotkey),
+            tostring(lossless and lossless.policyPriorityCue == true),
+            debugSafe(lossless and lossless.policyPriorityCueReason),
+            tostring(lossless and lossless.sourceBurstCue == true),
             tostring(lossless and lossless.movementFallback == true),
             tostring(lossless and lossless.failureFallback == true),
             tostring(lossless and lossless.emergencyMovementFallback == true),
@@ -1019,7 +1975,20 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
             debugSafe(preserve and preserve.plainHotkey),
             tostring(preserve and preserve.movementFallback == true),
             tostring(preserve and preserve.failureFallback == true),
-            tostring(preserve and preserve.emergencyMovementFallback == true)))
+            tostring(preserve and preserve.emergencyMovementFallback == true),
+            tostring(lossless and lossless.policyBurstPreparation == true),
+            debugSafe(lossless and lossless.policyCastFollowupLabel), debugSafe(policyPreparationReason), debugSafe(policyPreparationTarget)))
+
+    for _, trace in ipairs(policyPriorityCueTraces) do
+        appendDebug(("CUE policy spell=%s combat=%s condition=%s reason=%s known=%s ready=%s usableCall=%s usable=%s cooldownCall=%s onCooldown=%s safe=%s bound=%s selected=%s")
+            :format(
+                debugSafe(trace.spellID), tostring(trace.combatOK),
+                tostring(trace.conditionOK), debugSafe(trace.conditionReason),
+                tostring(trace.known), tostring(trace.ready),
+                tostring(trace.usableOK), debugSafe(trace.usable),
+                tostring(trace.cooldownOK), debugSafe(trace.onCooldown),
+                tostring(trace.safe), tostring(trace.bound), tostring(trace.selected)))
+    end
 
     for index = 1, math.min(#queue, QUEUE_SCAN_COUNT) do
         local value = queue[index]
@@ -1034,6 +2003,15 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
         else
             appendDebug("Q" .. tostring(index) .. " value=" .. debugSafe(value))
         end
+    end
+
+    for _, trace in ipairs(movementFallbackProofTraces) do
+        appendDebug(("MOVE_PROOF slot=%s index=%s spell=%s source=%s call=%s allowed=%s approved=%s reason=%s")
+            :format(
+                debugSafe(trace.position), debugSafe(trace.queueIndex),
+                debugSafe(trace.spellID), debugSafe(trace.source),
+                tostring(trace.callOK), tostring(trace.allowed),
+                tostring(trace.approved), debugSafe(trace.reason)))
     end
 
     for position = 1, 2 do
@@ -1060,6 +2038,8 @@ local function recordDebugSnapshot(reason, queue, lossless, preserve)
 end
 
 local function getGcdState()
+    queueTiming.windowMs, queueTiming.gameWindowMs, queueTiming.reason =
+        JustACBridgeQueueTiming.ReadWindow(QUEUE_COMMIT_WINDOW_MS)
     local cooldown = C_Spell and C_Spell.GetSpellCooldown
         and C_Spell.GetSpellCooldown(61304)
     local startTime = type(cooldown) == "table" and tonumber(cooldown.startTime) or 0
@@ -1069,7 +2049,7 @@ local function getGcdState()
     end
 
     local remaining = math.max(0, math.ceil((startTime + duration - GetTime()) * 1000))
-    return remaining <= QUEUE_COMMIT_WINDOW_MS, remaining
+    return remaining <= queueTiming.windowMs, remaining
 end
 
 local function makeSignature(dataRows, canCommitQueue)
@@ -1082,6 +2062,8 @@ local function makeSignature(dataRows, canCommitQueue)
                 tostring(data.queueValue),
                 data.hotkey,
                 data.name,
+                tostring(data.offGCD == true),
+                tostring(data.movementProbe == true),
             }, "\031")
         else
             parts[index] = "-"
@@ -1094,6 +2076,8 @@ local function makeSignature(dataRows, canCommitQueue)
     parts[ROW_COUNT + 2] = playerIsCasting and "casting" or "not-casting"
     parts[ROW_COUNT + 3] = canCommitQueue and "queue-ready" or "queue-wait"
     parts[ROW_COUNT + 4] = playerIsMoving and "moving" or "stationary"
+    parts[ROW_COUNT + 5] = table.concat({ tostring(queueTiming.windowMs),
+        tostring(queueTiming.gameWindowMs), queueTiming.reason }, ":")
     return table.concat(parts, "\030")
 end
 
@@ -1166,9 +2150,9 @@ local function updatePixelProtocol(dataRows)
     if second then flags = flags + 8 end
     if second and second.kind == "item" then flags = flags + 16 end
     if second and second.plainHotkey ~= "" then flags = flags + 32 end
-    -- The desktop treats this bit as "channel blocks input".  Clip-policy
-    -- channels (Arcane Missiles) stay visible in SavedVariables/UI, while the
-    -- v3 GCD gate decides exactly when the next action may interrupt them.
+    -- The desktop treats this bit as "channel blocks input". Protected
+    -- channels block both held-key outputs until their channel-stop event;
+    -- clip-policy channels remain visible in SavedVariables/UI but omit it.
     if channelBlocksInput() then flags = flags + 64 end
     if playerIsCasting then flags = flags + 128 end
     bytes[7] = flags
@@ -1181,8 +2165,13 @@ local function updatePixelProtocol(dataRows)
     putU24(bytes, 36, second and (second.spellID or second.itemID) or 0)
     putFixedString(bytes, 39, 40, second and second.plainHotkey or "")
 
-    -- Diagnostic protocol v4 adds live movement state to the v3 queue gate.
+    -- Byte 64 extends the v3 queue gate with per-slot off-GCD permission.
+    -- Old v3/v4 readers ignore the new high bits and remain safely gated;
+    -- updated readers may bypass queueReady only for the marked slot. The
+    -- diagnostic v4 low bits continue to carry movement state.
     bytes[64] = (queueReady and 1 or 0)
+        + (first and first.offGCD and 8 or 0)
+        + (second and second.offGCD and 16 or 0)
     if PIXEL_PROTOCOL_VERSION >= 4 then
         bytes[64] = bytes[64]
             + (playerIsMoving and 2 or 0)
@@ -1273,12 +2262,16 @@ local function updateSavedExport(dataRows)
     JustACBridgeExport.recommendationSource = activeSource and {
         id = activeSource.id,
         name = activeSource.name,
+        mode = activeSourceMode,
         justACFallback = supportSource ~= nil and supportSource ~= activeSource,
     } or nil
     JustACBridgeExport.groundEffects = GroundEffectTracker
         and GroundEffectTracker.GetActive and GroundEffectTracker.GetActive() or {}
     JustACBridgeExport.queueReady = queueReady
     JustACBridgeExport.gcdRemainingMs = gcdRemainingMs
+    JustACBridgeExport.queueCommitWindowMs = queueTiming.windowMs
+    JustACBridgeExport.gameSpellQueueWindowMs = queueTiming.gameWindowMs
+    JustACBridgeExport.queueTimingReason = queueTiming.reason
     JustACBridgeExport.playerState = playerIsChanneling and "channeling"
         or (playerIsCasting and "casting" or "idle")
     JustACBridgeExport.policy = currentPolicy and {
@@ -1353,8 +2346,9 @@ local function updateUI(dataRows)
                     and ("：" .. data.emergencyFallbackLabel) or ""))
                 or (data.movementFallback and " · 移动替代"
                 or (data.failureFallback and " · 失败后替代"
+                or (data.sequenceFallback and " · 顺序替代"
                 or (data.rangeFallback and " · 射程替代"
-                    or (data.groundFallback and " · 场地仍存在" or "")))))
+                    or (data.groundFallback and " · 场地仍存在" or ""))))))
             row.id:SetText((data.kind == "item"
                 and ("物品 " .. tostring(data.itemID))
                 or ("法术 " .. tostring(data.spellID)))
@@ -1411,28 +2405,148 @@ local function refresh()
         return false, ok and "invalid recommendation queue" or tostring(queue)
     end
 
+    -- Sources may reuse an internal array for both getters. Snapshot before
+    -- the second call, then give each mode (and the policy) its own array.
+    queue = copyTable(queue)
+    local preserveQueue = copyTable(queue)
+    local separatePreserveQueue = false
+    if type(activeSource.GetPreserveQueue) == "function" then
+        local preserveOK, candidate = pcall(activeSource.GetPreserveQueue)
+        if preserveOK and type(candidate) == "table" then
+            preserveQueue = copyTable(candidate)
+            separatePreserveQueue = true
+        end
+    end
+
     policyFallbackTraces = {}
-    local lossless = findMaintenanceRecommendation(1) or findSafeRecommendation(queue)
-    if not lossless then
+    policyPriorityCueTraces = {}
+    movementFallbackProofTraces = {}
+    policyPreparationReason = nil
+    policyPreparationTarget = nil
+    local losslessQueueOnlyRule = getActiveSourceQueueOnlyBeyondRule(
+        "losslessSourceQueueOnlyBeyond")
+    -- Run policy burst gating BEFORE ANY ordinary M5 recommendation is chosen.
+    -- Deliberately includes precombat: the old post-selection combat-only hook
+    -- let the opening Pillar escape before its resource check ever ran.
+    local burstDecision
+    if currentPolicy and currentPolicy.selectLossless then
+        local targetContext = currentPolicy.selectionTargetScope == "target-epoch"
+            and selectionTargetLease:Read() or nil
+        policyPreparationTarget = targetContext and targetContext.evidence
+        local gateOK, decision, reason = pcall(currentPolicy.selectLossless, copyTable(queue), {
+            mode = "lossless",
+            targetGUID = not targetContext and getCurrentHostileTargetGUID() or nil,
+            targetKey = targetContext and targetContext.key,
+            targetContext = targetContext,
+            now = GetTime(),
+            outOfRange = losslessQueueOnlyRule ~= nil,
+            resolve = getEffectiveSpellID,
+            query = sourceCall,
+            inspect = function(spellID)
+                local boundOK, binding = sourceCall("GetSpellHotkey", spellID)
+                return {
+                    known = isSpellKnown(spellID, true),
+                    bound = JustACBridgeActionSequence.Binding(boundOK, binding),
+                }
+            end,
+            canUse = function(spellID)
+                local boundOK, binding = sourceCall("GetSpellHotkey", spellID)
+                return isSpellKnown(spellID) and boundOK and not isSecret(binding)
+                    and type(binding) == "string" and binding ~= ""
+            end,
+        })
+        if gateOK and type(decision) == "table" and not losslessQueueOnlyRule then
+            burstDecision = decision
+            policyPreparationReason = decision.reason
+        else
+            policyPreparationReason = gateOK and reason or "burst-gate-error"
+        end
+    end
+    -- Explicit sequence ownership survives selector nil/error and covers ALL
+    -- ordinary injection/fallback routes. Opt-in only; never changes other APLs.
+    local selectionBlocked, selectionPassthrough
+    if currentPolicy and currentPolicy.losslessSelectionFallbackBlock and not losslessQueueOnlyRule then
+        selectionBlocked, selectionPassthrough = {}, {}
+        for _, id in ipairs(currentPolicy.losslessSelectionFallbackBlock) do selectionBlocked[id] = true end
+        for _, id in ipairs(currentPolicy.losslessSelectionPassthrough or {}) do selectionPassthrough[id] = true end
+        if not burstDecision then
+            burstDecision = JustACBridgeActionSequence.Filter(queue, getEffectiveSpellID,
+                selectionBlocked, policyPreparationReason or "sequence-selector-unavailable", selectionPassthrough)
+            burstDecision.allowCastFollowup = true
+        elseif type(burstDecision.queue) == "table" then
+            burstDecision.queue = JustACBridgeActionSequence.Filter(burstDecision.queue,
+                getEffectiveSpellID, selectionBlocked, burstDecision.reason, selectionPassthrough).queue
+        end
+        policyPreparationReason = burstDecision.reason
+    end
+    local lossless
+    if burstDecision then
+        local id = burstDecision.spellID
+        if id then
+            if isSpellKnown(id) and isSafeQueueValue(id, 1) then
+                local data = getSpellData(id, 1)
+                if data and data.plainHotkey ~= "" then lossless = data end
+            end
+        elseif type(burstDecision.queue) == "table" then
+            if burstDecision.allowCastFollowup then
+                local followup = findPolicyCastFollowupRecommendation(1)
+                if followup and (not selectionBlocked or selectionPassthrough[followup.spellID]
+                    or not selectionBlocked[followup.spellID] and not selectionBlocked[followup.sourceSpellID]) then
+                    lossless = followup
+                end
+            end
+            lossless = lossless or findSafeRecommendation(burstDecision.queue)
+        end
+        if lossless then
+            lossless.policyBurstGate = true
+            lossless.policyBurstGateReason = burstDecision.reason
+        end
+    elseif not losslessQueueOnlyRule then
+        lossless = findPolicyCastFollowupRecommendation(1)
+    end
+    if not burstDecision and not lossless and losslessQueueOnlyRule then
+        lossless = findAllowedSourceQueueRecommendation(
+            queue, losslessQueueOnlyRule.allow, 1)
+    elseif not burstDecision and not lossless then
+        lossless = findPolicyPriorityCueRecommendation()
+            or findSourceBurstCueRecommendation(queue)
+            or findMaintenanceRecommendation(1)
+            or findSafeRecommendation(queue)
+    end
+    if not burstDecision and not lossless and not losslessQueueOnlyRule then
         lossless = findPolicyFinalFallback(1)
     end
-    local preserve = findMaintenanceRecommendation(2)
-    if not preserve and lossless and lossless.plainHotkey ~= ""
+    local preserveQueueOnly = currentPolicy
+        and currentPolicy.preserveSourceQueueOnly == true
+    local preserveQueueOnlyRule = getActiveSourceQueueOnlyBeyondRule(
+        "preserveSourceQueueOnlyBeyond")
+    local preserve
+    if preserveQueueOnlyRule then
+        preserve = findAllowedSourceQueueRecommendation(
+            preserveQueue, preserveQueueOnlyRule.allow, 2)
+    elseif not preserveQueueOnly then
+        preserve = findMaintenanceRecommendation(2)
+    end
+    if not preserve and not preserveQueueOnlyRule
+        and not preserveQueueOnly and not separatePreserveQueue
+        and not burstDecision
+        and lossless and lossless.plainHotkey ~= ""
         and not isReservedQueueValue(lossless.queueValue)
         and not isReserveExcludedQueueValue(lossless.queueValue)
-        and isHoldSafeQueueValue(lossless.queueValue) then
+        and isPreserveSafeQueueValue(lossless.queueValue) then
         preserve = copyTable(lossless)
         preserve.position = 2
-    elseif not preserve then
+    elseif not preserve and not preserveQueueOnlyRule then
         -- A movement fallback may originate from any queue position.  Rescan
         -- from the front so reserve mode still gets the best safe non-burst
         -- action rather than accidentally skipping an earlier candidate.
         preserve = findReserveRecommendation(
-            queue,
-            playerIsMoving and JustACBridgeDB.movementFilter ~= false
-                and 1 or (lossless and 2 or 1)
+            preserveQueue,
+            (preserveQueueOnly or burstDecision ~= nil) and 1
+                or playerIsMoving and JustACBridgeDB.movementFilter ~= false
+                and 1 or (separatePreserveQueue and 1 or (lossless and 2 or 1))
         )
-        if not preserve then
+        if not preserve and not preserveQueueOnly then
             preserve = findPolicyFinalFallback(2)
         end
     end
@@ -1441,9 +2555,10 @@ local function refresh()
     local nextQueueReady, nextGcdRemainingMs = getGcdState()
     queueReady = nextQueueReady
     gcdRemainingMs = nextGcdRemainingMs
-    recordDebugSnapshot("frame", queue, lossless, preserve)
+    recordDebugSnapshot("frame", queue, preserveQueue, lossless, preserve)
     local signature = makeSignature(nextRows, nextQueueReady)
     if signature == lastSignature then
+        clearCancelledMovementProbes()
         return true
     end
 
@@ -1451,6 +2566,7 @@ local function refresh()
     currentRows = nextRows
     updateSavedExport(currentRows)
     updateUI(currentRows)
+    clearCancelledMovementProbes()
     return true
 end
 
@@ -1475,26 +2591,69 @@ local function getGroundEffectName(effect)
     return info and info.name or "场地技能"
 end
 
-local function showGroundEffectExpiredAlert(effect)
+local function getUsableTtsVoiceID()
+    local configuredVoiceID
+    local voiceType = Enum and Enum.TtsVoiceType and Enum.TtsVoiceType.Standard or 0
+    if C_TTSSettings and C_TTSSettings.GetVoiceOptionID then
+        local ok, result = pcall(C_TTSSettings.GetVoiceOptionID, voiceType)
+        if ok and type(result) == "number" then configuredVoiceID = result end
+    end
+
+    -- A configured option can disappear after a client or Windows voice
+    -- update. SpeakText accepts that stale ID without raising an error but
+    -- produces no audio. Validate against the live engine voices and fall
+    -- back to the first voice that actually exists.
+    if C_VoiceChat and C_VoiceChat.GetTtsVoices then
+        local ok, voices = pcall(C_VoiceChat.GetTtsVoices)
+        if ok and type(voices) == "table" then
+            for _, voice in ipairs(voices) do
+                if type(voice) == "table" and voice.voiceID == configuredVoiceID then
+                    return configuredVoiceID
+                end
+            end
+            local first = voices[1]
+            if type(first) == "table" and type(first.voiceID) == "number" then
+                return first.voiceID
+            end
+        end
+    end
+    return configuredVoiceID
+end
+
+local function getCooldownAlertText(effect, name)
+    if effect and effect.kind == "spell"
+        and type(effect.charges) == "number" and effect.charges > 0
+        and (effect.spellID == 43265 or effect.spellID == 152280) then
+        return "枯萎凋零" .. tostring(effect.charges)
+    end
+    if effect and effect.kind == "trinket" then
+        if effect.slot == 13 then return "饰品1" end
+        if effect.slot == 14 then return "饰品2" end
+    end
+    return name .. "冷却就绪"
+end
+
+local function showCooldownReadyAlert(effect)
     local name = getGroundEffectName(effect)
+    local alertText = getCooldownAlertText(effect, name)
     if JustACBridgeDB.groundAlert ~= false and groundAlertFrame and groundAlertText then
-        groundAlertText:SetText(name .. " 已结束")
+        groundAlertText:SetText(alertText)
         groundAlertFrame:SetAlpha(1)
         groundAlertFrame:Show()
         groundAlertExpiresAt = GetTime() + 2
     end
     if JustACBridgeDB.groundVoice ~= false
         and C_VoiceChat and C_VoiceChat.SpeakText then
-        local voiceType = Enum and Enum.TtsVoiceType and Enum.TtsVoiceType.Standard or 0
-        local voiceID = 0
-        if C_TTSSettings and C_TTSSettings.GetVoiceOptionID then
-            local ok, configuredVoiceID = pcall(C_TTSSettings.GetVoiceOptionID, voiceType)
-            if ok and type(configuredVoiceID) == "number" then
-                voiceID = configuredVoiceID
-            end
+        local voiceID = getUsableTtsVoiceID()
+        local spoken = false
+        if voiceID then
+            -- Patch 12.0 signature: voiceID, text, rate, volume, overlap.
+            spoken = pcall(C_VoiceChat.SpeakText,
+                voiceID, alertText, 0, 100, false)
         end
-        -- Patch 12.0 signature: voiceID, text, rate, volume, overlap.
-        pcall(C_VoiceChat.SpeakText, voiceID, name .. "结束", 0, 100, false)
+        appendDebug(("ALERT cooldown-ready name=%s text=%s voiceID=%s spoken=%s")
+            :format(debugSafe(name), debugSafe(alertText),
+                debugSafe(voiceID), tostring(spoken)))
     end
     if JustACBridgeDB.groundSound ~= false and PlaySound then
         local soundID = SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959
@@ -1715,7 +2874,8 @@ local function showDebugWindow()
         hint:SetPoint("LEFT", selectAll, "RIGHT", 12, 0)
         hint:SetText("复现后不要 /reload；输入 /jacb debug，再复制这里和 Windows 客户端日志。")
     end
-    local text = table.concat(debugLines, "\n")
+    syncDebugExport()
+    local text = JustACBridgeExport.debugLog or ""
     debugBox:SetText(text ~= "" and text or "暂无日志")
     debugBox:SetCursorPosition(#text)
     debugFrame:Show()
@@ -1779,6 +2939,7 @@ function API.GetRecommendationSource()
     return activeSource and {
         id = activeSource.id,
         name = activeSource.name,
+        mode = activeSourceMode,
         justACFallback = supportSource ~= nil and supportSource ~= activeSource,
     } or nil
 end
@@ -1820,11 +2981,15 @@ eventFrame:RegisterEvent("PLAYER_LOGOUT")
 eventFrame:RegisterEvent("UI_SCALE_CHANGED")
 eventFrame:RegisterEvent("DISPLAY_SIZE_CHANGED")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
 eventFrame:RegisterEvent("PLAYER_TALENT_UPDATE")
 eventFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
 eventFrame:RegisterEvent("PLAYER_STARTED_MOVING")
 eventFrame:RegisterEvent("PLAYER_STOPPED_MOVING")
+eventFrame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+eventFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
@@ -1835,7 +3000,35 @@ eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED_QUIET", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
 eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+eventFrame:RegisterUnitEvent("UNIT_HEALTH", "target")
+eventFrame:RegisterUnitEvent("UNIT_FLAGS", "target")
 eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID)
+    if event:match("^UNIT_SPELLCAST_") and unitTarget ~= "player" then return end
+    if event:match("^UNIT_SPELLCAST_") and currentPolicy
+        and currentPolicy.observePlayerSpellcast then
+        local key
+        if currentPolicy.selectionTargetScope == "target-epoch" then
+            key = selectionTargetLease:Read().key
+        else key = getCurrentHostileTargetGUID() end
+        pcall(currentPolicy.observePlayerSpellcast, event, spellID, key)
+    end
+    if unitTarget == "player" and (event == "UNIT_SPELLCAST_FAILED"
+        or event == "UNIT_SPELLCAST_FAILED_QUIET"
+        or event == "UNIT_SPELLCAST_INTERRUPTED") then
+        for rule in pairs(pendingCastFollowups) do
+            if rule.cancelOnFailure then
+                local matches = spellID == rule.spellID
+                for _, id in ipairs(rule.cancelSpells or {}) do
+                    matches = matches or spellID == id
+                end
+                if matches then
+                    pendingCastFollowups[rule] = nil
+                    pendingCastFollowupTargets[rule] = nil
+                    lastSignature = nil
+                end
+            end
+        end
+    end
     if event == "PLAYER_LOGIN" then
         JustACBridgeDB = JustACBridgeDB or {}
         if JustACBridgeDB.visible == nil then
@@ -1870,14 +3063,35 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         if JustACBridgeDB.groundVoice == nil then
             JustACBridgeDB.groundVoice = true
         end
+        -- 2.12 makes source selection specialization-aware. Existing built-in
+        -- defaults migrate once to auto; a genuinely custom/manual source ID
+        -- remains explicit and is never rewritten on later logins. Auto uses
+        -- owned sources for the three Mage and three Hunter specs. Every Death
+        -- Knight spec deliberately resolves to JustAC unless the player
+        -- explicitly opts into an experimental DK source with /jacb source.
+        if JustACBridgeDB.optimized121SourceMigration ~= "2.13.0" then
+            local old = JustACBridgeDB.recommendationSource
+            if old == nil or old == "justac" or old == "arcane121"
+                or old == "fire121" or old == "frostmage121"
+                or old == "frostdk121" or old == "unholydk121" then
+                JustACBridgeDB.recommendationSource = "auto"
+            end
+            JustACBridgeDB.optimized121SourceMigration = "2.13.0"
+        end
         local sourceOK, sourceError = activateRecommendationSource(
             JustACBridgeDB.recommendationSource
         )
         refreshPlayerMoving()
+        if CooldownReadyTracker and CooldownReadyTracker.SetDebugLogger then
+            CooldownReadyTracker.SetDebugLogger(appendDebug)
+        end
         refreshReservedSpells()
+        if CooldownReadyTracker and CooldownReadyTracker.RefreshEquipment then
+            CooldownReadyTracker.RefreshEquipment()
+        end
         createUI()
         appendDebug(("START addon=%s protocol=%d locale=%s interface=%s")
-            :format("2.10.10", PIXEL_PROTOCOL_VERSION,
+            :format("2.13.13", PIXEL_PROTOCOL_VERSION,
                 debugSafe(GetLocale and GetLocale()),
                 debugSafe(select(4, GetBuildInfo()))))
 
@@ -1892,22 +3106,48 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
     elseif event == "PLAYER_LOGOUT" then
         savePosition()
         refresh()
+        syncDebugExport()
     elseif event == "UI_SCALE_CHANGED" or event == "DISPLAY_SIZE_CHANGED" then
         C_Timer.After(0, updatePixelGeometry)
     elseif event == "PLAYER_ENTERING_WORLD" then
         playerIsChanneling = false
         playerChannelSpellID = nil
         playerIsCasting = false
+        resetSuccessfulCastSequences()
         if GroundEffectTracker and GroundEffectTracker.Reset then
             GroundEffectTracker.Reset()
         end
+        if CooldownReadyTracker and CooldownReadyTracker.Reset then
+            CooldownReadyTracker.Reset()
+        end
+        if CooldownReadyTracker and CooldownReadyTracker.RefreshEquipment then
+            CooldownReadyTracker.RefreshEquipment()
+        end
+        movementStateInitialized = false
         refreshPlayerMoving()
         lastSignature = nil
         refreshReservedSpells()
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        resetSuccessfulCastSequences()
+        lastSignature = nil
+    elseif event == "PLAYER_TARGET_CHANGED" then
+        -- Only policies which explicitly bind a cast credential to one target
+        -- are cleared. Other specialization sequences keep their historical
+        -- behavior and cannot be affected by this Arcane safety rule.
+        resetTargetBoundSuccessfulCastSequences()
+        lastSignature = nil
+    elseif event == "UNIT_HEALTH" or event == "UNIT_FLAGS" then
+        if not getCurrentHostileTargetGUID() then
+            local keepLossless = currentPolicy and currentPolicy.selectionTargetScope == "target-epoch"
+                and selectionTargetLease:Read().valid ~= false
+            resetTargetBoundSuccessfulCastSequences(keepLossless)
+            lastSignature = nil
+        end
     elseif event == "PLAYER_STARTED_MOVING" then
         local now = GetTime()
         local changed = not playerIsMoving
         playerIsMoving = true
+        movementProbeStopPending = false
         lastMovementStartedAt = now
         movementStopPendingUntil = 0
         if changed then lastSignature = nil end
@@ -1921,12 +3161,23 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
     elseif event == "PLAYER_STOPPED_MOVING" then
         local now = GetTime()
         local deferred = now - lastMovementStartedAt <= MOVEMENT_FLAP_WINDOW_SECONDS
+        -- Cancel the currently exported probe immediately, even when the
+        -- generic movement debounce defers accepting the STOP. This prevents
+        -- the stale probe from turning into a stationary Missiles cast.
+        local cancelledProbe = cancelCurrentMovementProbeForNextRefresh()
+        if cancelledProbe then movementProbeStopPending = true end
         if deferred then
+            -- Do not create a new blind probe from a recommendation that
+            -- appears while STOP itself is still unresolved.
+            movementProbeStopPending = true
             movementStopPendingUntil = now + MOVEMENT_STOP_DEBOUNCE_SECONDS
             movementFlapCount = movementFlapCount + 1
         else
             playerIsMoving = false
+            movementProbeStopPending = false
+            lastMovementStoppedAt = now
             movementStopPendingUntil = 0
+            resetMovementProbeFailures()
             lastSignature = nil
         end
         local ok, speed = pcall(GetUnitSpeed, "player")
@@ -1936,22 +3187,57 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
                 :format(debugSafe(ok and speed or "call-error"), tostring(deferred), movementFlapCount))
             if not deferred then movementFlapCount = 0 end
         end
+    elseif event == "PLAYER_EQUIPMENT_CHANGED" or event == "GET_ITEM_INFO_RECEIVED" then
+        if CooldownReadyTracker and CooldownReadyTracker.RefreshEquipment then
+            CooldownReadyTracker.RefreshEquipment()
+        end
     elseif event == "PLAYER_SPECIALIZATION_CHANGED"
         or event == "PLAYER_TALENT_UPDATE"
         or event == "TRAIT_CONFIG_UPDATED" then
+        if JustACBridgeDB.recommendationSource == "auto" then
+            activateRecommendationSource("auto")
+        end
         if GroundEffectTracker and GroundEffectTracker.Reset then
             GroundEffectTracker.Reset()
         end
+        resetSuccessfulCastSequences()
         refreshReservedSpells()
         lastSignature = nil
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
-        failedMovementRecommendations[tonumber(spellID)] = nil
+        local succeededSpellID = tonumber(spellID)
+        failedMovementRecommendations[succeededSpellID] = nil
+        if recordSuccessfulCastSequence(succeededSpellID) then
+            -- A strict policy-owned action order changed even when JustAC's
+            -- cached queue did not.
+            lastSignature = nil
+        end
+        if recordSuccessfulCastFollowups(succeededSpellID) then
+            lastSignature = nil
+        end
+        if recordSuccessfulCastResumeTrigger(succeededSpellID) then
+            -- The action list changed even when the source queue did not: a
+            -- policy-configured directional spell has entered its post-cast
+            -- safety delay.
+            lastSignature = nil
+        end
+        -- Queue entries may use the base button while spellcast events report
+        -- the currently transformed spell. Clear the raw queue alias as well.
+        for index = 1, ROW_COUNT do
+            local row = currentRows[index]
+            if row and (row.spellID == succeededSpellID
+                or row.queueValue == succeededSpellID) then
+                failedMovementRecommendations[row.queueValue] = nil
+            end
+        end
         appendDebug(("EVENT %s spell=%s castGUID=%s moving=%s")
             :format(event, debugSafe(spellID), debugSafe(castGUID), tostring(playerIsMoving)))
         if GroundEffectTracker and GroundEffectTracker.OnSpellcastSucceeded
             and GroundEffectTracker.OnSpellcastSucceeded(spellID) then
             lastSignature = nil
             refreshStatusText()
+        end
+        if CooldownReadyTracker and CooldownReadyTracker.OnSpellcastSucceeded then
+            CooldownReadyTracker.OnSpellcastSucceeded(spellID)
         end
     elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
         playerIsChanneling = true
@@ -1967,30 +3253,42 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         appendDebug(("EVENT %s spell=%s moving=%s"):format(event, debugSafe(spellID), tostring(playerIsMoving)))
     elseif event == "UNIT_SPELLCAST_START" or event == "UNIT_SPELLCAST_EMPOWER_START" then
         playerIsCasting = true
-        playerIsChanneling = false
-        playerChannelSpellID = nil
+        -- A protected channel is released only by its authoritative
+        -- CHANNEL_STOP/INTERRUPTED event. Triggered spell START events may be
+        -- delivered while the channel is still active; clearing it here would
+        -- briefly reopen both held-key outputs and allow an early clip.
+        if not (playerIsChanneling
+            and policyContains("protectedChannels", playerChannelSpellID)) then
+            playerIsChanneling = false
+            playerChannelSpellID = nil
+        end
         lastSignature = nil
         appendDebug(("EVENT %s spell=%s moving=%s"):format(event, debugSafe(spellID), tostring(playerIsMoving)))
     elseif event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_FAILED_QUIET" then
         local numericSpellID = tonumber(spellID)
         local selected = false
+        local selectedQueueValue
         for index = 1, ROW_COUNT do
             local row = currentRows[index]
-            if row and row.spellID == numericSpellID then
+            if row and (row.spellID == numericSpellID or row.queueValue == numericSpellID) then
                 selected = true
+                selectedQueueValue = tonumber(row.queueValue)
                 break
             end
         end
+        local failureKey = selectedQueueValue or numericSpellID
         local now = GetTime()
-        local state = numericSpellID and failedMovementRecommendations[numericSpellID] or nil
+        local state = failureKey and failedMovementRecommendations[failureKey] or nil
         local newlySuppressed = false
         local duplicateFailure = false
-        local fallbackSpell = isPolicyFallbackSpell(numericSpellID)
+        local fallbackSpell = isPolicyFallbackSpell(failureKey)
+        local movementProbe = failureKey and getMoveCastProbeRule(failureKey) ~= nil
+            and getConditionalMoveCastLabel(failureKey) == nil
         if selected and not fallbackSpell and playerIsMoving
             and JustACBridgeDB.movementFilter ~= false then
             if not state or now - (tonumber(state.lastAt) or 0) > FAILURE_WINDOW_SECONDS then
                 state = { count = 0, lastAt = now, suppressUntil = 0 }
-                failedMovementRecommendations[numericSpellID] = state
+                failedMovementRecommendations[failureKey] = state
             end
             local failureGUID = type(castGUID) == "string" and castGUID ~= "" and castGUID or nil
             duplicateFailure = (failureGUID and state.lastCastGUID == failureGUID)
@@ -2001,7 +3299,13 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
             if not duplicateFailure then
                 state.count = (tonumber(state.count) or 0) + 1
                 state.lastAt = now
-                if state.count >= FAILURE_THRESHOLD then
+                if movementProbe then
+                    local previousUntil = tonumber(state.suppressUntil) or 0
+                    state.probeBlocked = true
+                    state.suppressUntil = math.huge
+                    newlySuppressed = previousUntil <= now
+                    lastSignature = nil
+                elseif state.count >= FAILURE_THRESHOLD then
                     local previousUntil = tonumber(state.suppressUntil) or 0
                     state.suppressUntil = math.max(previousUntil, now + FAILURE_SUPPRESS_SECONDS)
                     newlySuppressed = previousUntil <= now
@@ -2013,9 +3317,9 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
         local lastLog = numericSpellID and (debugFailureLastLog[numericSpellID] or 0) or 0
         if newlySuppressed or now - lastLog >= FAILURE_WINDOW_SECONDS then
             if numericSpellID then debugFailureLastLog[numericSpellID] = now end
-            appendDebug(("EVENT %s spell=%s castGUID=%s moving=%s selected=%s fallback=%s duplicate=%s failCount=%s suppressed=%s suppressRemaining=%.3f")
+            appendDebug(("EVENT %s spell=%s castGUID=%s moving=%s selected=%s fallback=%s probe=%s duplicate=%s failCount=%s suppressed=%s suppressRemaining=%.3f")
                 :format(event, debugSafe(spellID), debugSafe(castGUID), tostring(playerIsMoving),
-                    tostring(selected), tostring(fallbackSpell), tostring(duplicateFailure),
+                    tostring(selected), tostring(fallbackSpell), tostring(movementProbe), tostring(duplicateFailure),
                     debugSafe(state and state.count), tostring(newlySuppressed),
                     math.max(0, (state and tonumber(state.suppressUntil) or 0) - now)))
         end
@@ -2033,15 +3337,22 @@ eventFrame:SetScript("OnEvent", function(_, event, unitTarget, castGUID, spellID
 end)
 
 eventFrame:SetScript("OnUpdate", function(_, delta)
+    if CooldownReadyTracker and CooldownReadyTracker.Update then
+        CooldownReadyTracker.Update()
+    end
+    if CooldownReadyTracker and CooldownReadyTracker.DrainReady then
+        for _, readyEffect in ipairs(CooldownReadyTracker.DrainReady()) do
+            showCooldownReadyAlert(readyEffect)
+        end
+    end
     if GroundEffectTracker and GroundEffectTracker.Update
         and GroundEffectTracker.Update() then
         lastSignature = nil
     end
     if GroundEffectTracker and GroundEffectTracker.DrainExpired then
-        local expired = GroundEffectTracker.DrainExpired()
-        for _, effect in ipairs(expired) do
-            showGroundEffectExpiredAlert(effect)
-        end
+        -- Expiry still controls duplicate-ground filtering, but the user-facing
+        -- cue now belongs to the authoritative cooldown/charge completion.
+        GroundEffectTracker.DrainExpired()
     end
     if groundAlertFrame and groundAlertExpiresAt then
         local remaining = groundAlertExpiresAt - GetTime()
@@ -2120,7 +3431,8 @@ SlashCmdList.JUSTACBRIDGE = function(message)
                 #ids > 0 and table.concat(ids, ", ") or "无"))
     elseif command == "source list" then
         local entries = SourceRegistry and SourceRegistry.List and SourceRegistry.List() or {}
-        print("|cff40a9ffJustACBridge:|r 推荐源：")
+        print(("|cff40a9ffJustACBridge:|r 推荐源（模式：%s）：")
+            :format(activeSourceMode or "未知"))
         for _, entry in ipairs(entries) do
             local selected = activeSource and activeSource.id == entry.id and "（当前）" or ""
             print(("  %s · %s%s%s"):format(
@@ -2133,14 +3445,15 @@ SlashCmdList.JUSTACBRIDGE = function(message)
     elseif command:match("^source%s+[%w_-]+$") then
         local sourceID = command:match("^source%s+([%w_-]+)$")
         local ok, err = activateRecommendationSource(sourceID, true)
-        if ok and activeSource and activeSource.id == sourceID then
+        if ok and activeSource
+            and (sourceID == "auto" or activeSource.id == sourceID) then
             if GroundEffectTracker and GroundEffectTracker.Reset then
                 GroundEffectTracker.Reset()
             end
             refreshReservedSpells()
             lastSignature = nil
-            print(("|cff40a9ffJustACBridge:|r 推荐源已切换为 %s（%s）。")
-                :format(activeSource.name, activeSource.id))
+            print(("|cff40a9ffJustACBridge:|r 推荐源已切换为 %s（%s，模式 %s）。")
+                :format(activeSource.name, activeSource.id, activeSourceMode))
         else
             print("|cffff4040JustACBridge:|r 无法切换推荐源：" .. tostring(err or sourceID))
         end
@@ -2150,24 +3463,30 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         print(JustACBridgeDB.groundEffectFilter
             and "|cff40a9ffJustACBridge:|r 场地技能到期过滤已开启。"
             or "|cff40a9ffJustACBridge:|r 场地技能仍会计时，但不再抑制重复推荐。")
-    elseif command == "ground alert on" or command == "ground alert off" then
-        JustACBridgeDB.groundAlert = command == "ground alert on"
+    elseif command == "ground alert on" or command == "ground alert off"
+        or command == "cooldown alert on" or command == "cooldown alert off" then
+        JustACBridgeDB.groundAlert = command:match(" on$") ~= nil
         print(JustACBridgeDB.groundAlert
-            and "|cff40a9ffJustACBridge:|r 场地技能中央文字提醒已开启。"
-            or "|cff40a9ffJustACBridge:|r 场地技能中央文字提醒已关闭。")
-    elseif command == "ground sound on" or command == "ground sound off" then
-        JustACBridgeDB.groundSound = command == "ground sound on"
+            and "|cff40a9ffJustACBridge:|r 冷却就绪中央文字提醒已开启。"
+            or "|cff40a9ffJustACBridge:|r 冷却就绪中央文字提醒已关闭。")
+    elseif command == "ground sound on" or command == "ground sound off"
+        or command == "cooldown sound on" or command == "cooldown sound off" then
+        JustACBridgeDB.groundSound = command:match(" on$") ~= nil
         print(JustACBridgeDB.groundSound
-            and "|cff40a9ffJustACBridge:|r 场地技能到期声音已开启。"
-            or "|cff40a9ffJustACBridge:|r 场地技能到期声音已关闭。")
-    elseif command == "ground voice on" or command == "ground voice off" then
-        JustACBridgeDB.groundVoice = command == "ground voice on"
+            and "|cff40a9ffJustACBridge:|r 冷却就绪声音已开启。"
+            or "|cff40a9ffJustACBridge:|r 冷却就绪声音已关闭。")
+    elseif command == "ground voice on" or command == "ground voice off"
+        or command == "cooldown voice on" or command == "cooldown voice off" then
+        JustACBridgeDB.groundVoice = command:match(" on$") ~= nil
         print(JustACBridgeDB.groundVoice
-            and "|cff40a9ffJustACBridge:|r 场地技能到期语音已开启。"
-            or "|cff40a9ffJustACBridge:|r 场地技能到期语音已关闭。")
-    elseif command == "ground test" then
-        showGroundEffectExpiredAlert({ name = "枯萎凋零", spellID = 43265 })
-        print("|cff40a9ffJustACBridge:|r 已触发场地技能到期测试提醒。")
+            and "|cff40a9ffJustACBridge:|r 冷却就绪语音已开启。"
+            or "|cff40a9ffJustACBridge:|r 冷却就绪语音已关闭。")
+    elseif command == "ground test" or command == "cooldown test" then
+        showCooldownReadyAlert({
+            kind = "spell", name = "枯萎凋零", spellID = 43265,
+            charges = 2, maxCharges = 2,
+        })
+        print("|cff40a9ffJustACBridge:|r 已触发冷却就绪测试提醒。")
     elseif command == "ground reset" then
         if GroundEffectTracker and GroundEffectTracker.Reset then
             GroundEffectTracker.Reset()
@@ -2186,6 +3505,27 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         else
             print("|cff40a9ffJustACBridge:|r 当前没有活动的已跟踪场地技能。")
         end
+    elseif command == "cooldown status" then
+        local status = CooldownReadyTracker and CooldownReadyTracker.GetStatus
+            and CooldownReadyTracker.GetStatus() or { spells = {}, trinkets = {} }
+        print("|cff40a9ffJustACBridge:|r 冷却就绪监控：")
+        for _, entry in ipairs(status.spells or {}) do
+            local state = entry.monitoring and "冷却计时中"
+                or (entry.pending and "等待冷却数据" or "当前就绪")
+            print(("  %s（法术 %s）：%s")
+                :format(entry.name or "法术", tostring(entry.spellID), state))
+        end
+        if #(status.trinkets or {}) == 0 then
+            print("  未检测到带主动 Use 效果的已装备饰品。")
+        else
+            for _, entry in ipairs(status.trinkets) do
+                local state = entry.monitoring and "冷却计时中"
+                    or (entry.pending and "等待冷却数据" or "当前就绪")
+                print(("  %s（物品 %s，主动法术 %s）：%s")
+                    :format(entry.name or ("饰品槽 " .. tostring(entry.slot)),
+                        tostring(entry.itemID), tostring(entry.spellID), state))
+            end
+        end
     elseif command == "debug" or command == "debug show" then
         showDebugWindow()
         print("|cff40a9ffJustACBridge:|r 已打开诊断日志；点击选中全部后按 Ctrl+C。")
@@ -2201,8 +3541,10 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         debugLines = {}
         debugLastSnapshot = nil
         JustACBridgeExport.debugLog = ""
+        debugDirty = false
         appendDebug("DEBUG log-cleared")
-        showDebugWindow()
+        syncDebugExport()
+        print("|cff40a9ffJustACBridge:|r 诊断日志已清空。")
     elseif command == "movement on" or command == "movement off" then
         JustACBridgeDB.movementFilter = command == "movement on"
         lastSignature = nil
@@ -2232,7 +3574,10 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         print(ok and "|cff40a9ffJustACBridge:|r 已刷新。" or ("|cffff4040JustACBridge:|r " .. tostring(err)))
     elseif command == "flush" then
         print("|cff40a9ffJustACBridge:|r 正在重载界面并把 SavedVariables 写入磁盘……")
-        C_Timer.After(0, ReloadUI)
+        syncDebugExport()
+        -- Keep the protected reload call in the slash-command hardware-event
+        -- context. A zero-delay timer can silently discard it and lose the log.
+        ReloadUI()
     elseif command == "pixels" or command == "pixels on" or command == "pixels off" then
         if command == "pixels on" then
             JustACBridgeDB.pixelVisible = true
@@ -2262,8 +3607,9 @@ SlashCmdList.JUSTACBRIDGE = function(message)
         print("/jacb reserve list - 查看当前专精保留法术")
         print("/jacb reserve add <法术ID> | remove <法术ID> | reset")
         print("/jacb source list | <ID> - 查看或切换推荐源")
-        print("/jacb ground on | off | status | reset - 场地技能到期监控")
-        print("/jacb ground alert/sound/voice on|off / test - 到期提醒")
+        print("/jacb ground on | off | status | reset - 场地持续时间与重复过滤")
+        print("/jacb cooldown alert/sound/voice on|off / test - 冷却就绪提醒")
+        print("/jacb cooldown status - 查看枯萎凋零与主动饰品监控状态")
         print("/jacb movement on | off - 移动时跳过不可移动读条/蓄力/引导")
         print("/jacb range on | off - 跳过明确超出目标射程的动作")
         print("/jacb debug [show|on|off|clear] - 打开并复制完整诊断日志")

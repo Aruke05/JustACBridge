@@ -24,11 +24,32 @@ JustACBridgeRecommendationSources.Register("my-rotation", {
 
 ```text
 /jacb source list
+/jacb source auto
 /jacb source my-rotation
 ```
 
+`auto` 是默认模式：Interface 12.1 下，奥法、火法、冰法分别解析为 `arcane121`、
+`fire121`、`frostmage121`，兽王、射击、生存猎分别解析为 `bmhunter121`、
+`mmhunter121`、`survivalhunter121`；死亡骑士与其他专精解析为 `justac`。
+`frostdk121` 与 `unholydk121` 仅保留为显式 `/jacb source` 可选的实验源。切换专精
+或天赋时会重新解析，但不会覆盖玩家显式选择的自定义源。
+
 未实现的快捷键、射程、可用性、Proc、引导识别等能力会回退给已安装的 JustAC
 适配器，因此替换推荐算法时无需复制动作栏扫描代码。
+
+源还可以实现 `GetPreserveQueue()`，为 M4 提供与 M5 `GetQueue()` 完全不同的原始
+队列；未实现时两种模式共享 `GetQueue()`。`GetDecisionTrace()` 可返回一行决策原因，
+Bridge 会以 `SOURCE_DECISION` 写入诊断日志。
+
+内置 12.1 自有源统一遵循：M5 先做本专精可完整证明的优先级，遇到不可观测的更高
+条件立即原样回退 JustAC。回退不得注入新动作或改变 JustAC 剩余动作的相对顺序；
+明确的合法性/安全过滤只能删除动作。火法、冰法、猎人三系及手动启用的冰/邪 DK
+实验源，其 M4 返回原始 JustAC 队列；
+奥法 M4 是专属例外，继续运行同一个 `arcane121` 优先级，但不选择奥术涌动和
+大法师之触。策略层仍会过滤爆发、物品、不可移动读条/引导/蓄力和无法安全瞄准的
+方向/地面技能；12.1 奥法例外与 M5 共用真实移动安全判断，所以静止时不会再次过滤
+自有源选出的奥冲或飞弹。各专精状态、法术 ID 与开场计数均在独立文件中，不通过
+共享运行时传播职业规则。
 
 ## 完全脱离 JustAC
 
@@ -38,7 +59,11 @@ JustACBridgeRecommendationSources.Register("my-rotation", {
 - `GetSpellHotkey(spellID)`
 - `GetItemHotkey(itemID)`
 - `GetDisplaySpellID(spellID)`
+- `GetEffectiveSpellID(spellID)`（推荐；先解析动态动作栏形态，再解析天赋替换）
 - `IsSpellUsable(spellID)`
+- `IsSpellOnCooldown(spellID)`（真实技能冷却，必须排除公共 GCD；未知返回 `nil`）
+- `IsSpellCooldownRemainingAbove(spellID, seconds)`（DurationObject 阈值比较；不读取
+  secret 剩余秒数，无法证明时返回 `nil`）
 - `IsSpellProcced(spellID)`
 - `IsChanneled(spellID)`
 - `IsConfirmedOutOfRange(spellID)`
@@ -46,11 +71,30 @@ JustACBridgeRecommendationSources.Register("my-rotation", {
 
 其余可选能力：
 
+- `ReadBinaryPredicate(value)`：仅供资源准备框架读取通过自检的原生 Step 曲线 0/100
+  二值结果，返回严格布尔或 nil。禁止输入原始 secret 资源/秒数。接口缺失或异常不
+  代表满足阈值，也不能借此复用上一帧答案。详见 `Framework/README.md`。
+- `IsSpellUsableStrict(spellID)`：返回两个严格布尔值 `usable, insufficientPower`，
+  缺失/secret/异常返回未知。用于需要正面资源证据的策略，不得调用 fail-open 包装。
+  JustAC 适配器先读原生法术可用性；不可读时验证动作栏槽位仍是同一法术，再实时查询
+  `C_ActionBar.IsUsableAction`，不接受宏、辅助战斗按钮或旧事件缓存。此能力不代替
+  技能归属、真实绑定和冷却检查。
+- `IsBurstCue(spellID)`（仅标记当前源已明确判定应执行的爆发提示）
+- `IsMovementFallbackAllowed(spellID, position)`（只在当前策略将法术登记到
+  `movementFallbackProofSpells`、玩家真实移动且该法术来自队列第 2 位及以后时调用；
+  必须以普通循环谓词正面证明，只有严格布尔 `true` 放行，可返回第二值作为诊断原因）
 - `GetHighlightCastSpell()`
 - `GetDetectedBurstTriggers()`
 - `GetEngagedEnemyCount()`
 - `IsTargetBoss()`
 
 所有方法都是无 `self` 的普通函数。Bridge 对调用使用 `pcall`；未知或 secret
-状态遵循现有 fail-open/fail-closed 策略。
+状态遵循现有 fail-open/fail-closed 策略。自定义源未实现 `GetEffectiveSpellID`
+时会回退到 `GetDisplaySpellID`，因此旧源保持兼容。
 
+### 前置序列的证据契约
+
+`GetSpellHotkey`：非空字符串表示绑定，空字符串表示明确未绑定，nil/缺失/异常表示未知。
+适配层不可把缺失或 nil 转为空字符串，避免把前置状态未知误判成可选步骤缺席。
+需要资源准备/技能前置的规则请复用 `Framework/ActionSequence.lua`，并阅读
+`Framework/README.md`；可用性与是否可跳过是不同判断。

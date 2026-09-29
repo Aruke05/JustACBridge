@@ -7,6 +7,9 @@ internal sealed class MainForm : Form
 {
     private const int BlizzardSpellId = 190356;
     private const int FrostFallbackSpellId = 30455;
+    private const int ArcaneMissilesSpellId = 5143;
+    private const int ArcaneExplosionSpellId = 1449;
+    private const int ArcaneExplosionStabilityDelayMs = 100;
     private const long BlizzardCancelSuppressionMs = 3000;
 
     private readonly Label _state = new() { AutoSize = true, Font = new Font("Microsoft YaHei UI", 16, FontStyle.Bold), ForeColor = Color.DarkOrange };
@@ -17,7 +20,7 @@ internal sealed class MainForm : Form
     private readonly CheckBox _enabled = new() { AutoSize = true, Checked = true, Text = "启用双键按住连发" };
     private readonly Button _setLossless = new() { AutoSize = true };
     private readonly Button _setPreserve = new() { AutoSize = true };
-    private readonly RadioButton _extreme = new() { AutoSize = true, Checked = true, Text = "极限：连续捕获，零人为等待（推荐）" };
+    private readonly RadioButton _extreme = new() { AutoSize = true, Checked = true, Text = "极限：连续捕获（推荐）" };
     private readonly RadioButton _balanced = new() { AutoSize = true, Text = "均衡：每 5ms 捕获一次" };
     private readonly CheckBox _debugEnabled = new() { AutoSize = true, Text = "启用诊断日志（仅排错时）" };
     private readonly Button _copyDebug = new() { AutoSize = true, Enabled = false, Text = "复制完整诊断日志" };
@@ -66,7 +69,7 @@ internal sealed class MainForm : Form
         {
             AutoSize = true,
             ForeColor = Color.RoyalBlue,
-            Text = "按住功能键自动连发；施法期间保护，允许奥术飞弹在 GCD 末按循环截断。"
+            Text = "按住功能键自动连发；受保护引导、读条和蓄力期间暂停发送。"
         });
         panel.Controls.Add(_enabled);
         panel.Controls.Add(_extreme);
@@ -203,7 +206,7 @@ internal sealed class MainForm : Form
                 }
             }
             // Busy 状态下遇到撕裂帧时保持保护，直到读到明确的空闲包。
-            _hook.SetActions(null, null, _lastBusy, false);
+            _hook.SetActions(null, null, _lastBusy, false, false, observedBusy: null);
         }
 
         try { BeginInvoke(() => ApplyUpdate(update)); }
@@ -220,7 +223,7 @@ internal sealed class MainForm : Form
         RememberSpellBinding(packet.PreserveBurst);
         if (packet.IsBusy)
         {
-            _hook.SetActions(null, null, true, false);
+            _hook.SetActions(null, null, true, false, false, observedBusy: true);
             return;
         }
 
@@ -236,13 +239,21 @@ internal sealed class MainForm : Form
             && losslessBinding is null;
         bool movementBlocksPreserve = packet.ProtocolVersion >= 4 && packet.IsMoving && packet.MovementFilter
             && preserveBinding is null;
+        bool delayArcaneExplosion = packet.Lossless is
+        { Exists: true, IsItem: false, Id: ArcaneExplosionSpellId };
         _hook.SetActions(
             losslessBinding,
             packet.ProtocolVersion >= 2 ? preserveBinding : null,
             false,
-            packet.QueueReady,
+            packet.LosslessCanPulse,
+            packet.PreserveCanPulse,
             (losslessSuppressed && losslessBinding is null) || movementBlocksLossless,
-            (preserveSuppressed && preserveBinding is null) || movementBlocksPreserve);
+            (preserveSuppressed && preserveBinding is null) || movementBlocksPreserve,
+            delayArcaneExplosion ? ArcaneExplosionSpellId : 0,
+            delayArcaneExplosion ? ArcaneExplosionStabilityDelayMs : 0,
+            packet.Lossless is { Exists: true, IsItem: false, Id: ArcaneMissilesSpellId },
+            packet.PreserveBurst is { Exists: true, IsItem: false, Id: ArcaneMissilesSpellId },
+            observedBusy: false);
     }
 
     private void RememberSpellBinding(Recommendation recommendation)
@@ -319,10 +330,17 @@ internal sealed class MainForm : Form
             _state.Text = p.IsChanneling ? "持续引导保护：两个功能键均已屏蔽" : "施法读条保护：两个功能键均已屏蔽";
             _state.ForeColor = Color.RoyalBlue;
         }
-        else if (!p.QueueReady)
+        else if (!p.QueueReady && !p.Lossless.OffGcd && !p.PreserveBurst.OffGcd)
         {
             _state.Text = $"等待最佳入队窗口：GCD 约剩 {p.GcdRemainingMs}ms";
             _state.ForeColor = Color.DarkOrange;
+        }
+        else if (!p.QueueReady)
+        {
+            string slot = p.Lossless.OffGcd && p.PreserveBurst.OffGcd
+                ? "M5/M4" : p.Lossless.OffGcd ? "M5" : "M4";
+            _state.Text = $"{slot} Off-GCD 通道开放：GCD 约剩 {p.GcdRemainingMs}ms";
+            _state.ForeColor = Color.ForestGreen;
         }
         else
         {
@@ -350,7 +368,7 @@ internal sealed class MainForm : Form
         string moveState = p.ProtocolVersion >= 4
             ? $"移动={(p.IsMoving ? "是" : "否")}/{(p.MovementFilter ? "过滤开" : "过滤关")}" : "移动=协议未提供";
         string timing = p.ProtocolVersion >= 3
-            ? $"入队={(p.QueueReady ? "开放" : "等待")}  gcd≈{p.GcdRemainingMs}ms"
+            ? $"入队={(p.QueueReady ? "开放" : "等待")} offGCD={p.Lossless.OffGcd}/{p.PreserveBurst.OffGcd} gcd≈{p.GcdRemainingMs}ms"
             : $"tick={p.GameTickMs}  兼容连发";
         _details.Text = $"v{p.ProtocolVersion}  seq={p.Sequence}  {timing}  状态={castState}  {moveState}  解码={update.CaptureMs:F2}ms  pitch={update.Geometry}";
         _lossless.ForeColor = BindingColor(p.Lossless, p.IsBusy, out string losslessError);
@@ -375,7 +393,7 @@ internal sealed class MainForm : Form
         !r.Exists ? "— 无可用推荐 —" : $"{(r.IsItem ? "物品" : "法术")} {r.Id}    [{(string.IsNullOrEmpty(r.Hotkey) ? "未绑定" : r.Hotkey)}]";
 
     private static string PacketRecommendation(Recommendation r) =>
-        !r.Exists ? "none" : $"{(r.IsItem ? "item" : "spell")}:{r.Id}:{r.Hotkey}:bound={r.Bound}";
+        !r.Exists ? "none" : $"{(r.IsItem ? "item" : "spell")}:{r.Id}:{r.Hotkey}:bound={r.Bound}:offGcd={r.OffGcd}";
 
     private void CopyDebugLog()
     {

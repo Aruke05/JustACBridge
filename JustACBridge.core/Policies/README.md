@@ -34,15 +34,21 @@ Policies/Hunter/BeastMastery.lua  # 野兽控制专精保留规则
 
 兽王猎人通过 `reserve` 与 `reserveExclusions` 同时登记狂野怒火 `19574`、
 狂野鞭挞 `1264355` / `1264359`。保留爆发版始终跳过这些技能；推荐源未报告爆发
-触发器或已有 `/jacb reserve remove` 覆盖时也不会放行。无损版继续按原队列推荐。
+触发器或已有 `/jacb reserve remove` 覆盖时也不会放行。无损版仍可使用这些技能。
 
 ## 游戏版本变动
 
 稳定的默认规则放在专精的 `reserve` 中。职业或专精还可以登记：
 
 - `reserveExclusions`：保留爆发版本始终跳过、仅允许无损版本释放的技能。
+- `reserveEffectiveExclusions`：同样只约束保留爆发版，但仅在队列按钮解析后的“当前
+  实际法术 ID”命中时排除；适合基础按钮会被有效天赋技能替换、不能整族屏蔽的情况。
 - `rotationExclusions`：从无损版和保留爆发版同时排除的非循环工具技能；用于过滤
   推荐源或突进模块误注入的控制/位移按钮。
+- `rotationEffectiveExclusions`：从两路排除当前实际法术，但不连带排除占用同一基础
+  按钮的天赋替换/动态 Proc 形态。
+- `offGCD`：当前版本被权威 APL 明确标记为 off-GCD 的法术。最终动作命中该列表时
+  只允许对应桌面槽位绕过普通 GCD 门控；读条、引导、安全、可用性和绑定门控不变。
 - `reservePassthrough`：即使推荐源把技能识别为爆发触发器，保留爆发版仍允许它
   正常通过；适合新版本已移除爆发联动、但旧推荐源配置可能仍残留的技能。
 - `moveCastAlways`：自身带读条，但天生允许移动施放的技能。
@@ -50,14 +56,35 @@ Policies/Hunter/BeastMastery.lua  # 野兽控制专精保留规则
 - `moveCastNever`：移动时始终跳过的硬读条技能，优先于移动 Buff 和 Proc 判断。
 - `moveCastInstantOnly`：忽略 Proc 高亮和移动施法 Buff；仅在当前有效法术形态被
   API 明确报告为零读条时允许。
+- `moveCastConditions`：只对指定 `spellID` 生效的移动施法例外；可用
+  `requiresSpell` 要求已学习的天赋/法术，并用 `auraID` 要求当前玩家 Buff。配置的
+  条件全部可确认时才允许，未知状态保守跳过。极少数专精可显式设置
+  `probeWhenUsable=true`：光环条件不可见时允许当前已拥有、可用的实际队列动作试放
+  一次；第一次失败会锁到真实停止移动，不能作为通用读条放行规则。
 - `clipChannels`：循环明确要求可在 GCD 末主动截断的引导技能。引导状态仍会导出，
   但不会一直占用动作队列。
 - `rangeSequenceRules`：只在目标被明确判定超过指定距离时调整技能先后；距离未知时
   不改 JustAC 原顺序。
 - `groundEffects`：成功放置后按持续时间跟踪的场地技能，可在仍有效时抑制重复推荐。
-- `fallbackActions`：仅在玩家移动且 JustAC 的前 8 项没有安全可执行动作时使用的
-  有序兜底。支持 `spellID`、`minEnemies`、`maxEnemies`、`requireProc` 和显示用
-  `label`；仍必须通过已学习、可用、射程、移动安全和快捷键检查。
+- `fallbackActions`：推荐队列前 8 项都没有安全可执行动作时，策略可显式选择启用的
+  历史兼容兜底；它不是“移动时必须找一个技能”的全局规则。支持 `spellID`、
+  `minEnemies`、`maxEnemies`、`requireProc` 和显示用 `label`。要求严格保留推荐源顺序的
+  专精应将其设为空，并允许本帧无动作。
+- `movementFallbackProofSpells`：真实移动时若列表中的法术位于队列第 2 位及以后，
+  必须由当前推荐源的 `IsMovementFallbackAllowed(spellID, position)` 明确返回 `true`
+  才能晋升；方法缺失、false、nil 或异常均失败关闭。队首动作和静止选择不受影响。
+  用于“技能可移动”但“移动不能创造其资源释放条件”的动作，例如 12.1 奥法弹幕。
+- `preserveSourceQueueOnly`：M4 只允许选择推荐源当前队列中真实存在的动作；禁用 M4
+  的维护技能注入、M5 结果复用、高亮兜底和专精最终兜底。用于不能把 Proc/高亮近似
+  当作推荐源已选择动作的专精；M5 不受影响。
+- `losslessSourceQueueOnlyBeyond`：用 `beyond` 指定距离、`allow` 指定允许法术；当
+  推荐源能明确证明目标超过该距离时，M5 只从当前原队列选择允许法术，禁用其他队列
+  动作和所有注入/兜底；距离未知时不改变原行为。
+- `preserveSourceQueueOnlyBeyond`：与上一项相同，但作用于 M4，并继续执行 M4 的爆发
+  保留与按住安全过滤。
+- `castFollowups`：成功施放 `triggerSpells` 中的精确事件 ID 后，在 `withinSeconds`
+  窗口内优先推荐 `spellID`；用 `lossless`/`preserve` 指定输出。跟随技能必须明确不在
+  冷却且满足归属、可用、安全和绑定条件；冷却或未知状态立即放弃，不阻塞原队列。
 - `maintenanceBuffs`：自身 Buff 明确不存在时插入的维护技能。每项登记
   `spellID`、`auraID`，并用 `lossless`/`preserve` 指定作用于哪一路；只有光环缺失、
   法术已学习、冷却明确就绪且快捷键已绑定时才会加入；`reserveCharges` 可要求自动
@@ -70,14 +97,38 @@ Policies/Hunter/BeastMastery.lua  # 野兽控制专精保留规则
     id = "example",
     name = "示例",
     revision = 2,
+    preserveSourceQueueOnly = true,
+    losslessSourceQueueOnlyBeyond = {
+        beyond = 5,
+        allow = { 8001 },
+    },
+    preserveSourceQueueOnlyBeyond = {
+        beyond = 5,
+        allow = { 8001 },
+    },
+    castFollowups = {
+        {
+            spellID = 8002,
+            triggerSpells = { 8001 },
+            withinSeconds = 4,
+            lossless = true,
+            preserve = false,
+        },
+    },
     reserve = { 1001, 1002 },
     reservePassthrough = { 1000 },
     reserveExclusions = { 1003 },
+    reserveEffectiveExclusions = { 1005 },
     rotationExclusions = { 1004 },
+    rotationEffectiveExclusions = { 1006 },
+    offGCD = { 1007 },
     moveCastAlways = { 3001 },
     moveCastBuffs = { 4001 },
     moveCastNever = { 4002 },
     moveCastInstantOnly = { 4003 },
+    moveCastConditions = {
+        { spellID = 4004, requiresSpell = 4005, auraID = 4006, probeWhenUsable = true },
+    },
     clipChannels = { 5001 },
     rangeSequenceRules = {
         {
@@ -138,12 +189,18 @@ Policies/Hunter/BeastMastery.lua  # 野兽控制专精保留规则
   `/jacb reserve add/remove` 覆盖仍最后执行。
 - 保留版技能排除支持 `reserveExclusions` 完整替换和
   `add/removeReserveExclusions` 增量修改。
+- 当前实际法术排除支持 `reserveEffectiveExclusions` 完整替换和
+  `add/removeReserveEffectiveExclusions` 增量修改。
 - 全循环排除支持 `rotationExclusions` 完整替换和
   `add/removeRotationExclusions` 增量修改，并同时约束两个导出动作。
+- 当前实际法术的全循环排除支持 `rotationEffectiveExclusions` 完整替换和
+  `add/removeRotationEffectiveExclusions` 增量修改，并同时约束两个导出动作。
+- Off-GCD 列表支持 `offGCD` 完整替换和 `add/removeOffGCD` 增量修改。
 - 移动规则对应支持 `moveCastAlways/moveCastBuffs` 完整替换，以及
   `add/removeMoveCastAlways`、`add/removeMoveCastBuffs` 增量修改；
   `moveCastNever` 同样支持完整替换和 `add/removeMoveCastNever`；
-  `moveCastInstantOnly` 同样支持完整替换和 `add/removeMoveCastInstantOnly`。
+  `moveCastInstantOnly` 同样支持完整替换和 `add/removeMoveCastInstantOnly`；
+  条件移动规则支持 `moveCastConditions` 完整替换和 `addMoveCastConditions` 追加。
 - 引导规则支持 `clipChannels` 完整替换和 `add/removeClipChannels` 增量修改；
   距离顺序规则支持 `rangeSequenceRules` 完整替换和 `addRangeSequenceRules` 追加。
 - 场地规则支持 `groundEffects` 完整替换和 `addGroundEffects` 追加。

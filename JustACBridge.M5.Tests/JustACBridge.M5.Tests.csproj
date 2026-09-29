@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../JustACBridge.M5/M5Hook.cs" Link="M5Hook.cs" />
+    <Compile Include="../JustACBridge.M5/NativeMethods.cs" Link="NativeMethods.cs" />
+    <Compile Include="../JustACBridge.M5/StableRecommendationDelay.cs" Link="StableRecommendationDelay.cs" />
+  </ItemGroup>
+</Project>

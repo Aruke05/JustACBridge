@@ -7,7 +7,7 @@
 local Registry = _G.JustACBridgePolicyRegistry or {}
 _G.JustACBridgePolicyRegistry = Registry
 
-Registry.schemaVersion = 10
+Registry.schemaVersion = 32
 Registry.classes = Registry.classes or {}
 
 local function copyArray(source)
@@ -46,6 +46,14 @@ local function appendRangeSequenceRules(target, source)
     for _, rule in ipairs(copyRangeSequenceRules(source)) do
         target[#target + 1] = rule
     end
+end
+
+local function copySourceQueueOnlyBeyond(rule)
+    if type(rule) ~= "table" then return nil end
+    local beyond = tonumber(rule.beyond)
+    local allow = copyArray(rule.allow)
+    if not beyond or beyond <= 0 or #allow == 0 then return nil end
+    return { beyond = beyond, allow = allow }
 end
 
 local function copyGroundEffects(source)
@@ -116,6 +124,238 @@ end
 
 local function appendMaintenanceBuffs(target, source)
     for _, rule in ipairs(copyMaintenanceBuffs(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+-- Exact, policy-owned M5 cues are deliberately narrower than an APL.  A rule
+-- is accepted only when it carries a live aura condition that can fail closed;
+-- this prevents a typo or incomplete policy from turning into a blind
+-- cast-on-cooldown injector.
+local function copyPriorityCues(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        if type(rule) == "table" then
+            local spellID = tonumber(rule.spellID)
+            local auraID = tonumber(rule.auraID)
+            local minAuraStacks = tonumber(rule.minAuraStacks)
+            local allowAuraMissing = rule.allowAuraMissing == true
+            if spellID and spellID > 0 and auraID and auraID > 0
+                and (allowAuraMissing or minAuraStacks and minAuraStacks > 0) then
+                result[#result + 1] = {
+                    spellID = spellID,
+                    auraID = auraID,
+                    minAuraStacks = minAuraStacks and math.max(1, minAuraStacks) or nil,
+                    allowAuraMissing = allowAuraMissing,
+                    requiresCombat = rule.requiresCombat == true,
+                    label = rule.label,
+                }
+            end
+        end
+    end
+    return result
+end
+
+local function appendPriorityCues(target, source)
+    for _, rule in ipairs(copyPriorityCues(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+local function copyMoveCastConditions(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        if type(rule) == "table" then
+            local spellID = tonumber(rule.spellID)
+            local requiresSpell = tonumber(rule.requiresSpell)
+            local auraID = tonumber(rule.auraID)
+            -- A condition without a live requirement would silently become a
+            -- second moveCastAlways list. Reject it so conditional exceptions
+            -- always fail closed on an observable talent and/or player aura.
+            if spellID and spellID > 0
+                and ((requiresSpell and requiresSpell > 0) or (auraID and auraID > 0)) then
+                result[#result + 1] = {
+                    spellID = spellID,
+                    requiresSpell = requiresSpell,
+                    auraID = auraID,
+                    probeWhenUsable = rule.probeWhenUsable == true,
+                    label = rule.label,
+                }
+            end
+        end
+    end
+    return result
+end
+
+local function appendMoveCastConditions(target, source)
+    for _, rule in ipairs(copyMoveCastConditions(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+local function copyMoveCastResumeDelays(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        local spellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local seconds = type(rule) == "table" and tonumber(rule.seconds) or nil
+        if spellID and spellID > 0 and seconds and seconds > 0 then
+            result[#result + 1] = {
+                spellID = spellID,
+                seconds = seconds,
+                lossless = rule.lossless ~= false,
+                preserve = rule.preserve ~= false,
+            }
+        end
+    end
+    return result
+end
+
+local function appendMoveCastResumeDelays(target, source)
+    for _, rule in ipairs(copyMoveCastResumeDelays(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+local function copySuccessfulCastResumeDelays(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        local spellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local seconds = type(rule) == "table" and tonumber(rule.seconds) or nil
+        local triggerSpells = {}
+        for _, triggerSpellID in ipairs(type(rule) == "table" and rule.triggerSpells or {}) do
+            triggerSpellID = tonumber(triggerSpellID)
+            if triggerSpellID and triggerSpellID > 0 then
+                triggerSpells[#triggerSpells + 1] = triggerSpellID
+            end
+        end
+        if spellID and spellID > 0 and seconds and seconds > 0
+            and #triggerSpells > 0 then
+            result[#result + 1] = {
+                spellID = spellID,
+                seconds = seconds,
+                triggerSpells = triggerSpells,
+                lossless = rule.lossless ~= false,
+                preserve = rule.preserve ~= false,
+            }
+        end
+    end
+    return result
+end
+
+local function appendSuccessfulCastResumeDelays(target, source)
+    for _, rule in ipairs(copySuccessfulCastResumeDelays(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+-- Exact action ordering rules. The core records authoritative
+-- UNIT_SPELLCAST_SUCCEEDED events and permits the action only after a newer
+-- prerequisite success. An observable prerequisite aura may recover the
+-- sequence after /reload without guessing from cooldown state.
+local function copyCastSequenceRules(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        local spellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local afterSpellID = type(rule) == "table" and tonumber(rule.afterSpellID) or nil
+        local afterAuraID = type(rule) == "table" and tonumber(rule.afterAuraID) or nil
+        local withinSeconds = type(rule) == "table" and tonumber(rule.withinSeconds) or nil
+        if spellID and spellID > 0 and afterSpellID and afterSpellID > 0 then
+            result[#result + 1] = {
+                spellID = spellID,
+                afterSpellID = afterSpellID,
+                afterAuraID = afterAuraID and afterAuraID > 0 and afterAuraID or nil,
+                withinSeconds = withinSeconds and withinSeconds > 0
+                    and withinSeconds or nil,
+                passthroughEffectiveSpellIDs = copyArray(
+                    rule.passthroughEffectiveSpellIDs),
+                label = rule.label,
+            }
+        end
+    end
+    return result
+end
+
+local function appendCastSequenceRules(target, source)
+    for _, rule in ipairs(copyCastSequenceRules(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+-- Two-action cooldown pairing. The leader is legal only while its follower is
+-- positively executable; the follower may bypass ordering only when the leader
+-- is positively unavailable, and a policy may further restrict the active-
+-- cooldown case with a secret-safe remaining-time threshold.
+local function copyPairedCastRules(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        local leaderSpellID = type(rule) == "table"
+            and tonumber(rule.leaderSpellID) or nil
+        local followerSpellID = type(rule) == "table"
+            and tonumber(rule.followerSpellID) or nil
+        local withinSeconds = type(rule) == "table"
+            and tonumber(rule.withinSeconds) or nil
+        local directFollowerMinimum = type(rule) == "table"
+            and tonumber(rule.directFollowerMinLeaderCooldownRemainingSeconds) or nil
+        if leaderSpellID and leaderSpellID > 0
+            and followerSpellID and followerSpellID > 0 then
+            result[#result + 1] = {
+                leaderSpellID = leaderSpellID,
+                followerSpellID = followerSpellID,
+                withinSeconds = withinSeconds and withinSeconds > 0
+                    and withinSeconds or nil,
+                targetBound = rule.targetBound == true,
+                directFollowerMinLeaderCooldownRemainingSeconds =
+                    directFollowerMinimum and directFollowerMinimum > 0
+                    and directFollowerMinimum or nil,
+                label = rule.label,
+            }
+        end
+    end
+    return result
+end
+
+local function appendPairedCastRules(target, source)
+    for _, rule in ipairs(copyPairedCastRules(source)) do
+        target[#target + 1] = rule
+    end
+end
+
+local function copyCastFollowups(source)
+    local result = {}
+    for _, rule in ipairs(source or {}) do
+        local spellID = type(rule) == "table" and tonumber(rule.spellID) or nil
+        local withinSeconds = type(rule) == "table" and tonumber(rule.withinSeconds) or nil
+        local triggerSpells = {}
+        for _, triggerSpellID in ipairs(type(rule) == "table"
+            and rule.triggerSpells or {}) do
+            triggerSpellID = tonumber(triggerSpellID)
+            if triggerSpellID and triggerSpellID > 0 then
+                triggerSpells[#triggerSpells + 1] = triggerSpellID
+            end
+        end
+        if spellID and spellID > 0 and withinSeconds and withinSeconds > 0
+            and #triggerSpells > 0 then
+            result[#result + 1] = {
+                spellID = spellID,
+                triggerSpells = triggerSpells,
+                withinSeconds = withinSeconds,
+                lossless = rule.lossless ~= false,
+                preserve = rule.preserve == true,
+                targetBound = rule.targetBound == true,
+                requiresCombat = rule.requiresCombat == true,
+                readyPredicate = type(rule.readyPredicate) == "function" and rule.readyPredicate or nil,
+                cancelOnUnusable = rule.cancelOnUnusable == true,
+                cancelOnFailure = rule.cancelOnFailure == true,
+                cancelSpells = copyArray(rule.cancelSpells),
+                label = rule.label,
+            }
+        end
+    end
+    return result
+end
+
+local function appendCastFollowups(target, source)
+    for _, rule in ipairs(copyCastFollowups(source)) do
         target[#target + 1] = rule
     end
 end
@@ -223,39 +463,91 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         revision = tonumber(specPolicy.revision) or 1,
         interfaceVersion = interfaceVersion,
         ruleset = "base",
+        useDetectedBurstTriggers = specPolicy.useDetectedBurstTriggers ~= false,
+        preserveUsesCurrentSafety = specPolicy.preserveUsesCurrentSafety == true,
+        preserveSourceQueueOnly = specPolicy.preserveSourceQueueOnly == true,
+        losslessSourceQueueOnlyBeyond = copySourceQueueOnlyBeyond(
+            specPolicy.losslessSourceQueueOnlyBeyond
+                or classPolicy.losslessSourceQueueOnlyBeyond),
+        preserveSourceQueueOnlyBeyond = copySourceQueueOnlyBeyond(
+            specPolicy.preserveSourceQueueOnlyBeyond
+                or classPolicy.preserveSourceQueueOnlyBeyond),
         reserve = copyArray(specPolicy.reserve),
         reservePassthrough = copyArray(classPolicy.reservePassthrough),
         reserveExclusions = copyArray(classPolicy.reserveExclusions),
+        reserveEffectiveExclusions = copyArray(classPolicy.reserveEffectiveExclusions),
         rotationExclusions = copyArray(classPolicy.rotationExclusions),
+        rotationEffectiveExclusions = copyArray(classPolicy.rotationEffectiveExclusions),
+        offGCD = copyArray(classPolicy.offGCD),
         moveCastAlways = copyArray(classPolicy.moveCastAlways),
         moveCastBuffs = copyArray(classPolicy.moveCastBuffs),
         moveCastNever = copyArray(classPolicy.moveCastNever),
         moveCastInstantOnly = copyArray(classPolicy.moveCastInstantOnly),
+        movementFallbackProofSpells = copyArray(
+            classPolicy.movementFallbackProofSpells),
+        moveCastConditions = copyMoveCastConditions(classPolicy.moveCastConditions),
+        moveCastResumeDelays = copyMoveCastResumeDelays(classPolicy.moveCastResumeDelays),
+        successfulCastResumeDelays = copySuccessfulCastResumeDelays(
+            classPolicy.successfulCastResumeDelays),
+        castSequenceRules = copyCastSequenceRules(classPolicy.castSequenceRules),
+        pairedCastRules = copyPairedCastRules(classPolicy.pairedCastRules),
+        castFollowups = copyCastFollowups(classPolicy.castFollowups),
         clipChannels = copyArray(classPolicy.clipChannels),
         protectedChannels = copyArray(classPolicy.protectedChannels),
         rangeSequenceRules = copyRangeSequenceRules(classPolicy.rangeSequenceRules),
         groundEffects = copyGroundEffects(classPolicy.groundEffects),
         fallbackActions = copyFallbackActions(classPolicy.fallbackActions),
         maintenanceBuffs = copyMaintenanceBuffs(classPolicy.maintenanceBuffs),
+        priorityCues = copyPriorityCues(classPolicy.priorityCues),
     }
     addUniqueValues(result.reservePassthrough, specPolicy.reservePassthrough)
     addUniqueValues(result.reserveExclusions, specPolicy.reserveExclusions)
+    addUniqueValues(result.reserveEffectiveExclusions, specPolicy.reserveEffectiveExclusions)
     addUniqueValues(result.rotationExclusions, specPolicy.rotationExclusions)
+    addUniqueValues(result.rotationEffectiveExclusions, specPolicy.rotationEffectiveExclusions)
+    addUniqueValues(result.offGCD, specPolicy.offGCD)
     addUniqueValues(result.moveCastAlways, specPolicy.moveCastAlways)
     addUniqueValues(result.moveCastBuffs, specPolicy.moveCastBuffs)
     addUniqueValues(result.moveCastNever, specPolicy.moveCastNever)
     addUniqueValues(result.moveCastInstantOnly, specPolicy.moveCastInstantOnly)
+    addUniqueValues(result.movementFallbackProofSpells,
+        specPolicy.movementFallbackProofSpells)
+    appendMoveCastConditions(result.moveCastConditions, specPolicy.moveCastConditions)
+    appendMoveCastResumeDelays(result.moveCastResumeDelays, specPolicy.moveCastResumeDelays)
+    appendSuccessfulCastResumeDelays(result.successfulCastResumeDelays,
+        specPolicy.successfulCastResumeDelays)
+    appendCastSequenceRules(result.castSequenceRules, specPolicy.castSequenceRules)
+    appendPairedCastRules(result.pairedCastRules, specPolicy.pairedCastRules)
+    appendCastFollowups(result.castFollowups, specPolicy.castFollowups)
     addUniqueValues(result.clipChannels, specPolicy.clipChannels)
     addUniqueValues(result.protectedChannels, specPolicy.protectedChannels)
     appendRangeSequenceRules(result.rangeSequenceRules, specPolicy.rangeSequenceRules)
     appendGroundEffects(result.groundEffects, specPolicy.groundEffects)
     appendFallbackActions(result.fallbackActions, specPolicy.fallbackActions)
     appendMaintenanceBuffs(result.maintenanceBuffs, specPolicy.maintenanceBuffs)
+    appendPriorityCues(result.priorityCues, specPolicy.priorityCues)
 
     local patch = selectVersionPatch(specPolicy, interfaceVersion)
     if patch then
         result.ruleset = patch.id or ("interface-" .. tostring(patch.minInterface or interfaceVersion))
         result.revision = tonumber(patch.revision) or result.revision
+        if patch.useDetectedBurstTriggers ~= nil then
+            result.useDetectedBurstTriggers = patch.useDetectedBurstTriggers ~= false
+        end
+        if patch.preserveUsesCurrentSafety ~= nil then
+            result.preserveUsesCurrentSafety = patch.preserveUsesCurrentSafety == true
+        end
+        if patch.preserveSourceQueueOnly ~= nil then
+            result.preserveSourceQueueOnly = patch.preserveSourceQueueOnly == true
+        end
+        if patch.losslessSourceQueueOnlyBeyond ~= nil then
+            result.losslessSourceQueueOnlyBeyond = copySourceQueueOnlyBeyond(
+                patch.losslessSourceQueueOnlyBeyond)
+        end
+        if patch.preserveSourceQueueOnlyBeyond ~= nil then
+            result.preserveSourceQueueOnlyBeyond = copySourceQueueOnlyBeyond(
+                patch.preserveSourceQueueOnlyBeyond)
+        end
         if patch.reserve then
             replaceArray(result.reserve, patch.reserve)
         end
@@ -267,8 +559,17 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.reserveExclusions then
             replaceArray(result.reserveExclusions, patch.reserveExclusions)
         end
+        if patch.reserveEffectiveExclusions then
+            replaceArray(result.reserveEffectiveExclusions, patch.reserveEffectiveExclusions)
+        end
         if patch.rotationExclusions then
             replaceArray(result.rotationExclusions, patch.rotationExclusions)
+        end
+        if patch.rotationEffectiveExclusions then
+            replaceArray(result.rotationEffectiveExclusions, patch.rotationEffectiveExclusions)
+        end
+        if patch.offGCD then
+            replaceArray(result.offGCD, patch.offGCD)
         end
         if patch.moveCastAlways then
             replaceArray(result.moveCastAlways, patch.moveCastAlways)
@@ -281,6 +582,45 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         end
         if patch.moveCastInstantOnly then
             replaceArray(result.moveCastInstantOnly, patch.moveCastInstantOnly)
+        end
+        if patch.movementFallbackProofSpells then
+            replaceArray(result.movementFallbackProofSpells,
+                patch.movementFallbackProofSpells)
+        end
+        if patch.moveCastConditions then
+            result.moveCastConditions = copyMoveCastConditions(patch.moveCastConditions)
+        end
+        if patch.moveCastResumeDelays then
+            result.moveCastResumeDelays = copyMoveCastResumeDelays(patch.moveCastResumeDelays)
+        end
+        if patch.successfulCastResumeDelays then
+            result.successfulCastResumeDelays = copySuccessfulCastResumeDelays(
+                patch.successfulCastResumeDelays)
+        end
+        if patch.castSequenceRules then
+            result.castSequenceRules = copyCastSequenceRules(patch.castSequenceRules)
+        end
+        if patch.pairedCastRules then
+            result.pairedCastRules = copyPairedCastRules(patch.pairedCastRules)
+        end
+        if patch.castFollowups then
+            result.castFollowups = copyCastFollowups(patch.castFollowups)
+        end
+        if type(patch.selectLossless) == "function" then
+            result.selectLossless = patch.selectLossless
+        end
+        if patch.losslessSelectionFallbackBlock then
+            result.losslessSelectionFallbackBlock = copyArray(patch.losslessSelectionFallbackBlock)
+            result.losslessSelectionPassthrough = copyArray(patch.losslessSelectionPassthrough)
+        end
+        if patch.selectionTargetScope == "target-epoch" then
+            result.selectionTargetScope = "target-epoch"
+        end
+        if type(patch.resetLosslessSelection) == "function" then
+            result.resetLosslessSelection = patch.resetLosslessSelection
+        end
+        if type(patch.observePlayerSpellcast) == "function" then
+            result.observePlayerSpellcast = patch.observePlayerSpellcast
         end
         if patch.clipChannels then
             replaceArray(result.clipChannels, patch.clipChannels)
@@ -300,12 +640,21 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         if patch.maintenanceBuffs then
             result.maintenanceBuffs = copyMaintenanceBuffs(patch.maintenanceBuffs)
         end
+        if patch.priorityCues then
+            result.priorityCues = copyPriorityCues(patch.priorityCues)
+        end
         removeValues(result.reservePassthrough, patch.removeReservePassthrough)
         addUniqueValues(result.reservePassthrough, patch.addReservePassthrough)
         removeValues(result.reserveExclusions, patch.removeReserveExclusions)
         addUniqueValues(result.reserveExclusions, patch.addReserveExclusions)
+        removeValues(result.reserveEffectiveExclusions, patch.removeReserveEffectiveExclusions)
+        addUniqueValues(result.reserveEffectiveExclusions, patch.addReserveEffectiveExclusions)
         removeValues(result.rotationExclusions, patch.removeRotationExclusions)
         addUniqueValues(result.rotationExclusions, patch.addRotationExclusions)
+        removeValues(result.rotationEffectiveExclusions, patch.removeRotationEffectiveExclusions)
+        addUniqueValues(result.rotationEffectiveExclusions, patch.addRotationEffectiveExclusions)
+        removeValues(result.offGCD, patch.removeOffGCD)
+        addUniqueValues(result.offGCD, patch.addOffGCD)
         removeValues(result.moveCastAlways, patch.removeMoveCastAlways)
         addUniqueValues(result.moveCastAlways, patch.addMoveCastAlways)
         removeValues(result.moveCastBuffs, patch.removeMoveCastBuffs)
@@ -314,6 +663,17 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         addUniqueValues(result.moveCastNever, patch.addMoveCastNever)
         removeValues(result.moveCastInstantOnly, patch.removeMoveCastInstantOnly)
         addUniqueValues(result.moveCastInstantOnly, patch.addMoveCastInstantOnly)
+        removeValues(result.movementFallbackProofSpells,
+            patch.removeMovementFallbackProofSpells)
+        addUniqueValues(result.movementFallbackProofSpells,
+            patch.addMovementFallbackProofSpells)
+        appendMoveCastConditions(result.moveCastConditions, patch.addMoveCastConditions)
+        appendMoveCastResumeDelays(result.moveCastResumeDelays, patch.addMoveCastResumeDelays)
+        appendSuccessfulCastResumeDelays(result.successfulCastResumeDelays,
+            patch.addSuccessfulCastResumeDelays)
+        appendCastSequenceRules(result.castSequenceRules, patch.addCastSequenceRules)
+        appendPairedCastRules(result.pairedCastRules, patch.addPairedCastRules)
+        appendCastFollowups(result.castFollowups, patch.addCastFollowups)
         removeValues(result.clipChannels, patch.removeClipChannels)
         addUniqueValues(result.clipChannels, patch.addClipChannels)
         removeValues(result.protectedChannels, patch.removeProtectedChannels)
@@ -322,6 +682,7 @@ function Registry.Resolve(classFile, specIndex, interfaceVersion)
         appendGroundEffects(result.groundEffects, patch.addGroundEffects)
         appendFallbackActions(result.fallbackActions, patch.addFallbackActions)
         appendMaintenanceBuffs(result.maintenanceBuffs, patch.addMaintenanceBuffs)
+        appendPriorityCues(result.priorityCues, patch.addPriorityCues)
     end
 
     return result

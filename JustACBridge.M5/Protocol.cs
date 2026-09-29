@@ -1,11 +1,13 @@
 namespace JustACBridgeM5;
 
-internal sealed record Recommendation(bool Exists, bool IsItem, int Id, string Hotkey, bool Bound);
+internal sealed record Recommendation(bool Exists, bool IsItem, int Id, string Hotkey, bool Bound, bool OffGcd);
 internal sealed record Packet(byte ProtocolVersion, ushort Sequence, int GameTickMs, bool QueueReady, int GcdRemainingMs,
     bool IsChanneling, bool IsCasting, bool IsMoving, bool MovementFilter,
     Recommendation Lossless, Recommendation PreserveBurst)
 {
     internal bool IsBusy => IsChanneling || IsCasting;
+    internal bool LosslessCanPulse => QueueReady || Lossless.OffGcd;
+    internal bool PreserveCanPulse => QueueReady || PreserveBurst.OffGcd;
 }
 
 internal static unsafe class PixelProtocol
@@ -115,9 +117,11 @@ internal static unsafe class PixelProtocol
             data[3] >= 4 && (data[63] & 0x02) != 0,
             data[3] < 4 || (data[63] & 0x04) != 0,
             new Recommendation(firstExists, (flags & 0x02) != 0, firstExists ? U24(data, 7) : 0,
-                firstExists ? System.Text.Encoding.UTF8.GetString(data.Slice(11, data[10])) : "", (flags & 0x04) != 0),
+                firstExists ? System.Text.Encoding.UTF8.GetString(data.Slice(11, data[10])) : "", (flags & 0x04) != 0,
+                data[3] >= 3 && (data[63] & 0x08) != 0),
             new Recommendation(secondExists, (flags & 0x10) != 0, secondExists ? U24(data, 35) : 0,
-                secondExists ? System.Text.Encoding.UTF8.GetString(data.Slice(39, data[38])) : "", (flags & 0x20) != 0));
+                secondExists ? System.Text.Encoding.UTF8.GetString(data.Slice(39, data[38])) : "", (flags & 0x20) != 0,
+                data[3] >= 3 && (data[63] & 0x10) != 0));
     }
 
     private static int U24(ReadOnlySpan<byte> data, int offset) => data[offset] | data[offset + 1] << 8 | data[offset + 2] << 16;

@@ -3,12 +3,24 @@
 ## Notes: Exposes lossless and burst-preserving JustAC actions and their hotkeys.
 ## Notes-zhCN: 导出 JustAC 无损版与保留爆发版动作及其快捷键。
 ## Author: JustACBridge
-## Version: 2.10.13
+## Version: 2.13.14
 ## OptionalDeps: JustAC
 ## SavedVariables: JustACBridgeDB, JustACBridgeExport
 
 Sources\Registry.lua
 Sources\JustAC.lua
+Sources\Runtime121.lua
+Sources\Arcane121.lua
+Sources\Fire121.lua
+Sources\FrostMage121.lua
+Sources\FrostDK121.lua
+Sources\UnholyDK121.lua
+Sources\BeastMasteryHunter121.lua
+Sources\MarksmanshipHunter121.lua
+Sources\SurvivalHunter121.lua
+Framework\ActionSequence.lua
+Framework\TargetLease.lua
+Framework\ResourcePreparation.lua
 Policies\Registry.lua
 Policies\Mage.lua
 Policies\Mage\Arcane.lua
@@ -20,5 +32,9 @@ Policies\DeathKnight\Frost.lua
 Policies\DeathKnight\Unholy.lua
 Policies\Hunter.lua
 Policies\Hunter\BeastMastery.lua
+Policies\Hunter\Marksmanship.lua
+Policies\Hunter\Survival.lua
 Trackers\GroundEffects.lua
+Trackers\CooldownReady.lua
+Framework\QueueTiming.lua
 JustACBridge.lua

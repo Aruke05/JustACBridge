@@ -59,6 +59,13 @@ internal readonly record struct TriggerBinding(TriggerKind Kind, uint Code)
 internal sealed class M5Hook : IDisposable
 {
     private const int RepeatIntervalMs = 20;
+    // WoW can take more than one capture frame to report the GCD/channel that
+    // was started by an injected key. Repeating the same key during that
+    // acknowledgement gap can pre-queue a second Arcane Missiles and clip the
+    // first channel as soon as the GCD permits it. Only de-duplicate the same
+    // binding; a genuinely different recommendation may still fire at once.
+    private const int SameBindingAcknowledgementMs = 250;
+    private const int ProtectedChannelStartTimeoutMs = 2000;
     private const uint WmCancelHeld = 0x8000 + 77; // WM_APP + 77
     private const uint WmConfigureTriggers = 0x8000 + 78;
     private const uint WmActionsChanged = 0x8000 + 79;
@@ -70,7 +77,7 @@ internal sealed class M5Hook : IDisposable
     private nint _mouseHook;
     private nint _keyboardHook;
     private uint _threadId;
-    private ActionMap _actions = new(null, null, false, false, false, false);
+    private ActionMap _actions = new(null, null, false, false, false, false, false, 0, 0, false, false);
     private TriggerMap _triggers = new(TriggerBinding.M5, TriggerBinding.M4);
     private TriggerMap _pendingTriggers = new(TriggerBinding.M5, TriggerBinding.M4);
     private CaptureRequest? _captureRequest;
@@ -81,7 +88,8 @@ internal sealed class M5Hook : IDisposable
     private readonly ManualResetEventSlim _ready = new(false);
     private string _lastPulseState = "";
     private string _lastActionTrace = "";
-    private long _lastPulseLogTick;
+    private readonly RepeatSendGate _repeatSendGate = new(SameBindingAcknowledgementMs);
+    private readonly ProtectedChannelSendLatch _protectedChannelSendLatch = new(ProtectedChannelStartTimeoutMs);
 
     internal M5Hook()
     {
@@ -98,6 +106,7 @@ internal sealed class M5Hook : IDisposable
         set
         {
             _enabled = value;
+            if (!value) _protectedChannelSendLatch.Cancel();
             if (!value && _threadId != 0)
                 NativeMethods.PostThreadMessage(_threadId, WmCancelHeld, 0, 0);
         }
@@ -120,17 +129,26 @@ internal sealed class M5Hook : IDisposable
     internal void CancelCapture() => Volatile.Write(ref _captureRequest, null);
 
     internal void SetActions(HotkeyBinding? lossless, HotkeyBinding? preserveBurst,
-        bool suppressWithoutBinding, bool canPulse,
+        bool suppressWithoutBinding, bool losslessCanPulse, bool preserveCanPulse,
         bool suppressLosslessWithoutBinding = false,
-        bool suppressPreserveWithoutBinding = false)
+        bool suppressPreserveWithoutBinding = false,
+        int losslessStabilityKey = 0,
+        int losslessStabilityDelayMs = 0,
+        bool losslessStartsProtectedChannel = false,
+        bool preserveStartsProtectedChannel = false,
+        bool? observedBusy = null)
     {
+        if (observedBusy.HasValue)
+            _protectedChannelSendLatch.ObserveBusy(observedBusy.Value);
         var next = new ActionMap(
-            lossless, preserveBurst, suppressWithoutBinding, canPulse,
-            suppressLosslessWithoutBinding, suppressPreserveWithoutBinding);
+            lossless, preserveBurst, suppressWithoutBinding, losslessCanPulse, preserveCanPulse,
+            suppressLosslessWithoutBinding, suppressPreserveWithoutBinding,
+            losslessStabilityKey, Math.Max(0, losslessStabilityDelayMs),
+            losslessStartsProtectedChannel, preserveStartsProtectedChannel);
         Volatile.Write(ref _actions, next);
         if (DiagnosticLog.Enabled)
         {
-            string trace = $"lossless={BindingName(lossless)} preserve={BindingName(preserveBurst)} suppress={suppressWithoutBinding} canPulse={canPulse} suppressLossless={suppressLosslessWithoutBinding} suppressPreserve={suppressPreserveWithoutBinding}";
+            string trace = $"lossless={BindingName(lossless)} preserve={BindingName(preserveBurst)} suppress={suppressWithoutBinding} canPulse={losslessCanPulse}/{preserveCanPulse} suppressLossless={suppressLosslessWithoutBinding} suppressPreserve={suppressPreserveWithoutBinding} losslessStability={losslessStabilityKey}/{Math.Max(0, losslessStabilityDelayMs)}ms protectedStart={losslessStartsProtectedChannel}/{preserveStartsProtectedChannel} latch={_protectedChannelSendLatch.State}";
             if (trace != _lastActionTrace)
             {
                 _lastActionTrace = trace;
@@ -219,9 +237,9 @@ internal sealed class M5Hook : IDisposable
                 (int)wParam == NativeMethods.WM_RBUTTONDOWN)
             {
                 ActionMap actions = Volatile.Read(ref _actions);
-                if (actions.CanPulse && actions.Lossless is not null && _losslessHeld is not null)
+                if (actions.LosslessCanPulse && actions.Lossless is not null && _losslessHeld is not null)
                     RightClickWhileHolding?.Invoke(ActionSlot.Lossless);
-                else if (actions.CanPulse && actions.PreserveBurst is not null && _preserveHeld is not null)
+                else if (actions.PreserveCanPulse && actions.PreserveBurst is not null && _preserveHeld is not null)
                     RightClickWhileHolding?.Invoke(ActionSlot.PreserveBurst);
             }
 
@@ -293,18 +311,21 @@ internal sealed class M5Hook : IDisposable
         if (trigger == triggers.Lossless)
         {
             bool suppress = actions.SuppressWithoutBinding || actions.SuppressLosslessWithoutBinding;
-            DiagnosticLog.Write($"INPUT down trigger={trigger.Display} slot=lossless binding={BindingName(actions.Lossless)} suppress={suppress} canPulse={actions.CanPulse}");
+            DiagnosticLog.Write($"INPUT down trigger={trigger.Display} slot=lossless binding={BindingName(actions.Lossless)} suppress={suppress} canPulse={actions.LosslessCanPulse}");
             if (actions.Lossless is not null || suppress)
                 CancelHeldAction(ref _preserveHeld, blockFollowingUp: true);
-            return PressSlot(trigger, actions.Lossless, suppress, actions.CanPulse, ref _losslessHeld);
+            return PressSlot(trigger, actions.Lossless, suppress, actions.LosslessCanPulse,
+                actions.LosslessStabilityKey, actions.LosslessStabilityDelayMs,
+                actions.LosslessStartsProtectedChannel, ref _losslessHeld);
         }
         if (trigger == triggers.PreserveBurst)
         {
             bool suppress = actions.SuppressWithoutBinding || actions.SuppressPreserveWithoutBinding;
-            DiagnosticLog.Write($"INPUT down trigger={trigger.Display} slot=preserve binding={BindingName(actions.PreserveBurst)} suppress={suppress} canPulse={actions.CanPulse}");
+            DiagnosticLog.Write($"INPUT down trigger={trigger.Display} slot=preserve binding={BindingName(actions.PreserveBurst)} suppress={suppress} canPulse={actions.PreserveCanPulse}");
             if (actions.PreserveBurst is not null || suppress)
                 CancelHeldAction(ref _losslessHeld, blockFollowingUp: true);
-            return PressSlot(trigger, actions.PreserveBurst, suppress, actions.CanPulse, ref _preserveHeld);
+            return PressSlot(trigger, actions.PreserveBurst, suppress, actions.PreserveCanPulse,
+                0, 0, actions.PreserveStartsProtectedChannel, ref _preserveHeld);
         }
         return false;
     }
@@ -319,7 +340,8 @@ internal sealed class M5Hook : IDisposable
     }
 
     private bool PressSlot(TriggerBinding trigger, HotkeyBinding? binding, bool suppressWithoutBinding,
-        bool canPulse, ref HeldAction? held)
+        bool canPulse, int stabilityKey, int stabilityDelayMs,
+        bool startsProtectedChannel, ref HeldAction? held)
     {
         if (held?.Trigger == trigger || _blockedUps.Contains(trigger))
         {
@@ -330,8 +352,12 @@ internal sealed class M5Hook : IDisposable
         if (binding is not null)
         {
             held = new HeldAction(trigger);
-            if (canPulse)
-                Pulse(binding);
+            long now = Environment.TickCount64;
+            bool stabilityReady = held.StabilityDelay.Observe(stabilityKey, stabilityDelayMs, now);
+            if (canPulse && stabilityReady)
+                Pulse(binding, startsProtectedChannel);
+            else if (canPulse)
+                DiagnosticLog.Write($"HOLD armed trigger={trigger.Display} binding={binding.Canonical} initialPulse=false reason=stability-delay remainingMs={held.StabilityDelay.RemainingMs(now)}");
             else
                 DiagnosticLog.Write($"HOLD armed trigger={trigger.Display} binding={binding.Canonical} initialPulse=false reason=queue-gate");
             return true;
@@ -369,40 +395,65 @@ internal sealed class M5Hook : IDisposable
 
     private void PulseHeldAction()
     {
-        if (!_enabled) { TracePulseState("disabled"); return; }
         ActionMap actions = Volatile.Read(ref _actions);
-        if (actions.SuppressWithoutBinding) { TracePulseState("blocked-busy"); return; }
-        if (!actions.CanPulse) { TracePulseState("blocked-queue-gate"); return; }
+        long now = Environment.TickCount64;
+        bool losslessStabilityReady = _losslessHeld?.StabilityDelay.Observe(
+            actions.LosslessStabilityKey,
+            actions.LosslessStabilityDelayMs,
+            now) ?? true;
 
-        if (_losslessHeld is not null && actions.Lossless is not null)
+        if (!_enabled) { TracePulseState("disabled"); return; }
+        if (_protectedChannelSendLatch.Blocks(now))
         {
-            TracePulseState("pulsing-lossless:" + actions.Lossless.Canonical);
-            Pulse(actions.Lossless);
+            TracePulseState("blocked-protected-channel-latch:" + _protectedChannelSendLatch.State);
             return;
         }
-        if (_preserveHeld is not null && actions.PreserveBurst is not null)
+        if (actions.SuppressWithoutBinding) { TracePulseState("blocked-busy"); return; }
+
+        if (_losslessHeld is not null)
         {
-            TracePulseState("pulsing-preserve:" + actions.PreserveBurst.Canonical);
-            Pulse(actions.PreserveBurst);
+            if (!actions.LosslessCanPulse) { TracePulseState("blocked-lossless-queue-gate"); return; }
+            if (actions.Lossless is null) { TracePulseState("held-lossless-no-binding"); return; }
+            if (!losslessStabilityReady)
+            {
+                TracePulseState("blocked-lossless-stability-delay");
+                return;
+            }
+            Pulse(actions.Lossless, actions.LosslessStartsProtectedChannel);
+            return;
+        }
+        if (_preserveHeld is not null)
+        {
+            if (!actions.PreserveCanPulse) { TracePulseState("blocked-preserve-queue-gate"); return; }
+            if (actions.PreserveBurst is null) { TracePulseState("held-preserve-no-binding"); return; }
+            Pulse(actions.PreserveBurst, actions.PreserveStartsProtectedChannel);
             return;
         }
         TracePulseState((_losslessHeld is not null || _preserveHeld is not null) ? "held-no-binding" : "idle-no-held-key");
     }
 
-    private void Pulse(HotkeyBinding binding)
+    private void Pulse(HotkeyBinding binding, bool startsProtectedChannel)
     {
+        long now = Environment.TickCount64;
+        if (!_repeatSendGate.TryCommit(binding.Canonical, now))
+        {
+            // Log gate transitions, not a different countdown every 20ms.
+            TracePulseState($"blocked-send-ack:{binding.Canonical}");
+            return;
+        }
+        TracePulseState("pulsing:" + binding.Canonical);
         if (!DiagnosticLog.Enabled)
         {
             binding.Pulse();
+            if (startsProtectedChannel) _protectedChannelSendLatch.Arm(now);
             return;
         }
         bool ok = binding.Pulse(out string result);
-        long now = Environment.TickCount64;
-        if (!ok || now - _lastPulseLogTick >= 500)
-        {
-            _lastPulseLogTick = now;
-            DiagnosticLog.Write($"SEND binding={binding.Canonical} ok={ok} {result}");
-        }
+        if (ok && startsProtectedChannel) _protectedChannelSendLatch.Arm(now);
+        // Every actual attempt matters for queue-gap diagnosis. Sampling at
+        // 500ms hid valid sends made by the 250ms same-binding gate. A true
+        // SendInput result confirms local injection only, not a successful cast.
+        DiagnosticLog.Write($"SEND binding={binding.Canonical} ok={ok} protectedStart={startsProtectedChannel} {result}");
     }
 
     private void TracePulseState(string state)
@@ -435,9 +486,91 @@ internal sealed class M5Hook : IDisposable
     }
 
     private sealed record ActionMap(HotkeyBinding? Lossless, HotkeyBinding? PreserveBurst,
-        bool SuppressWithoutBinding, bool CanPulse,
-        bool SuppressLosslessWithoutBinding, bool SuppressPreserveWithoutBinding);
+        bool SuppressWithoutBinding, bool LosslessCanPulse, bool PreserveCanPulse,
+        bool SuppressLosslessWithoutBinding, bool SuppressPreserveWithoutBinding,
+        int LosslessStabilityKey, int LosslessStabilityDelayMs,
+        bool LosslessStartsProtectedChannel, bool PreserveStartsProtectedChannel);
     private sealed record TriggerMap(TriggerBinding Lossless, TriggerBinding PreserveBurst);
     private sealed record CaptureRequest(ActionSlot Slot);
-    private sealed record HeldAction(TriggerBinding Trigger);
+    private sealed record HeldAction(TriggerBinding Trigger)
+    {
+        internal StableRecommendationDelay StabilityDelay { get; } = new();
+    }
+}
+
+internal sealed class RepeatSendGate(int acknowledgementMs)
+{
+    private readonly int _acknowledgementMs = Math.Max(0, acknowledgementMs);
+    private string? _lastBinding;
+    private long _lastSentAt = long.MinValue;
+
+    internal bool TryCommit(string binding, long now)
+    {
+        if (_lastBinding == binding && now - _lastSentAt < _acknowledgementMs)
+            return false;
+        _lastBinding = binding;
+        _lastSentAt = now;
+        return true;
+    }
+
+    internal int RemainingMs(string binding, long now)
+    {
+        if (_lastBinding != binding) return 0;
+        return Math.Max(0, _acknowledgementMs - (int)Math.Min(int.MaxValue, now - _lastSentAt));
+    }
+}
+
+internal sealed class ProtectedChannelSendLatch(int startTimeoutMs)
+{
+    private readonly object _gate = new();
+    private readonly int _startTimeoutMs = Math.Max(1, startTimeoutMs);
+    private LatchState _state;
+    private long _pendingUntil;
+
+    internal string State
+    {
+        get { lock (_gate) return _state.ToString().ToLowerInvariant(); }
+    }
+
+    internal void Arm(long now)
+    {
+        lock (_gate)
+        {
+            _state = LatchState.PendingStart;
+            _pendingUntil = now + _startTimeoutMs;
+        }
+    }
+
+    internal void ObserveBusy(bool busy)
+    {
+        lock (_gate)
+        {
+            if (busy && _state == LatchState.PendingStart)
+                _state = LatchState.ConfirmedChannel;
+            else if (!busy && _state == LatchState.ConfirmedChannel)
+                _state = LatchState.Idle;
+        }
+    }
+
+    internal bool Blocks(long now)
+    {
+        lock (_gate)
+        {
+            if (_state == LatchState.PendingStart && now >= _pendingUntil)
+                _state = LatchState.Idle;
+            return _state != LatchState.Idle;
+        }
+    }
+
+    internal void Cancel()
+    {
+        lock (_gate) _state = LatchState.Idle;
+    }
+
+    private enum LatchState
+    {
+        Idle,
+        PendingStart,
+        ConfirmedChannel
+    }
 }

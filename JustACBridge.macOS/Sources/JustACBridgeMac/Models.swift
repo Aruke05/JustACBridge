@@ -7,6 +7,7 @@ struct Recommendation {
   let id: Int
   let hotkey: String
   let bound: Bool
+  let offGCD: Bool
 }
 
 struct Packet {
@@ -21,6 +22,8 @@ struct Packet {
   let preserveBurst: Recommendation
 
   var isBusy: Bool { isChanneling || isCasting }
+  var losslessCanPulse: Bool { queueReady || lossless.offGCD }
+  var preserveCanPulse: Bool { queueReady || preserveBurst.offGCD }
 }
 
 struct PixelGeometry: CustomStringConvertible {
