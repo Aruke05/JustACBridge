@@ -166,11 +166,11 @@ assert(#registry.Resolve("DEATHKNIGHT", 1, 120100).offGCD == 0)
 assert(type(frostDK121.selectLossless) == "function")
 assert(frostDK121.selectionTargetScope == "target-epoch")
 assert(registry.Resolve("DEATHKNIGHT", 2, 110200).selectionTargetScope == nil)
-assert(registry.Resolve("DEATHKNIGHT", 3, 120100).selectionTargetScope == nil)
+assert(registry.Resolve("DEATHKNIGHT", 3, 120100).selectionTargetScope == "target-epoch")
 assert(registry.Resolve("MAGE", 1, 120100).selectionTargetScope == nil)
 assert(#frostDK121.losslessSelectionFallbackBlock==5)
 assert(frostDK121.losslessSelectionPassthrough[1]==1265384)
-for _, pair in ipairs({{"DEATHKNIGHT",1},{"DEATHKNIGHT",3},{"MAGE",1},{"MAGE",2},{"MAGE",3}}) do
+for _, pair in ipairs({{"DEATHKNIGHT",1},{"MAGE",1},{"MAGE",2},{"MAGE",3}}) do
     assert(registry.Resolve(pair[1],pair[2],120100).losslessSelectionFallbackBlock==nil)
 end
 assert(frostDK.losslessSelectionFallbackBlock==nil)
@@ -230,7 +230,15 @@ assert(unholy.fallbackActions[2].spellID == 47541)
 
 local unholy121 = assert(registry.Resolve("DEATHKNIGHT", 3, 120100))
 assert(#unholy121.offGCD == 0)
-assert(unholy121.ruleset == "midnight-12.1" and unholy121.revision == 6)
+assert(unholy121.ruleset == "midnight-12.1" and unholy121.revision == 7)
+assert(unholy121.selectionTargetScope == "target-epoch")
+assert(type(unholy121.selectLossless) == "function")
+assert(type(unholy121.resetLosslessSelection) == "function")
+assert(type(unholy121.observePlayerSpellcast) == "function")
+assert(#unholy121.losslessSelectionFallbackBlock == 3
+    and unholy121.losslessSelectionFallbackBlock[1] == 42650
+    and unholy121.losslessSelectionFallbackBlock[3] == 1233448)
+assert(unholy.selectLossless == nil and unholy.losslessSelectionFallbackBlock == nil)
 assert(unholy121.useDetectedBurstTriggers == false)
 assert(unholy121.preserveSourceQueueOnly == true)
 assert(#unholy121.fallbackActions == 0)

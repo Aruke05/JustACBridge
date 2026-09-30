@@ -1792,6 +1792,32 @@ eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 -- set. Putrefy is rotational and must pass through from JustAC even if a stale
 -- Burst Trigger still calls it (or removed legacy cooldowns) burst. Ground-
 -- targeted Death and Decay remains excluded because M4 cannot aim it.
+local savedUnholyDuration, savedUnholyUsable = C_Spell.GetSpellCooldownDuration,
+    C_Spell.IsSpellUsable
+local armyRemaining, transformRemaining = 0, 0
+local armyDurationUnknown, armyDurationSecret, armyDurationError = false, false, false
+local transformDurationUnknown = false
+C_Spell.GetSpellCooldownDuration = function(id, excludeGCD)
+    if id == 42650 then
+        assert(excludeGCD == true)
+        if armyDurationError then error("army duration unavailable") end
+        if armyDurationUnknown then return nil end
+        return {active = armyRemaining > 0,
+            GetRemainingDuration = function()
+                return armyDurationSecret and secretAuraValue or armyRemaining
+            end}
+    end
+    if id == 1233448 then
+        assert(excludeGCD == true)
+        if transformDurationUnknown then return nil end
+        return {active = transformRemaining > 0,
+            GetRemainingDuration = function() return transformRemaining end}
+    end
+    return savedUnholyDuration and savedUnholyDuration(id)
+end
+C_Spell.IsSpellUsable = function(id)
+    return unusableSpells[id] ~= true, false
+end
 classFile, specIndex = "DEATHKNIGHT", 3
 burstTriggers = { 207289, 49206, 288853, 390279, 1247378 }
 testQueue = { 343294, 42650, 47541 }
@@ -1808,6 +1834,93 @@ assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 1247378)
 testQueue = { 207289, 49206, 288853, 390279, 1247378, 47541 }
 JustACBridge.Refresh()
 assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 207289)
+
+-- M5 cooldown alignment is scoped to Unholy 12.1; M4 keeps its own queue.
+local function unholySelected(id)
+    JustACBridge.Refresh()
+    local actual = JustACBridge.GetLosslessRecommendation()
+    assert((actual and actual.spellID) == id,
+        "unholy expected " .. tostring(id) .. " got " .. tostring(actual and actual.spellID))
+    return actual
+end
+local function unholyReset()
+    eventFrame.OnEvent(eventFrame, "PLAYER_REGEN_ENABLED")
+    armyRemaining, transformRemaining = 0, 0
+    armyDurationUnknown, armyDurationSecret, armyDurationError = false, false, false
+    transformDurationUnknown = false
+    unusableSpells[42650], unusableSpells[1233448] = nil, nil
+    unlearnedSpells[42650], unboundSpells[42650] = nil, nil
+    targetGUID = "Creature-0-0-0-0-100-0000000001"
+    testQueue = {1233448, 47541, 42650}
+end
+for _, seconds in ipairs({30, 29.999, 1}) do
+    unholyReset(); armyRemaining = seconds
+    unholySelected(47541)
+    assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 47541)
+end
+for _, seconds in ipairs({30.001, 45}) do
+    unholyReset(); armyRemaining = seconds
+    unholySelected(1233448)
+    assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 47541)
+end
+unholyReset(); armyRemaining = 45; testQueue = {47541, 85948}
+unholySelected(1233448) -- the proven >30 release does not require source injection
+assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 47541)
+unholyReset(); armyRemaining, transformRemaining = 45, 8
+unholySelected(47541) -- the solo window cannot invent ready Transformation
+unholyReset(); armyDurationUnknown = true; unholySelected(47541)
+unholyReset(); armyRemaining = 45; armyDurationSecret = true; unholySelected(47541)
+unholyReset(); armyDurationError = true; unholySelected(47541)
+unholyReset(); armyRemaining = 45; targetExists = false; unholySelected(47541)
+targetExists = true; eventFrame.OnEvent(eventFrame, "PLAYER_TARGET_CHANGED")
+unholyReset(); armyRemaining = 45; auraSecret = true; targetGUID = secretAuraValue
+unholySelected(1233448) -- hidden GUID does not mean no hostile target
+auraSecret = false; targetGUID = "Creature-0-0-0-0-100-0000000001"
+eventFrame.OnEvent(eventFrame, "PLAYER_TARGET_CHANGED")
+unholyReset(); armyRemaining = 45
+local savedUnholyKnown = IsPlayerSpell
+IsPlayerSpell = function(id)
+    if id == 42650 then return nil end
+    return savedUnholyKnown(id)
+end
+unholySelected(47541) -- unknown Army ownership is not positive absence
+IsPlayerSpell = savedUnholyKnown
+unholyReset(); armyRemaining = 0; unholySelected(47541) -- Army ready, not first in source
+testQueue = {42650, 1233448, 47541}
+transformDurationUnknown = true; unholySelected(47541)
+transformDurationUnknown = false
+transformRemaining = 8; unholySelected(47541) -- hold Army for its partner
+transformRemaining = 0
+unusableSpells[1233448] = true; unholySelected(47541)
+unusableSpells[1233448] = nil; unholySelected(42650)
+unholySelected(42650) -- proposals and failed keypresses do not advance
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player", "army-failed", 42650)
+unholySelected(42650)
+armyRemaining = 90; unholySelected(nil) -- cooldown can update before success event
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "army-success", 42650)
+unholySelected(1233448)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_FAILED", "player", "dark-failed", 1233448)
+unholySelected(1233448)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "dark-success", 1233448)
+transformRemaining = 45; unholySelected(47541)
+unholyReset(); unlearnedSpells[42650] = true; unholySelected(1233448)
+unholyReset(); unboundSpells[42650] = true; unholySelected(1233448)
+unholyReset(); armyRemaining = 15; testQueue = {42650, 1233448}
+unholySelected(nil) -- empty filtered queue is authoritative
+unholyReset(); testQueue = {42650, 1233448, 47541}
+unholySelected(42650)
+eventFrame.OnEvent(eventFrame, "PLAYER_TARGET_CHANGED")
+armyRemaining = 15; unholySelected(47541) -- old target's proposal cannot license follower
+unholyReset(); testQueue = {42650, 1233448, 47541}
+unholySelected(42650)
+eventFrame.OnEvent(eventFrame, "UNIT_SPELLCAST_SUCCEEDED", "player", "army-timeout", 42650)
+armyRemaining = 15
+local beforeTimeout = now
+now = now + 10
+unholySelected(47541) -- expired receipt cannot release the transformation
+now = beforeTimeout
+unholyReset()
+C_Spell.GetSpellCooldownDuration, C_Spell.IsSpellUsable = savedUnholyDuration, savedUnholyUsable
 burstTriggers = {}
 eventFrame.OnEvent(eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 

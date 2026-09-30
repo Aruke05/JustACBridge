@@ -1,7 +1,7 @@
 # 前置动作与成功事件序列
 
 新增“准备好 B 后，先 A 再 B”时，优先使用 `ActionSequence.lua`，不要复制职业状态机，
-也不要先输出 B，再试图在施法后补救 A。机制默认不对任何专精启用；目前冰 DK 12.1
+也不要先输出 B，再试图在施法后补救 A。机制默认不对任何专精启用；目前冰、邪 DK 12.1
 策略接入，奥法既有配对规则保持原实现，不借重构改变其他职业 APL。
 
 ## 两层职责
@@ -91,7 +91,7 @@
 `getCurrentHostileTargetGUID` 保持严格，仅适合明确要求可读 GUID 的机制，例如奥法触。
 
 需要在受限制场景跟踪当前选中目标的策略可显式配置
-`selectionTargetScope = "target-epoch"`，当前仅冰 DK 12.1 启用：
+`selectionTargetScope = "target-epoch"`，当前由冰、邪 DK 12.1 显式启用：
 
 - `TargetLease:Read()` 每次读取 exists、attackable、dead；只有明确存在、可攻击、
   存活才允许动作。GUID 只是额外的可读身份变化检查，不是启动门槛。
