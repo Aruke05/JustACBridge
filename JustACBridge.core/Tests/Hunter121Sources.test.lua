@@ -24,6 +24,7 @@ function CreateFrame()
         RegisterEvent = function() end,
         RegisterUnitEvent = function() end,
         SetScript = function(self, _, callback) self.OnEvent = callback end,
+        GetScript = function(self) return self.OnEvent end,
     }
     frames[#frames + 1] = frame
     return frame
@@ -35,7 +36,16 @@ C_UnitAuras = {
     end,
 }
 
+function GetHaste() return 0 end
+C_Spell = {
+    IsSpellUsable = function(id) return usable[id] ~= false, false end,
+    GetSpellCooldownDuration = function(id, ignoreGCD)
+        assert(ignoreGCD == true)
+        return { GetRemainingDuration = function() return cooldowns[id] == false and 0 or 100 end }
+    end,
+}
 local bapi = {
+    IsSpellReady = function(id) return cooldowns[id] == false end,
     IsSpellUsable = function(id) return usable[id] ~= false end,
     IsSpellOnCooldown = function(id) return cooldowns[id] ~= false end,
     IsSpellProcced = function() return false end,
@@ -53,6 +63,7 @@ local bapi = {
 }
 local spellQueue = { GetCurrentSpellQueue = function() return rawQueue end }
 LibStub = function(name)
+    if name == "JustAC-ActionBarScanner" then return {GetSpellHotkey=function() return "1" end} end
     if name == "JustAC-SpellQueue" then return spellQueue end
     if name == "JustAC-BlizzardAPI" then return bapi end
 end
@@ -70,6 +81,8 @@ local function ready(id)
     cooldowns[id] = false
 end
 
+dofile("JustACBridge.core/Framework/ActionSequence.lua")
+dofile("JustACBridge.core/Framework/ResourcePreparation.lua")
 dofile("JustACBridge.core/Sources/Registry.lua")
 dofile("JustACBridge.core/Sources/Runtime121.lua")
 dofile("JustACBridge.core/Sources/BeastMasteryHunter121.lua")

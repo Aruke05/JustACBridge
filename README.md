@@ -14,10 +14,13 @@ WoW 插件从可替换的推荐源读取队列并生成“无损版”和“保�
 - 12.1 法师三系和猎人三系的 M5 由各自 `Sources/*121.lua` 按当前 SimC 顺序判断；已实现的动作必须
   整条条件均可观测，遇到更高优先级的 secret/未知状态便原样回退 JustAC 队列
 - 猎人三系以当前 SimC、Method、Icy Veins 与 Wowhead 技能数据交叉核验：兽王实现可证明的
-  BW/Barbed/Beast Cleave 切片；射击只接管可证明的单目标行，完整保护可移动 Rapid Fire；
+  BW/Barbed/Kill Command/Beast Cleave 切片（含怒火后的充能、强化与群体天赋条件）；
+  兽王 Cobra Fang 接管还需当前实际四件套证据，未知/矛盾保持原队列；
+  射击只接管可证明的单目标行，完整保护可移动 Rapid Fire；
   生存按 Tip of the Spear、Twin Fangs、Takedown 与 Bomb 可见状态接管低目标数精确行
 - 猎人遇到 target_if、DungeonRoute、fight_remains、充能小数、冷却剩余阈值或 Rapid Fire
-  剩余 tick 等不可可靠观测条件时保持 JustAC；不会把部分切片冒充完整 APL
+  剩余 tick 等不可可靠观测条件时保持 JustAC；兽王仅在当前明文充能时序可验证时精确比较，
+  secret/异常/失效值不缓存、不猜测；不会把部分切片冒充完整 APL
 - 猎人 M4 精确保留：兽王狂野怒火与狂野鞭挞（含两种法术形态）；射击 Trueshot；生存 Takedown 与 Boomstick。
   Volley 地面选点、Boomstick/Raptor Swipe 正面锥形技能不进入持续按住 M4
 - 猎人自动伤害循环无条件跳过 Disengage、Binding Shot、Counter Shot、Freezing/Tar Trap、

@@ -73,6 +73,7 @@ local function makeWidget()
             return child
         end,
         SetScript = function(self, name, callback) self[name] = callback end,
+        GetScript = function(self, name) return rawget(self, name) end,
         GetEffectiveScale = function() return 1 end,
         GetPoint = function() return "CENTER", nil, "CENTER", 0, 0 end,
         IsShown = function(self) return self.shown ~= false end,
@@ -2282,6 +2283,165 @@ do
     JustACBridge.Refresh()
     assert(JustACBridge.GetPreserveBurstRecommendation().spellID == 34026)
     JustACBridgeDB.reserveOverrides.HUNTER_1 = nil
+end
+
+-- Production BM source -> real core SELECT/SavedVariables/pixel outputs.
+-- The earlier Hunter smoke tests intentionally used dummy sources; these do not.
+do
+    local bmKnown = { [217200]=true,[34026]=true,[193455]=true,[19574]=true,
+        [1264359]=true,[471876]=true,[1273126]=true,[468701]=true }
+    local bmAuras = {[1276720]=true,[471877]=true}
+    local bmAuraTimes = {[471877]=20,[268877]=6}
+    local bmCooldowns = {[19574]=30,[1264359]=30,[193455]=0}
+    local bmCharges = {}
+    local bmEnemies=1
+    local secret = {}
+    local function remaining(value)
+        return {active=type(value)=="number" and value>0,
+            GetRemainingDuration=function() return value end}
+    end
+    local function setCharges(id,count,recharge)
+        bmCharges[id]={currentCharges=count,maxCharges=2,
+            cooldownStartTime=now-(10-(recharge or 5)),cooldownDuration=10,chargeModRate=1}
+    end
+    setCharges(217200,1); setCharges(34026,1)
+    IsPlayerSpell=function(id) return bmKnown[id]==true end
+    IsSpellKnown=IsPlayerSpell
+    local originalSecret=issecretvalue
+    issecretvalue=function(v) return v==secret or originalSecret(v) end
+    GetHaste=function() return 13.7 end
+    UnitPower=function(_,power) if power==2 then return 100 end end
+    C_Spell.IsSpellUsable=function(id) return not unusableSpells[id], false end
+    C_Spell.GetSpellCooldownDuration=function(id,ignoreGCD)
+        assert(ignoreGCD==true); return remaining(bmCooldowns[id])
+    end
+    C_Spell.GetSpellCharges=function(id) return bmCharges[id] end
+    C_UnitAuras.GetPlayerAuraBySpellID=function(id)
+        if bmAuras[id]==true then return {auraInstanceID=id} end
+    end
+    local api={
+        IsSpellUsable=function(id) return not unusableSpells[id] end,
+        IsSpellOnCooldown=function(id) return (bmCooldowns[id] or 0)>0 end,
+        IsSpellReady=function(id)
+            local c=bmCharges[id]; if c then return c.currentCharges>0 end
+        end,
+        IsSpellAtMaxCharges=function(id)
+            local c=bmCharges[id]; return c and c.currentCharges==c.maxCharges or false
+        end,
+        GetAuraStackAtLeast=function(_,id,threshold)
+            local value=bmAuras[id]
+            if value==secret then return secret end
+            if type(value)=="number" then return value>=threshold end
+            return value==true
+        end,
+        GetAuraDurationObject=function(_,id) return remaining(bmAuraTimes[id]) end,
+        GetEngagedEnemyCount=function() return bmEnemies end,
+        GetDisplaySpellID=function(id) return id end,
+        IsSpellProcced=function() return false end,
+    }
+    local scanner={GetSpellHotkey=function(id) return unboundSpells[id] and "" or "2" end}
+    LibStub=function(name)
+        if name=="JustAC-BlizzardAPI" then return api end
+        if name=="JustAC-ActionBarScanner" then return scanner end
+        if name=="JustAC-SpellQueue" then return {GetCurrentSpellQueue=function() return testQueue end} end
+        if name=="JustAC-SpellDB" then return {IsChanneled=function() return false end} end
+    end
+    local bmLibraryLookup=LibStub
+    LibStub=setmetatable({}, {__call=function(_, ...) return bmLibraryLookup(...) end})
+    assert(type(LibStub)=="table", "BM integration must use the real LibStub call shape")
+    JustACBridgeRecommendationSources.Get("justac",false).Initialize()
+    dofile("JustACBridge.core/Sources/Runtime121.lua")
+    dofile("JustACBridge.core/Sources/BeastMasteryHunter121.lua")
+    classFile,specIndex="HUNTER",1
+    inCombat=true; speed,speedSecret=0,false
+    cooldownSpellID=nil; highlightSpellID=nil; testPreserveQueue=nil
+    unboundSpells,unusableSpells={},{}
+    SlashCmdList.JUSTACBRIDGE("source auto")
+    eventFrame.OnEvent(eventFrame,"PLAYER_SPECIALIZATION_CHANGED","player")
+    local bm=assert(JustACBridgeRecommendationSources.Get("bmhunter121"))
+    assert(JustACBridge.GetRecommendationSource().id=="bmhunter121")
+    local function output(m5,m4)
+        JustACBridge.Refresh()
+        local lossless,preserve=JustACBridge.GetLosslessRecommendation(),JustACBridge.GetPreserveBurstRecommendation()
+        assert((lossless and lossless.spellID)==m5,bm.GetDecisionTrace())
+        assert((preserve and preserve.spellID)==m4,"BM M4 must use raw, not selected M5")
+        assert((JustACBridgeExport.first and JustACBridgeExport.first.spellID)==m5)
+        assert((JustACBridgeExport.reserveBurst and JustACBridgeExport.reserveBurst.spellID)==m4)
+        local pixels=namedFrames.JustACBridgePixelFrame.textures
+        local function byte(index)
+            local v=0; for bit=1,8 do v=v*2+pixels[(index-1)*8+bit].bit end; return v
+        end
+        -- Read the real encoded little-endian lossless and preserve spell IDs.
+        local id1=byte(8)+byte(9)*256+byte(10)*65536
+        local id2=byte(36)+byte(37)*256+byte(38)*65536
+        assert(id1==(m5 or 0),"M5 pixel ID mismatch")
+        assert(id2==(m4 or 0),"M4 pixel ID mismatch")
+    end
+    testQueue={217200,193455,34026}
+    output(34026,217200) -- strengthened KC, NOT another low-charge Barbed
+    setCharges(217200,2); output(217200,217200)
+    setCharges(217200,1); bmAuras[1276720]=false
+    output(217200,217200) -- lower Barbed, no fabricated KC buff
+    bmAuras[1276720]=secret; testQueue={193455,34026,217200}
+    output(193455,193455); assert(bm.GetQueue()==testQueue)
+    bmAuras[1276720]=true; unboundSpells[34026]=true
+    output(217200,193455)
+    unboundSpells[34026]=nil
+    bmCooldowns[19574]=0; setCharges(217200,0)
+    output(19574,193455)
+    bm._Test.context.eventFrame.OnEvent(bm._Test.context.eventFrame,"UNIT_SPELLCAST_SUCCEEDED","player","bm-bw",19574)
+    bmCooldowns[19574]=30; setCharges(217200,1); bmAuras[472324]=true
+    output(34026,193455)
+    -- BW success does not override missing/hidden current Howl/Nature evidence.
+    bmAuras[472324],bmAuras[1276720]=false,secret
+    output(193455,193455)
+    testQueue={}; output(nil,nil)
+    -- AoE genuine prefix: BW -> Thrash, then fresh empowered KC; M4 unchanged.
+    bmKnown[115939]=true; bmEnemies=4; bmAuras[268877]=true
+    bmAuras[1276720]=true; bmCooldowns[1264359]=0; testQueue={217200,34026,1264359}
+    output(1264359,217200)
+    bm._Test.context.eventFrame.OnEvent(bm._Test.context.eventFrame,"UNIT_SPELLCAST_SUCCEEDED","player","bm-thrash",1264359)
+    output(34026,217200)
+    -- Distant Thrash cooldown cannot admit BW ahead of KC, even on a BW raw head.
+    bmCooldowns[1264359],bmCooldowns[19574]=10,0
+    setCharges(217200,0); testQueue={19574,34026,193455}
+    output(34026,34026)
+    -- Moving instant recommendations remain legal; M4 still skips both held skills.
+    speed=7; eventFrame.OnEvent(eventFrame,"PLAYER_STARTED_MOVING")
+    output(34026,34026)
+    -- New edge fixes must survive the actual selector, not just source traces.
+    speed=0; eventFrame.OnEvent(eventFrame,"PLAYER_STOPPED_MOVING")
+    bmEnemies=1; bmKnown[115939]=false
+    bmCooldowns[19574],bmCooldowns[1264359]=30,30
+    setCharges(217200,1); setCharges(34026,1)
+    bmAuras[1276720],bmAuras[1299389]=false,4
+    testQueue={217200,193455,34026}
+    local pieces=4
+    local slots={[1]=1,[3]=2,[5]=3,[7]=4,[10]=5}
+    GetInventoryItemID=function(_,slot) local index=slots[slot]; return index and index<=pieces and 270000+index or nil end
+    C_Item={GetSetBonusesForSpecializationByItemID=function(spec)
+        assert(spec==253); return {1296631,1296632}
+    end}
+    output(193455,217200); assert(bm.GetDecisionTrace():find("cobraSet=4pc",1,true))
+    pieces=2; output(217200,217200)
+    assert(bm.GetDecisionTrace():find("cobraSet=2pc",1,true))
+    pieces=4; local bonusReader=C_Item.GetSetBonusesForSpecializationByItemID
+    C_Item.GetSetBonusesForSpecializationByItemID=function() return nil end
+    output(217200,217200); assert(bm.GetDecisionTrace():find("cobraSet=unknown",1,true))
+    C_Item.GetSetBonusesForSpecializationByItemID=bonusReader
+    output(193455,217200) -- fresh gear evidence, no old unknown/2pc latch
+    -- Expired-but-still-listed Cleave cannot inject BW over a KC raw head.
+    bmEnemies=3; bmKnown[115939]=true; bmAuras[268877]=true; bmAuraTimes[268877]=0
+    bmAuras[1299389]=false; bmCooldowns[19574],bmCooldowns[1264359]=0,1
+    setCharges(217200,0); testQueue={34026,193455,19574}
+    output(34026,34026); assert(bm.GetQueue()==testQueue)
+    -- A native 1/2 count beats a stale wrapper's full-charge assertion.
+    bmEnemies=1; bmKnown[115939]=false; bmCooldowns[19574]=30
+    setCharges(217200,1); bmCharges[217200].cooldownStartTime=secret
+    local maxReader=api.IsSpellAtMaxCharges; api.IsSpellAtMaxCharges=function() return true end
+    output(34026,34026); assert(bm.GetQueue()==testQueue)
+    api.IsSpellAtMaxCharges=maxReader
+    print("production BM -> core exports/pixels integration passed")
 end
 
 print("core integration tests passed")
